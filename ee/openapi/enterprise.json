@@ -3055,6 +3055,38 @@
         "title": "ComputerUse",
         "type": "object"
       },
+      "ConfigMode": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "api",
+              "file"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "enum": [
+                "privacy",
+                "gateway_settings",
+                "rules"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Resources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode",
+          "resources"
+        ],
+        "title": "ConfigMode",
+        "type": "object"
+      },
       "ConnectorCreate": {
         "properties": {
           "api_key": {
@@ -4291,6 +4323,50 @@
         "title": "FeatureSelectionPreference",
         "type": "string"
       },
+      "FileApplyView": {
+        "properties": {
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "serial": {
+            "title": "Serial",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "pending_approval",
+              "unchanged"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "serial"
+        ],
+        "title": "FileApplyView",
+        "type": "object"
+      },
       "FileData": {
         "additionalProperties": false,
         "description": "URI-based data.\n\nA FileData message contains a URI pointing to data of a specific media type.\nIt is used to represent images, audio, and video stored in Google Cloud\nStorage.",
@@ -4333,6 +4409,80 @@
           }
         },
         "title": "FileData",
+        "type": "object"
+      },
+      "FileInput": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signature"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "FileInput",
+        "type": "object"
+      },
+      "FilePlanView": {
+        "properties": {
+          "changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "risk": {
+            "enum": [
+              "tightening",
+              "relaxing",
+              "neutral"
+            ],
+            "title": "Risk",
+            "type": "string"
+          },
+          "serial": {
+            "title": "Serial",
+            "type": "integer"
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SignatureCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stored": {
+            "default": false,
+            "title": "Stored",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "serial",
+          "risk",
+          "changes",
+          "signature"
+        ],
+        "title": "FilePlanView",
         "type": "object"
       },
       "FileSearch": {
@@ -8000,6 +8150,56 @@
         ],
         "title": "Modality",
         "type": "string"
+      },
+      "ModeView": {
+        "properties": {
+          "active_signing_keys": {
+            "minimum": 0.0,
+            "title": "Active Signing Keys",
+            "type": "integer"
+          },
+          "last_applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Applied At"
+          },
+          "last_serial": {
+            "minimum": 0.0,
+            "title": "Last Serial",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "api",
+              "file"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode",
+          "resources",
+          "last_serial",
+          "last_applied_at",
+          "active_signing_keys"
+        ],
+        "title": "ModeView",
+        "type": "object"
       },
       "ModelCount": {
         "properties": {
@@ -14463,6 +14663,126 @@
         "title": "SharedResultView",
         "type": "object"
       },
+      "SignatureCheck": {
+        "properties": {
+          "key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Id"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "valid",
+          "key_id"
+        ],
+        "title": "SignatureCheck",
+        "type": "object"
+      },
+      "SigningKeyInput": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "public_key_pem": {
+            "maxLength": 1000,
+            "title": "Public Key Pem",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "public_key_pem",
+          "user_id",
+          "name"
+        ],
+        "title": "SigningKeyInput",
+        "type": "object"
+      },
+      "SigningKeyView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "revoked_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked By"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_id",
+          "name",
+          "user_id",
+          "created_by",
+          "created_at",
+          "revoked_at",
+          "revoked_by"
+        ],
+        "title": "SigningKeyView",
+        "type": "object"
+      },
       "SpeakerVoiceConfig": {
         "additionalProperties": false,
         "description": "Configuration for a single speaker in a multi-speaker setup.",
@@ -20764,6 +21084,356 @@
         "summary": "Billing Usage",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/config/apply": {
+      "post": {
+        "operationId": "apply_config_api_v1_management_config_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileApplyView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileApplyView"
+                }
+              }
+            },
+            "description": "Waiting for approval"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Apply Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/export": {
+      "get": {
+        "operationId": "export_config_api_v1_management_config_export_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/yaml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The configuration file."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/mode": {
+      "get": {
+        "operationId": "get_config_mode_api_v1_management_config_mode_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModeView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Config Mode",
+        "tags": [
+          "config"
+        ]
+      },
+      "put": {
+        "operationId": "set_config_mode_api_v1_management_config_mode_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigMode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModeView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Config Mode",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/plan": {
+      "post": {
+        "operationId": "plan_config_api_v1_management_config_plan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilePlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Plan Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/signing-keys": {
+      "get": {
+        "operationId": "list_signing_keys_api_v1_management_config_signing_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SigningKeyView"
+                  },
+                  "title": "Response List Signing Keys Api V1 Management Config Signing Keys Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Signing Keys",
+        "tags": [
+          "config"
+        ]
+      },
+      "post": {
+        "operationId": "add_signing_key_api_v1_management_config_signing_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SigningKeyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SigningKeyView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Add Signing Key",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/signing-keys/{signing_key_id}": {
+      "delete": {
+        "operationId": "revoke_signing_key_api_v1_management_config_signing_keys__signing_key_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "signing_key_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Signing Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SigningKeyView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Revoke Signing Key",
+        "tags": [
+          "config"
         ]
       }
     },

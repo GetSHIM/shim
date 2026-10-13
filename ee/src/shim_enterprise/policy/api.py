@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim.gateway.contracts.ids import TenantId
 from shim_enterprise.api.enterprise_deps import require
+from shim_enterprise.config_file.models import file_managed
 from shim_enterprise.core.database import get_db
 from shim_enterprise.outbox.handlers import POLICY_APPROVAL_REQUESTED
 from shim_enterprise.outbox.publisher import OutboxWriter
@@ -29,6 +30,8 @@ from shim_enterprise.policy.plans import (
     key_holders,
     lock_tenant,
     record_managed_write,
+    refuse_file_managed,
+    state_at,
 )
 from shim_enterprise.policy.resources import REGISTRY, ManagedResource, PostCommit
 from shim_enterprise.tenants.audit import record_management_action as _audit
@@ -206,11 +209,13 @@ async def planned_change(
     before: State | None,
     after: State | None,
     window_days: int,
+    impact: Impact | None = None,
 ) -> dict[str, Any]:
     resource = REGISTRY[resource_name]
-    impact: Impact = await resource.impact(
-        session, organization_id, item, before, after, window_days
-    )
+    if impact is None:
+        impact = await resource.impact(
+            session, organization_id, item, before, after, window_days
+        )
     return {
         "resource": resource_name,
         "item": item,
@@ -227,9 +232,13 @@ async def new_plan(
     organization_id: UUID,
     changes: list[dict[str, Any]],
     *,
-    source: Literal["api", "restore", "import"],
+    source: Literal["api", "restore", "import", "file"],
     reason: str | None,
+    context: dict[str, Any] | None = None,
 ) -> PolicyPlan:
+    await refuse_file_managed(
+        session, organization_id, (change["resource"] for change in changes), source
+    )
     plan = PolicyPlan(
         id=uuid4(),
         organization_id=organization_id,
@@ -239,7 +248,7 @@ async def new_plan(
         status="draft",
         source=source,
         reason=reason,
-        context={},
+        context=context or {},
         created_by=str(actor.id),
         created_by_actor_type=actor_type(actor),
         expires_at=datetime.now(timezone.utc) + _PLAN_LIFETIME,
@@ -557,8 +566,15 @@ async def _pending_for(session: AsyncSession, user: User, plan_id: UUID) -> Poli
             status_code=409,
             detail={"code": "PLAN_STATE_CONFLICT", "status": plan.status},
         )
+    # The person who signed a file's loosening change cannot approve it either.
     authors = {
-        UUID(author) for author in (plan.created_by, plan.submitted_by) if author
+        UUID(author)
+        for author in (
+            plan.created_by,
+            plan.submitted_by,
+            plan.context.get("signer_user_id"),
+        )
+        if author
     }
     if user.kind != "human" or user.id in await key_holders(
         session, organization_id, authors
@@ -724,29 +740,23 @@ async def restore_version(
             status_code=409,
             detail={"code": "POLICY_VERSION_CHANGED", "version": latest},
         )
-    targets: dict[str, dict[str, State | None]] = {}
-    for row in await session.scalars(
-        select(PolicyVersion)
-        .where(PolicyVersion.organization_id == organization_id)
-        .order_by(PolicyVersion.version)
-    ):
-        for name, items in row.snapshot.items():
-            known = targets.setdefault(name, {})
-            for item, state in items.items():
-                # At or before the target its latest state wins; after it, the
-                # state before the first later change is the state it had then.
-                if row.version <= version:
-                    known[item] = state
-                elif item not in known:
-                    known[item] = row.previous[name][item]
+    targets = await state_at(session, organization_id, version)
     changes: list[dict[str, Any]] = []
     not_restored: list[Unrestored] = []
     approximated: list[Unrestored] = []
+    managed = await file_managed(session, organization_id)
     for name, items in targets.items():
         resource = REGISTRY.get(name)
         if resource is None:
             continue
         current = await resource.snapshot(session, organization_id, list(items))
+        if name in managed:
+            not_restored += [
+                Unrestored(resource=name, item=item, reason="file_managed")
+                for item, target in items.items()
+                if target != current.get(item)
+            ]
+            continue
         for item, target in items.items():
             now = current.get(item)
             if name == "budgets" and target is not None:

@@ -212,15 +212,24 @@ async def preview_rule(
     organization_id: UUID,
     proposed: dict[str, Any],
     window_days: int,
+    *,
+    others: list[dict[str, Any]] | None = None,
 ) -> tuple[Rule, dict[str, Any]]:
-    """The validated rule and what it would have hit; nothing is written."""
+    """The validated rule and what it would have hit; nothing is written.
+
+    The rule is checked within `others`, the rest of the set it will belong to;
+    by default the stored set.
+    """
     row = await session.get(OrganizationRuleSet, organization_id)
     stored = stored_rules(row)
     current = {rule.id: rule for rule in stored.rules} if stored is not None else {}
     rule_id = proposed.get("id")
-    others = [
-        rule.model_dump(mode="json") for rule in current.values() if rule.id != rule_id
-    ]
+    if others is None:
+        others = [
+            rule.model_dump(mode="json")
+            for rule in current.values()
+            if rule.id != rule_id
+        ]
     candidate = checked_set(1, [*others, proposed])
     rule = next(rule for rule in candidate.rules if rule.id == rule_id)
     end = datetime.now(timezone.utc)

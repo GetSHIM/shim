@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from datetime import datetime, timezone
 import logging
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, Request
@@ -390,11 +391,17 @@ class _RuleResource:
         before: State | None,
         after: State | None,
         window_days: int,
+        *,
+        others: list[dict[str, Any]] | None = None,
     ) -> Impact:
         state = after if after is not None else before
         assert state is not None
         rule, preview = await preview_rule(
-            session, organization_id, {"id": item_id, **state}, window_days
+            session,
+            organization_id,
+            {"id": item_id, **state},
+            window_days,
+            others=others,
         )
         note = preview["note"]
         if (

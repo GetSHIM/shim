@@ -35,6 +35,15 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "404"
  },
+ "DELETE /api/v1/management/config/signing-keys/{signing_key_id}": {
+  "admin": "403 Permission required: config.manage",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: config.manage",
+  "owner": "422",
+  "service_admin": "403 Permission required: config.manage",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: config.manage"
+ },
  "DELETE /api/v1/management/cost/budgets/{budget_id}": {
   "admin": "404",
   "auditor": "403 Auditor access is read-only",
@@ -340,6 +349,33 @@
   "service_admin": "200",
   "service_auditor": "200",
   "team_admin": "403 Organization reader required"
+ },
+ "GET /api/v1/management/config/export": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: rules.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Permission required: rules.read"
+ },
+ "GET /api/v1/management/config/mode": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "200",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "200"
+ },
+ "GET /api/v1/management/config/signing-keys": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: audit.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Permission required: audit.read"
  },
  "GET /api/v1/management/cost/budgets": {
   "admin": "200",
@@ -953,6 +989,33 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Permission required: requests.approve"
  },
+ "POST /api/v1/management/config/apply": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.apply",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.apply"
+ },
+ "POST /api/v1/management/config/plan": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.create",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.create"
+ },
+ "POST /api/v1/management/config/signing-keys": {
+  "admin": "403 Permission required: config.manage",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: config.manage",
+  "owner": "422",
+  "service_admin": "403 Permission required: config.manage",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: config.manage"
+ },
  "POST /api/v1/management/cost/budgets": {
   "admin": "422",
   "auditor": "403 Auditor access is read-only",
@@ -1186,6 +1249,15 @@
   "service_admin": "200",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "200"
+ },
+ "PUT /api/v1/management/config/mode": {
+  "admin": "403 Permission required: config.manage",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: config.manage",
+  "owner": "422",
+  "service_admin": "403 Permission required: config.manage",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: config.manage"
  },
  "PUT /api/v1/management/model-deployments/{deployment_id}": {
   "admin": "422",

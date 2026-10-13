@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim.gateway.contracts.ids import TenantId
 from shim_enterprise.compliance.services.forwarder import ComplianceForwarderService
+from shim_enterprise.config_file import FILE_MANAGEABLE
 from shim_enterprise.policy.models import PolicyVersion, Risk, Source
 from shim_enterprise.tenants.audit import record_management_action
 from shim_enterprise.tenants.gateway_settings import stored_settings
@@ -85,6 +86,28 @@ async def current_version(session: AsyncSession, organization_id: UUID) -> int:
         )
         or 0
     )
+
+
+async def state_at(
+    session: AsyncSession, organization_id: UUID, version: int
+) -> dict[str, dict[str, State | None]]:
+    """Each versioned item's state at `version`; items never versioned are left out."""
+    targets: dict[str, dict[str, State | None]] = {}
+    for row in await session.scalars(
+        select(PolicyVersion)
+        .where(PolicyVersion.organization_id == organization_id)
+        .order_by(PolicyVersion.version)
+    ):
+        for name, items in row.snapshot.items():
+            known = targets.setdefault(name, {})
+            for item, state in items.items():
+                # At or before the target its latest state wins; after it, the
+                # state before the first later change is the state it had then.
+                if row.version <= version:
+                    known[item] = state
+                elif item not in known:
+                    known[item] = row.previous[name][item]
+    return targets
 
 
 # Custom roles never grant plans.approve and hang only off the member role, so
@@ -217,6 +240,34 @@ async def _refuse_unapproved(
     raise approval_required(relaxed)
 
 
+async def refuse_file_managed(
+    session: AsyncSession,
+    organization_id: UUID,
+    resources: Iterable[str],
+    source: Source,
+) -> None:
+    """409 for a write from anywhere but the signed file to a resource it manages."""
+    touched = set(resources) & set(FILE_MANAGEABLE)
+    if source == "file" or not touched:
+        return
+    # Here, not at the top: config_file.models registers a policy resource.
+    from shim_enterprise.config_file.models import file_managed
+
+    managed = sorted(touched & set(await file_managed(session, organization_id)))
+    if managed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONFIG_FILE_MANAGED",
+                "resource": managed[0],
+                "message": f"This tenant manages {managed[0]} from a signed "
+                "configuration file.",
+                "hint": "Change the file, sign it and push it; or switch the tenant "
+                "back to api mode.",
+            },
+        )
+
+
 def approval_required(relaxed: list[str]) -> HTTPException:
     return HTTPException(
         status_code=409,
@@ -245,6 +296,9 @@ async def record_managed_write(
     The caller took the tenant lock before reading each change's before-state.
     """
     await lock_tenant(session, organization_id)
+    await refuse_file_managed(
+        session, organization_id, (change[0].name for change in changes), source
+    )
     changed = [change for change in changes if change[2] != change[3]]
     if not changed:
         yield None

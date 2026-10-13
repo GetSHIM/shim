@@ -491,7 +491,8 @@ owner override below.
 - `POST /policy/plans/{id}/approve` (`plans.approve`) applies it with the stale
   check, `approved_by` and `approved_at`; `POST .../reject` makes it `rejected`.
   Either needs a `pending_approval` plan (409 `PLAN_STATE_CONFLICT`) and a human
-  who neither created nor submitted it, nor created or rotated a key of the
+  who neither created, submitted nor (for a configuration file) signed it, nor
+  created or rotated a key of the
   service account that did (403 `APPROVER_NOT_ELIGIBLE`). An
   optional `note` is kept on the plan as `context.decision_note`.
 - Turning `four_eyes` off is relaxing. While fewer than two users can approve,
@@ -516,6 +517,63 @@ Tightening and neutral writes and plans are unchanged, and with `four_eyes`
 `off` none of this applies. Audit actions: `tenant.policy_plan_submitted`,
 `tenant.policy_plan_approved` and `tenant.policy_plan_rejected` (`plan_id`,
 `risk`, `resources`).
+
+### Configuration file
+
+A tenant can manage `privacy`, `gateway_settings` and `rules`, or any non-empty
+subset of them, from a signed YAML file instead of the panel ([keep the policy in
+Git](COOKBOOK.md#keep-the-policy-in-git)). The mode is its own managed resource,
+`config_mode` (item `_`, fields `mode` and `resources`), stored in
+`organization_config_modes`; no row means `api`. It is never file-managed and every
+change to it is neutral, since it decides where changes come from, not what they
+allow. `PUT /config/mode` is owner-only (`config.manage`) and turning file mode on
+needs an active signing key (409 `CONFIG_NO_SIGNING_KEY`).
+
+- **What a signature covers.** Ed25519 over `shim-config-v1\n`, the pushing
+  tenant's lowercase id, `\n` and the file's exact bytes. The prefix stops a config
+  signature from verifying as anything else, the tenant id stops a file signed for
+  one tenant from applying to another, and the file's `serial`, which must be
+  above the last applied one (409 `CONFIG_SERIAL_STALE`), stops an older signed
+  file from being replayed. The signature string is `<key_id>.<signature>`, both
+  base64url without padding as licence keys are; `key_id` is the first 32 hex
+  characters of the SHA-256 of the raw public key. Only an unrevoked key of the
+  tenant whose holder is active verifies; anything else is 403
+  `CONFIG_SIGNATURE_INVALID`, without saying which check failed. Keys belong to
+  human users who may create plans, at most ten active per tenant; adding one
+  records `tenant.config_signing_key_added` and sends the tenant alert
+  `config_signing_key_added`, because a new key can change policy. Revoking the
+  last key while the mode is `file` is 409 `CONFIG_LAST_SIGNING_KEY`; revoking a key
+  expires its file plans still waiting.
+- **The 409.** While a resource is file-managed, every write to it from another
+  source is refused before the route body runs: 409 `CONFIG_FILE_MANAGED` with the
+  resource and a hint. This covers direct API writes (`PUT /settings/pii`, `PATCH
+  /gateway-settings`, `PUT /rules`), plans from any other source at creation
+  (`api`, `import`, and later `mcp`, `proposal`, `auto`), a plan created before the
+  switch when it is applied, and restores, which skip file-managed items and list
+  them in `not_restored` with reason `file_managed`. The check runs before the
+  four-eyes check. Reads are unchanged.
+- **Applying a file.** `POST /config/apply` (`plans.apply`) verifies the signature,
+  parses and validates the file, checks the serial, expires older waiting file
+  plans, and turns the differences into one plan with source `file` and `context`
+  `serial`, `key_id`, `signer_user_id` and `file_sha256`: privacy and gateway
+  settings one change each, rules deleted first, then updated, then created, so
+  the 100-rule limit holds at every step; a file plan holds up to 250 changes. The
+  plan applies through the same code as any plan, so a new `enforced` rule still
+  needs its preview. Anything refused rolls back the whole push, serial included.
+  A file with no difference only moves the serial (`status: unchanged`). Audit
+  `tenant.config_file_applied` (serial, key id, plan id, status, file SHA-256).
+  `POST /config/plan` (`plans.create`) computes the same plan, says whether a given
+  signature is valid, and stores nothing.
+- **Four eyes with files.** Under `four_eyes: "relaxing"` a relaxing file waits in
+  `pending_approval` (202) like any relaxing plan. Besides the plan's creator and
+  submitter, the person who signed the file (`context.signer_user_id`) cannot
+  approve it, so a loosening change needs a second person even when CI pushed it
+  with a service account. Tightening and neutral files apply at once.
+
+Audit actions: `tenant.config_mode_changed` (before and after `mode` and
+`resources`), `tenant.config_signing_key_added` (key id, holder),
+`tenant.config_signing_key_revoked` (key id), `tenant.config_exported` (version,
+resources) and `tenant.config_file_applied`.
 
 ## Rule previews
 

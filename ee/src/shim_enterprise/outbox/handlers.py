@@ -296,6 +296,7 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
     if target_kind == "email":
         subjects = {
             "forward_target_changed": "shim forward target destination changed",
+            "config_signing_key_added": "shim configuration signing key added",
             "privacy_protection_relaxed": "shim privacy protection turned off",
             "gateway_protection_relaxed": "shim gateway protection turned off",
             "bulk_disclosure": "shim bulk disclosure in one request",
@@ -394,6 +395,12 @@ def _compliance_text(body: dict) -> str:
         return (
             f"shim forward target {body.get('target_id')} ({body.get('target_kind')}) "
             f"changed its destination (by {actor}) at {body.get('occurred_at')}"
+        )
+    if body.get("kind") == "config_signing_key_added":
+        actor = body.get("actor_email") or f"user {body.get('actor', 'unknown')}"
+        return (
+            f"shim configuration signing key {body.get('key_id')} added for user "
+            f"{body.get('holder')} (by {actor}); a file it signs can change policy"
         )
     if body.get("kind") == "bulk_disclosure":
         counts = ", ".join(

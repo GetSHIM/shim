@@ -35,6 +35,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
+- [Keep the policy in Git](#keep-the-policy-in-git)
 - [Hold a request for approval](#hold-a-request-for-approval)
 - [Keep matched requests and open one](#keep-matched-requests-and-open-one)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
@@ -1143,6 +1144,104 @@ Notes:
   one of the last two approvers answers 409 `FOUR_EYES_UNAVAILABLE`.
 - What counts as loosening per resource is in
   [decision evidence](POLICY_DECISIONS.md#policy-versions-and-plans).
+
+## Keep the policy in Git
+
+The panel and the API stay the default. A tenant that reviews its policy in pull
+requests can instead keep privacy, gateway settings and rules, or any of the
+three, in a signed YAML file: then the file is the source of truth, the panel
+shows it, and every other write to those resources answers 409
+`CONFIG_FILE_MANAGED`. Everything below uses `ee/scripts/shim_config.py`; the
+management token comes from `SHIM_MANAGEMENT_TOKEN` only.
+
+1. **A key for each person who signs.** On the signer's machine:
+
+   ```console
+   python ee/scripts/shim_config.py keygen --out-dir ~/.shim
+   ```
+
+   It writes `shim-config-signing.key` (mode 0600, never overwritten) and
+   `shim-config-signing.pub`, and prints the key id. The private key never leaves
+   the machine. The owner registers the public key for that person, who must be an
+   active human user who may create plans:
+
+   ```console
+   curl -X POST http://localhost:8000/api/v1/management/config/signing-keys \
+     -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+     -d "{\"public_key_pem\": $(jq -Rs . < ~/.shim/shim-config-signing.pub), \"user_id\": \"$SIGNER_ID\", \"name\": \"release\"}"
+   ```
+
+   At most ten keys are active; every new one raises the `config_signing_key_added`
+   tenant alert. `GET /config/signing-keys` (`audit.read`) lists them.
+2. **Start from today's state.** `export` writes the current file, with
+   `serial` one above the last applied one. In api mode it holds all three
+   resources:
+
+   ```console
+   SHIM_MANAGEMENT_TOKEN=$TOKEN python ee/scripts/shim_config.py export \
+     --url http://localhost:8000 --out shim-config.yaml
+   ```
+
+   ```yaml
+   format: shim.config
+   version: 1
+   organization_id: 6f1c2a3e-1111-4222-8333-444455556666
+   serial: 1
+   exported_from: {policy_version: 41, rules_revision: 12, gateway_settings_revision: 3}
+   resources:
+     privacy: {block_email: true, block_phone: true, block_credit_card: true,
+               block_secrets: true, block_pii_tr: true,
+               entity_actions: {EMAIL_ADDRESS: monitor}, bulk_threshold: null,
+               response_scan: 'off', placeholder_mode: random,
+               embeddings_monitor_types: []}
+     rules:
+       - {id: project_atlas, name: Atlas, kind: term, action: mask, state: monitor,
+          scope: {}, match: {terms: [Atlas], label: TERM, suffixes: tr}}
+   ```
+
+   Each section is the whole truth: `privacy` lists every field, `gateway_settings`
+   fields you leave out take their defaults, and a rule missing from `rules` is
+   deleted. `exported_from` is ignored on apply. Only `true` and `false` are
+   booleans, so `off`, `on`, `yes` and `no` are strings; the export quotes `'off'`
+   anyway, so other YAML tools read it the same. Anchors, aliases, duplicate keys
+   and a second document are refused, and a file is at most 1,000,000 bytes.
+3. **Turn file mode on** (owner): `PUT /api/v1/management/config/mode` with
+   `{"mode": "file", "resources": ["privacy", "rules"]}`. Nothing changes until the
+   first push; `GET /config/mode` shows the mode, `last_serial` and when a file was
+   last applied.
+4. **Check every pull request.** In CI, a plan only: it validates the file, says
+   whether its signature is valid, and returns the changes with their risk and
+   effect, storing nothing.
+
+   ```console
+   SHIM_MANAGEMENT_TOKEN=$CI_TOKEN python ee/scripts/shim_config.py push \
+     --url "$SHIM_URL" --file shim-config.yaml --signature-file shim-config.sig --plan-only
+   ```
+
+5. **Sign and push on merge.** The signer signs the merged file; CI pushes it with
+   an admin service account (`plans.apply`):
+
+   ```console
+   python ee/scripts/shim_config.py sign --private-key ~/.shim/shim-config-signing.key \
+     --file shim-config.yaml --out shim-config.sig
+   SHIM_MANAGEMENT_TOKEN=$CI_TOKEN python ee/scripts/shim_config.py push \
+     --url "$SHIM_URL" --file shim-config.yaml --signature-file shim-config.sig
+   ```
+
+   Exit codes: 0 applied, unchanged or planned; 3 waiting for a second administrator;
+   1 refused; 2 usage. Raise `serial` for every push: a serial at or below the last
+   applied one is 409 `CONFIG_SERIAL_STALE`. A file that changed after signing, or
+   one signed for another tenant, is 403 `CONFIG_SIGNATURE_INVALID`; an invalid file
+   is 422 `CONFIG_FILE_INVALID` with the `path` that is wrong. Under
+   [four eyes](#require-a-second-admin-for-loosening-changes) a loosening file waits
+   for a second administrator, who may not be its signer.
+6. **Undo** by exporting an earlier policy version and pushing it:
+   `export --version 41 --out shim-config.yaml`, raise nothing (the export already
+   carries the next serial), sign, push.
+7. **Rotate** a key by adding the new one, pushing with it, then revoking the old one
+   (`DELETE /config/signing-keys/{key_id}`); the last key cannot be revoked while the
+   mode is `file`.
+8. **Leave file mode** with `PUT /config/mode` `{"mode": "api", "resources": []}`.
 
 ## Hold a request for approval
 
