@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from shim_enterprise.billing.models import RequestLifecycle
+from shim_enterprise.core.config import settings
 from shim_enterprise.policy import allowlist
 from shim_enterprise.policy.allowlist import AllowlistEntry, PlanRefusal, check_plan
 from shim_enterprise.tenants.models import Organization
@@ -72,13 +73,15 @@ def _seen_email(db, organization_id, count: int) -> None:
 
 
 async def _check(db, organization_id, *changes, risk="tightening", source="api"):
-    return await check_plan(
+    check = await check_plan(
         db, organization_id, list(changes), risk=risk, source=source
     )
+    return check.refusals
 
 
 @pytest.mark.asyncio
-async def test_the_empty_allowlist_refuses_every_change(db) -> None:
+async def test_the_empty_allowlist_refuses_every_change(db, monkeypatch) -> None:
+    monkeypatch.setattr(allowlist, "ALLOWLIST", ())
     organization_id = await _organization(db)
 
     refused = await _check(
@@ -88,7 +91,6 @@ async def test_the_empty_allowlist_refuses_every_change(db) -> None:
         _change({"enabled": True}, {"enabled": False}, "deployments"),
     )
 
-    assert allowlist.ALLOWLIST == ()
     assert refused == [
         PlanRefusal(0, "privacy", "_", "not_allowlisted"),
         PlanRefusal(1, "deployments", "_", "not_allowlisted"),
@@ -189,4 +191,138 @@ def test_an_entry_names_a_known_resource_and_a_bounded_id() -> None:
         "impact_too_large",
         "plan_not_tightening",
         "proposal_needs_human",
+        "too_many_changes",
+        "proof_unavailable",
     }
+
+
+def _entry(entry_id: str) -> AllowlistEntry:
+    return next(entry for entry in allowlist.ALLOWLIST if entry.id == entry_id)
+
+
+@pytest.mark.parametrize(
+    ("entry_id", "before", "after", "accepted"),
+    [
+        ("deployment.disable", {"enabled": True}, {"enabled": False}, True),
+        ("deployment.disable", {"enabled": False}, {"enabled": True}, False),
+        (
+            "api_key.narrow_models",
+            {"allowed_models": None},
+            {"allowed_models": ["a"]},
+            True,
+        ),
+        (
+            "api_key.narrow_models",
+            {"allowed_models": ["a", "b"]},
+            {"allowed_models": ["a"]},
+            True,
+        ),
+        (
+            "api_key.narrow_models",
+            {"allowed_models": ["a"]},
+            {"allowed_models": ["a"]},
+            False,
+        ),
+        (
+            "api_key.narrow_models",
+            {"allowed_models": ["a"]},
+            {"allowed_models": []},
+            False,
+        ),
+        (
+            "api_key.narrow_models",
+            {"allowed_models": ["a"]},
+            {"allowed_models": None},
+            False,
+        ),
+        (
+            "api_key.narrow_models",
+            {"allowed_models": ["a"]},
+            {"allowed_models": ["a", "b"]},
+            False,
+        ),
+        (
+            "team.lower_limit",
+            {"daily_request_limit": 10},
+            {"daily_request_limit": 5},
+            True,
+        ),
+        (
+            "team.lower_limit",
+            {"daily_request_limit": None},
+            {"daily_request_limit": 5},
+            True,
+        ),
+        (
+            "team.lower_limit",
+            {"daily_request_limit": 5},
+            {"daily_request_limit": 10},
+            False,
+        ),
+        (
+            "team.lower_limit",
+            {"daily_request_limit": 5},
+            {"daily_request_limit": None},
+            False,
+        ),
+        (
+            "budget.lower",
+            {"limit_usd": "10", "enabled": False},
+            {"limit_usd": "5", "enabled": True},
+            True,
+        ),
+        ("budget.lower", {"limit_usd": "10"}, {"limit_usd": None}, False),
+        ("budget.lower", {"limit_usd": None}, {"limit_usd": "5"}, False),
+        ("budget.lower", {"enabled": True}, {"enabled": False}, False),
+        ("privacy.start_counting", _email("off"), _email("monitor"), True),
+        ("privacy.start_counting", _email("off"), _email("mask"), False),
+        ("privacy.start_counting", _email("monitor"), _email("off"), False),
+        ("privacy.start_counting", _email("off"), _email("off"), False),
+    ],
+)
+def test_each_entry_accepts_its_direction_only(
+    entry_id, before, after, accepted
+) -> None:
+    assert _entry(entry_id).accepts(before, after) is accepted
+
+
+def test_the_list_tightens_or_cheapens_and_never_touches_rules_or_settings() -> None:
+    assert [entry.id for entry in allowlist.ALLOWLIST] == [
+        "deployment.disable",
+        "api_key.narrow_models",
+        "team.lower_limit",
+        "budget.lower",
+        "privacy.start_counting",
+    ]
+    # No automatic change may write a rule (route rules included) or a gateway setting.
+    assert not {entry.resource for entry in allowlist.ALLOWLIST} & {
+        "rules",
+        "gateway_settings",
+    }
+    assert [entry.id for entry in allowlist.ALLOWLIST if entry.proof] == [
+        "deployment.disable",
+        "api_key.narrow_models",
+        "team.lower_limit",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_six_changes_are_too_many_and_audit_off_leaves_no_proof(
+    db, monkeypatch
+) -> None:
+    organization_id = await _organization(db)
+    budgets = [
+        _change({"limit_usd": "10"}, {"limit_usd": "5"}, "budgets") for _ in range(6)
+    ]
+    disable = _change({"enabled": True}, {"enabled": False}, "deployments")
+
+    many = await _check(db, organization_id, *budgets)
+    five = await _check(db, organization_id, *budgets[:5])
+    monkeypatch.setattr(settings, "AI_ACT_AUDIT_ENABLED", False)
+    blind = await _check(db, organization_id, disable)
+    counting = await _check(db, organization_id, budgets[0])
+
+    assert many == [PlanRefusal(None, None, None, "too_many_changes")]
+    assert five == []
+    assert blind == [PlanRefusal(0, "deployments", "_", "proof_unavailable")]
+    assert counting == []

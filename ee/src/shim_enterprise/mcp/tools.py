@@ -66,6 +66,15 @@ class ListPlans(_Arguments):
     limit: int = Field(default=20, ge=1, le=50)
 
 
+class ListRemediations(_Arguments):
+    status: str | None = Field(
+        default=None,
+        description="watching, kept, restored, restore_skipped, skipped or undone.",
+    )
+    limit: int = Field(default=20, ge=1, le=50)
+    before: AwareDatetime | None = None
+
+
 class PlanArguments(_Arguments):
     plan_id: UUID
 
@@ -138,6 +147,16 @@ TOOLS: tuple[Tool, ...] = (
         "GET",
         f"{MANAGEMENT}/findings/rules",
         ("findings.read",),
+        True,
+    ),
+    Tool(
+        "list_remediations",
+        "Changes shim or an agent applied without a person, newest first: what "
+        "changed, the measurement window and whether it was kept or undone.",
+        ListRemediations,
+        "GET",
+        f"{MANAGEMENT}/remediations",
+        ("findings.read", "audit.read"),
         True,
     ),
     Tool(

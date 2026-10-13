@@ -25,7 +25,7 @@ from shim.rules import KINDS, LIMITS, Rule, load_rule_set
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.cache.redis_index import CacheManager, CacheService
 from shim_enterprise.core.database import get_db
-from shim_enterprise.findings.service import apply_modes
+from shim_enterprise.findings.service import apply_modes, finding_ladder
 from shim.privacy.policies import (
     PII_CONFIG_DEFAULTS,
     EntityAction,
@@ -811,7 +811,11 @@ class _GatewaySettingsResource:
             await shorten_retention(session, organization_id, days)
         if "finding_modes" in changed:
             # A lowered mode takes the suggested action away now, not at the next pass.
-            await apply_modes(session, organization_id, current.finding_modes)
+            await apply_modes(
+                session,
+                organization_id,
+                await finding_ladder(session, organization_id, current),
+            )
         await _audit(
             session,
             actor,

@@ -318,4 +318,4 @@ def test_the_mcp_counters_take_bounded_labels() -> None:
     }
     assert MCP_REQUESTS_TOTAL._labelnames == ("method", "outcome")
     assert MCP_TOOL_CALLS_TOTAL._labelnames == ("tool", "outcome")
-    assert len({tool.name for tool in TOOLS} | {"unknown"}) == 18
+    assert len({tool.name for tool in TOOLS} | {"unknown"}) == 19

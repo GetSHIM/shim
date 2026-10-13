@@ -534,7 +534,10 @@ check and before anything is written:
   (`extra_fields`) and in the allowed direction (`wrong_direction`);
 - an entry with an impact bound recomputes the change's impact now, over its
   window, and refuses when it is unknown (`impact_unknown`) or above the bound
-  (`impact_too_large`).
+  (`impact_too_large`);
+- an entry with a proof needs refusal rows to measure: audit mode `off` refuses
+  it (`proof_unavailable`);
+- a plan holds at most 5 changes (`too_many_changes`).
 
 Any refusal answers 403 `{"code": "PLAN_NOT_ALLOWLISTED", "changes": [{"index",
 "resource", "item", "reason"}], "message", "hint"}`. The plan stays `draft` (a
@@ -542,8 +545,24 @@ refused restore creates none), and `tenant.policy_plan_apply_refused` (plan id,
 risk, reason codes; never a before or after value) is committed before the 403.
 An allowlisted plan tightens by construction, so four eyes never holds it.
 Approving and rejecting stay with `plans.approve`, which no service account holds.
-The allowlist ships empty: until it is filled, a recommender proposes and never
-applies.
+Before the check, a paused tenant (`auto_remediation_paused`) answers 409
+`AUTO_REMEDIATION_PAUSED` and a tenant with 20 unattended changes in 24 hours 429
+`REMEDIATION_LIMIT`. The five entries and what happens after an applied change
+(the measurement window, the automatic undo, the undo route) are in
+[automatic fixes](FINDINGS.md#automatic-fixes); the worker's own fixes for `auto`
+findings pass the same check.
+
+Two decisions there:
+
+- **The automatic undo skips four eyes.** It is relaxing by classification, but it
+  returns each item to the exact state a person had in place, and the stale check
+  stops it when anything else changed since. Holding it for a second approver
+  would keep a change that measurably broke traffic in place while it waits. The
+  condition is narrow: source `auto` and a reason starting `remediation:`. An undo
+  a person asks for is an ordinary restore and four eyes holds it.
+- **One remediation per finding, ever.** A unique index on (tenant, finding) stops
+  the worker from retrying a fix that was skipped, set back or undone; that
+  finding only suggests from then on, and a person decides.
 
 ### Rule proposals
 

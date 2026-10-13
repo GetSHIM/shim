@@ -43,6 +43,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Keep matched requests and open one](#keep-matched-requests-and-open-one)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
+- [Let shim switch off unused deployments, and see what it did](#let-shim-switch-off-unused-deployments-and-see-what-it-did)
 - [Import LiteLLM spend logs](#import-litellm-spend-logs)
 - [Let shim suggest a fix](#let-shim-suggest-a-fix)
 - [Turn on answer checks and read the findings](#turn-on-answer-checks-and-read-the-findings)
@@ -294,6 +295,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 | `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |
 | `finding_modes` | `{}` | Per finding rule, `observe`, `suggest` or `auto`, up to the rule's highest mode ([let shim suggest a fix](#let-shim-suggest-a-fix)); a PATCH merges per rule. |
+| `auto_remediation_paused` | `false` | `true` stops new automatic and agent applies; windows keep closing and automatic undo keeps running ([let shim switch off unused deployments](#let-shim-switch-off-unused-deployments-and-see-what-it-did)). |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -1473,6 +1475,44 @@ curl http://localhost:8000/api/v1/management/findings/export \
 Notes: the reconciliation worker evaluates the rules every
 `FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
 thresholds and the OCSF mapping are in [findings](FINDINGS.md).
+
+## Let shim switch off unused deployments, and see what it did
+
+A deployment that served nothing in 30 days raises `gateway.unused_deployment`.
+Set that rule to `auto` and shim disables such deployments itself, watches
+refusals for a day, and turns a deployment back on when refusals for disabled
+deployments rise above the day before.
+
+1. Allow it. Moving a rule to `auto` loosens oversight, so under
+   [four eyes](POLICY_DECISIONS.md#four-eyes) a second administrator approves it.
+2. Read what shim did: each change is a row with its window and result, newest
+   first.
+3. Undo one yourself while it is `watching` or `kept`.
+4. Pause every automatic change at once; windows keep closing and automatic
+   undo keeps running.
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"finding_modes": {"gateway.unused_deployment": "auto"}}'
+
+curl 'http://localhost:8000/api/v1/management/remediations?status=watching' \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl -X POST http://localhost:8000/api/v1/management/remediations/$ID/undo \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason": "the nightly batch uses it"}'
+
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"auto_remediation_paused": true}'
+```
+
+Notes: the window closes on the first worker pass after its end plus
+`REMEDIATION_WINDOW_GRACE_SECONDS` (default 900). A finding gets one automatic
+fix, ever; after an undo it only suggests. Measuring needs refusal rows, so with
+audit mode `off` the fix is skipped (`proof_unavailable`). What may be automatic
+and what never is: [automatic fixes](FINDINGS.md#automatic-fixes).
 
 ## Import LiteLLM spend logs
 

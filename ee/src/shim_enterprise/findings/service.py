@@ -762,17 +762,66 @@ RULES: dict[str, RuleSpec] = {
 }
 
 
-def effective_mode(rule_id: str, modes: Mapping[str, Mode]) -> Mode:
-    mode = min(modes.get(rule_id, "observe"), RULES[rule_id].MAX_MODE, key=MODES.index)
-    # No executor applies anything yet (E56): auto works as suggest.
-    return "suggest" if mode == "auto" else mode
+AutoUnavailable = Literal[
+    "auto_paused", "proof_unavailable", "no_allowlist_entry", "remediation_restored"
+]
+
+
+@dataclass(frozen=True)
+class Ladder:
+    """A tenant's finding modes and what decides whether `auto` can run."""
+
+    modes: Mapping[str, Mode]
+    paused: bool = False
+    # Audit mode off: refusals leave no row, so a proof cannot be measured.
+    audit_off: bool = False
+    # Findings whose remediation was restored, skipped or undone: shim only suggests.
+    closed: frozenset[str] = frozenset()
+
+
+def _stored_mode(rule_id: str, ladder: Ladder) -> Mode:
+    return min(
+        ladder.modes.get(rule_id, "observe"), RULES[rule_id].MAX_MODE, key=MODES.index
+    )
+
+
+def auto_unavailable(
+    rule_id: str, ladder: Ladder, finding_id: str | None = None
+) -> AutoUnavailable | None:
+    """Why a rule set to auto works as suggest, or None when it is auto."""
+    if _stored_mode(rule_id, ladder) != "auto":
+        return None
+    # Here, not at the top: the policy package imports the findings routes.
+    from shim_enterprise.policy.allowlist import ALLOWLIST
+
+    kind = RULES[rule_id].ACTION_KIND
+    entries = [entry for entry in ALLOWLIST if kind and entry.action_kind == kind]
+    if not entries:
+        return "no_allowlist_entry"
+    if ladder.paused:
+        return "auto_paused"
+    if ladder.audit_off and all(entry.proof is not None for entry in entries):
+        return "proof_unavailable"
+    if finding_id is not None and finding_id in ladder.closed:
+        return "remediation_restored"
+    return None
+
+
+def effective_mode(rule_id: str, ladder: Ladder, finding_id: str | None = None) -> Mode:
+    mode = _stored_mode(rule_id, ladder)
+    if mode == "auto" and auto_unavailable(rule_id, ladder, finding_id) is not None:
+        return "suggest"
+    return mode
 
 
 def ladder_remediation(
-    rule_id: str, subject: Mapping[str, Any], modes: Mapping[str, Mode]
+    rule_id: str,
+    subject: Mapping[str, Any],
+    ladder: Ladder,
+    finding_id: str | None = None,
 ) -> dict[str, Any]:
     """The ladder fields a finding stores: built from its subject, never from content."""
-    spec, mode = RULES[rule_id], effective_mode(rule_id, modes)
+    spec, mode = RULES[rule_id], effective_mode(rule_id, ladder, finding_id)
     action = None
     if mode != "observe" and spec.ACTION_KIND == "deployment.disable":
         action = {
@@ -785,13 +834,20 @@ def ladder_remediation(
         "action": action,
         "reversible": spec.REVERSIBLE,
         "blast_radius": spec.BLAST_RADIUS,
-        "proof_after": None,
+        # What an automatic fix must not make worse, measured after it applies.
+        "proof_after": {
+            "metric": "refusals",
+            "window_hours": 24,
+            "baseline": None,
+            "threshold": None,
+            "comparison": "lte",
+        }
+        if mode == "auto"
+        else None,
     }
 
 
-async def apply_modes(
-    session: AsyncSession, tenant_id: UUID, modes: Mapping[str, Mode]
-) -> None:
+async def apply_modes(session: AsyncSession, tenant_id: UUID, ladder: Ladder) -> None:
     """Bring every open finding to the tenant's modes, fired in this pass or not."""
     for row in await session.scalars(
         select(Finding).where(
@@ -800,9 +856,13 @@ async def apply_modes(
             Finding.rule_id.in_(list(RULES)),
         )
     ):
-        ladder = ladder_remediation(row.rule_id, row.subject, modes)
-        if any(row.remediation.get(key) != value for key, value in ladder.items()):
-            row.remediation = {**row.remediation, **ladder}
+        ladder_fields = ladder_remediation(
+            row.rule_id, row.subject, ladder, str(row.id)
+        )
+        if any(
+            row.remediation.get(key) != value for key, value in ladder_fields.items()
+        ):
+            row.remediation = {**row.remediation, **ladder_fields}
 
 
 async def _tenant_settings(session: AsyncSession, tenant_id: UUID) -> GatewaySettings:
@@ -814,8 +874,31 @@ async def _tenant_settings(session: AsyncSession, tenant_id: UUID) -> GatewaySet
     return GatewaySettings() if stored is None else stored_settings(stored)
 
 
-async def finding_modes(session: AsyncSession, tenant_id: UUID) -> dict[str, Mode]:
-    return (await _tenant_settings(session, tenant_id)).finding_modes
+async def finding_ladder(
+    session: AsyncSession,
+    tenant_id: UUID,
+    settings: GatewaySettings | None = None,
+) -> Ladder:
+    # Here, not at the top: the policy package imports the findings routes.
+    from shim_enterprise.policy.allowlist import tenant_audit_mode
+    from shim_enterprise.policy.models import PolicyRemediation
+
+    current = settings or await _tenant_settings(session, tenant_id)
+    closed = await session.scalars(
+        select(PolicyRemediation.finding_id).where(
+            PolicyRemediation.organization_id == tenant_id,
+            PolicyRemediation.finding_id.is_not(None),
+            PolicyRemediation.status.in_(
+                ("restored", "restore_skipped", "skipped", "undone")
+            ),
+        )
+    )
+    return Ladder(
+        modes=current.finding_modes,
+        paused=current.auto_remediation_paused,
+        audit_off=await tenant_audit_mode(session, tenant_id) == "off",
+        closed=frozenset(str(finding_id) for finding_id in closed),
+    )
 
 
 # A retry storm's fix follows the class most of its repeats belong to.
@@ -2651,7 +2734,7 @@ async def evaluate_litellm(
     rule id with whether its finding was opened (True) or updated.
     """
     now = datetime.now(timezone.utc)
-    modes = await finding_modes(session, tenant_id)
+    modes = await finding_ladder(session, tenant_id)
     results = []
     for rule in (
         _litellm_unregistered_models,
@@ -2676,7 +2759,7 @@ async def upsert_detection(
     detection: Detection,
     *,
     now: datetime,
-    modes: Mapping[str, Mode],
+    modes: Ladder,
 ) -> bool:
     """One open finding per rule and subject; True when this opened it."""
     spec = RULES[detection.rule_id]
@@ -2709,7 +2792,16 @@ async def upsert_detection(
                     "last_seen_at": now,
                     "occurrences": Finding.occurrences + 1,
                     "summary": statement.excluded.summary,
-                    "evidence": statement.excluded.evidence,
+                    # A fresh detection replaces the evidence but keeps the policy
+                    # versions an automatic fix recorded.
+                    "evidence": statement.excluded.evidence.op("||")(
+                        func.jsonb_strip_nulls(
+                            func.jsonb_build_object(
+                                "policy_versions",
+                                Finding.evidence["policy_versions"],
+                            )
+                        )
+                    ),
                     "impact": statement.excluded.impact,
                     "rule_version": statement.excluded.rule_version,
                     "remediation": statement.excluded.remediation,
@@ -2753,7 +2845,7 @@ async def evaluate_organization(
     )
     detections: list[Detection] = []
     failed: list[str] = []
-    modes = settings.finding_modes
+    modes = await finding_ladder(session, tenant_id, settings)
 
     async def run(rule: Any, rule_ids: tuple[str, ...]) -> None:
         try:
@@ -2896,6 +2988,11 @@ def finding_from_row(row: Finding) -> FindingV1:
             evidence=[
                 FindingEvidence(kind="request", id=request_id)
                 for request_id in _request_evidence(row.evidence)
+            ]
+            # The policy versions an automatic fix wrote for this finding.
+            + [
+                FindingEvidence(kind="policy_version", id=str(version))
+                for version in row.evidence.get("policy_versions") or []
             ],
             measurements=values,
             impact=FindingImpact(

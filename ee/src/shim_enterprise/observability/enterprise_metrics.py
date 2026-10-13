@@ -78,3 +78,9 @@ RULE_PROPOSALS_TOTAL = Counter(
     "Rule proposals by outcome: proposed, needs_examples, invalid, limited, file_managed.",
     ("outcome",),
 )
+REMEDIATIONS_TOTAL = Counter(
+    "shim_remediations_total",
+    "Unattended changes by allowlist entry (none for a skipped finding) and phase: "
+    "applied, kept, restored, restore_skipped, skipped, undone.",
+    ("entry", "phase"),
+)

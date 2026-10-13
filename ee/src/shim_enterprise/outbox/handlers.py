@@ -33,6 +33,7 @@ INCIDENT_DEADLINE_APPROACHING = "incident.deadline_approaching"
 INCIDENT_DEADLINE_MISSED = "incident.deadline_missed"
 POLICY_APPROVAL_REQUESTED = "policy.approval_requested"
 APPROVAL_REQUESTED = "request.approval_requested"
+REMEDIATION_CHANGED = "remediation.changed"
 _DELIVERY_TIMEOUT_SECONDS = 10.0
 _COMPLIANCE_DELIVERY_PURPOSE = "compliance-forward-target-delivery"
 
@@ -77,6 +78,7 @@ def build_publisher() -> OutboxPublisher:
     publisher.register(INCIDENT_DEADLINE_MISSED, announce_incident_deadline)
     publisher.register(POLICY_APPROVAL_REQUESTED, announce_policy_approval)
     publisher.register(APPROVAL_REQUESTED, fan_out_request_approval)
+    publisher.register(REMEDIATION_CHANGED, announce_remediation)
     register_analytics_handlers(publisher)
     return publisher
 
@@ -246,6 +248,34 @@ async def announce_policy_approval(message: OutboxMessage) -> None:
         )
 
 
+async def announce_remediation(message: OutboxMessage) -> None:
+    from shim_enterprise.core.database import AsyncSessionLocal
+
+    payload = _tenant_payload(message, aggregate_type="remediation")
+    if payload.get("remediation_id") != message.aggregate_id:
+        raise ValueError("remediation notice identity mismatch")
+    phase = payload.get("phase")
+    async with AsyncSessionLocal.begin() as session:
+        await ComplianceForwarderService().send_tenant_alert(
+            session,
+            TenantId(message.organization_id),
+            # Ids and names only: the payload never carries a before or after value.
+            body={
+                "source": "shim",
+                "event_type": "tenant_policy",
+                "kind": "remediation_changed",
+                "remediation_id": message.aggregate_id,
+                "phase": phase,
+                "entries": payload.get("entries"),
+                "resources": payload.get("resources"),
+                "policy_version": payload.get("policy_version"),
+                "actor_type": payload.get("actor_type"),
+                "review": f"/api/v1/management/remediations/{message.aggregate_id}",
+            },
+            delivery_key=f"remediation:{message.aggregate_id}:{phase}",
+        )
+
+
 async def fan_out_request_approval(message: OutboxMessage) -> None:
     from shim_enterprise.core.database import AsyncSessionLocal
 
@@ -303,6 +333,7 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
             "evidence_monthly_ready": "shim monthly evidence file ready",
             "policy_approval_requested": "shim policy change waits for approval",
             "request_approval_requested": "shim request waiting for approval",
+            "remediation_changed": "shim automatic change update",
         }
         await _send_compliance_email(
             endpoint,
@@ -427,6 +458,13 @@ def _compliance_text(body: dict) -> str:
         return (
             f"shim policy plan {body.get('plan_id')} loosens {resources} and waits "
             f"for a second administrator: {body.get('review')}"
+        )
+    if body.get("kind") == "remediation_changed":
+        entries = ", ".join(map(str, body.get("entries") or []))
+        return (
+            f"shim automatic change {body.get('remediation_id')} ({entries}): "
+            f"{body.get('phase')}, policy version {body.get('policy_version')}: "
+            f"{body.get('review')}"
         )
     if body.get("kind") == "request_approval_requested":
         rules = ", ".join(map(str, body.get("rule_ids") or []))

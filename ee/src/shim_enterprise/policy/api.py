@@ -17,7 +17,12 @@ from shim_enterprise.api.enterprise_deps import require
 from shim_enterprise.config_file.models import file_managed
 from shim_enterprise.core.database import get_db
 from shim_enterprise.outbox.handlers import POLICY_APPROVAL_REQUESTED
-from shim_enterprise.policy.allowlist import check_plan
+from shim_enterprise.policy.allowlist import (
+    PlanCheck,
+    Unattended,
+    admit_unattended,
+    open_remediation,
+)
 from shim_enterprise.outbox.publisher import OutboxWriter
 from shim_enterprise.policy.models import PlanStatus, PolicyPlan, PolicyVersion
 from shim_enterprise.policy.plans import (
@@ -25,6 +30,7 @@ from shim_enterprise.policy.plans import (
     Risk,
     Source,
     State,
+    actor_id,
     actor_type,
     combine_risk,
     current_version,
@@ -34,6 +40,7 @@ from shim_enterprise.policy.plans import (
     record_managed_write,
     refuse_file_managed,
     state_at,
+    system_actor,
 )
 from shim_enterprise.policy.resources import REGISTRY, ManagedResource, PostCommit
 from shim_enterprise.tenants.audit import record_management_action as _audit
@@ -188,6 +195,9 @@ def _summary(row: PolicyVersion) -> dict[str, Any]:
 async def authorize_change(
     session: AsyncSession, actor: User, resource: ManagedResource
 ) -> None:
+    if actor.kind == "system":
+        # shim's executor applies only what the allowlist already admitted.
+        return
     granted = await user_permissions(session, actor)
     # An agent proposes anything; what it may apply is the allowlist, checked at apply.
     if resource.permission not in granted and not _allowlisted_only(granted):
@@ -207,7 +217,7 @@ def _allowlisted_only(granted: frozenset[str]) -> bool:
     return "plans.apply_allowlisted" in granted and "plans.apply" not in granted
 
 
-async def _refuse_unlisted(
+async def _admit_agent(
     session: AsyncSession,
     actor: User,
     organization_id: UUID,
@@ -216,35 +226,39 @@ async def _refuse_unlisted(
     risk: str,
     source: str,
     plan_id: UUID | None,
-) -> None:
-    """403 PLAN_NOT_ALLOWLISTED, audited and committed first, unless every change is allowlisted."""
-    refusals = await check_plan(
-        session, organization_id, changes, risk=risk, source=source
-    )
-    if not refusals:
-        return
-    await _audit(
-        session,
-        actor,
-        "tenant.policy_plan_apply_refused",
-        str(plan_id or organization_id),
-        details={
-            "plan_id": str(plan_id) if plan_id is not None else None,
-            "risk": risk,
-            "reasons": sorted({refusal.reason for refusal in refusals}),
-        },
-    )
-    await session.commit()
-    raise HTTPException(
-        status_code=403,
-        detail={
-            "code": "PLAN_NOT_ALLOWLISTED",
-            "changes": [asdict(refusal) for refusal in refusals],
-            "message": "This plan needs a person to apply it.",
-            "hint": "Ask an administrator to apply it, or create a plan whose "
-            "changes only tighten or cheapen.",
-        },
-    )
+) -> PlanCheck:
+    """The unattended gate for an agent; a refusal is audited and committed first."""
+    try:
+        return await admit_unattended(
+            session, organization_id, changes, risk=risk, source=source
+        )
+    except Unattended as refused:
+        if refused.code != "PLAN_NOT_ALLOWLISTED":
+            raise HTTPException(
+                status_code=refused.status,
+                detail={"code": refused.code, "hint": refused.hint},
+            ) from None
+        await _audit(
+            session,
+            actor,
+            "tenant.policy_plan_apply_refused",
+            str(plan_id or organization_id),
+            details={
+                "plan_id": str(plan_id) if plan_id is not None else None,
+                "risk": risk,
+                "reasons": sorted({refusal.reason for refusal in refused.refusals}),
+            },
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "PLAN_NOT_ALLOWLISTED",
+                "changes": [asdict(refusal) for refusal in refused.refusals],
+                "message": "This plan needs a person to apply it.",
+                "hint": refused.hint,
+            },
+        ) from None
 
 
 async def _require_state_reads(session: AsyncSession, user: User) -> None:
@@ -303,7 +317,7 @@ async def new_plan(
     organization_id: UUID,
     changes: list[dict[str, Any]],
     *,
-    source: Literal["api", "restore", "import", "file", "mcp", "proposal"],
+    source: Literal["api", "restore", "import", "file", "mcp", "proposal", "auto"],
     reason: str | None,
     context: dict[str, Any] | None = None,
 ) -> PolicyPlan:
@@ -320,7 +334,7 @@ async def new_plan(
         source=source,
         reason=reason,
         context=context or {},
-        created_by=str(actor.id),
+        created_by=actor_id(actor),
         created_by_actor_type=actor_type(actor),
         expires_at=datetime.now(timezone.utc) + _PLAN_LIFETIME,
     )
@@ -341,9 +355,20 @@ async def new_plan(
 
 
 async def _apply_plan(
-    session: AsyncSession, actor: User, plan: PolicyPlan, *, status: str = "draft"
+    session: AsyncSession,
+    actor: User,
+    plan: PolicyPlan,
+    *,
+    status: str = "draft",
+    admitted: PlanCheck | None = None,
+    finding_id: UUID | None = None,
 ) -> list[PostCommit] | None:
-    """The cleanups to run after commit, or None when the plan went for approval."""
+    """The cleanups to run after commit, or None when the plan went for approval.
+
+    `admitted` is the executor's own pass through the unattended gate; an agent
+    limited to allowlisted plans passes it here. Either way the applied plan is
+    watched as a remediation.
+    """
     organization_id = plan.organization_id
     if plan.status != status:
         raise HTTPException(
@@ -363,17 +388,18 @@ async def _apply_plan(
         raise HTTPException(
             status_code=409, detail={"code": "PLAN_STALE", "items": stale}
         )
-    if _allowlisted_only(await user_permissions(session, actor)):
-        # Allowlisted plans tighten by construction, so four eyes never holds one.
-        await _refuse_unlisted(
-            session,
-            actor,
-            organization_id,
-            plan.changes,
-            risk=plan.risk,
-            source=plan.source,
-            plan_id=plan.id,
-        )
+    if admitted is None and actor.kind != "system":
+        if _allowlisted_only(await user_permissions(session, actor)):
+            # Allowlisted plans tighten by construction, so four eyes never holds one.
+            admitted = await _admit_agent(
+                session,
+                actor,
+                organization_id,
+                plan.changes,
+                risk=plan.risk,
+                source=plan.source,
+                plan_id=plan.id,
+            )
     if plan.source == "proposal" and actor.kind != "human":
         # Rules an agent proposed are turned on by a person, whatever the account's role.
         raise HTTPException(
@@ -384,9 +410,15 @@ async def _apply_plan(
                 "hint": "An administrator applies rule proposals from the plan page.",
             },
         )
+    # An automatic undo returns items to the state a person set, and the stale check
+    # above stops it when anything else changed; four eyes does not hold it.
+    automatic_undo = plan.source == "auto" and (plan.reason or "").startswith(
+        "remediation:"
+    )
     if (
         plan.status == "draft"
         and plan.risk == "relaxing"
+        and not automatic_undo
         and await four_eyes_on(session, organization_id)
     ):
         await _submit(session, actor, plan)
@@ -401,10 +433,13 @@ async def _apply_plan(
         plan_id=plan.id,
         reason=plan.reason,
     ) as version:
+        # Under the allowlist the entry is the authority; resources check the actor
+        # they get, so they act as shim while the version names who applied.
+        authority = actor if admitted is None else system_actor(organization_id)
         for resource, item, before, after in changes:
             cleanup = await resource.apply(
                 session,
-                actor,
+                authority,
                 organization_id,
                 item,
                 before,
@@ -414,7 +449,7 @@ async def _apply_plan(
             if cleanup is not None:
                 cleanups.append(cleanup)
     plan.status = "applied"
-    plan.applied_by = str(actor.id)
+    plan.applied_by = actor_id(actor)
     plan.applied_at = datetime.now(timezone.utc)
     plan.applied_version = version
     await _audit(
@@ -429,6 +464,8 @@ async def _apply_plan(
             "policy_version": version,
         },
     )
+    if admitted is not None:
+        await open_remediation(session, actor, plan, admitted, finding_id=finding_id)
     return cleanups
 
 
@@ -503,6 +540,13 @@ async def create_plan(
     if len(await request.body()) > _MAX_PLAN_BYTES:
         raise HTTPException(status_code=413, detail="A plan body is at most 256 KB")
     organization_id = _tenant(user)
+    # An agent's change is validated as shim would apply it; applying it is the
+    # allowlist's decision, or a person's.
+    authority = (
+        system_actor(organization_id)
+        if _allowlisted_only(await user_permissions(session, user))
+        else user
+    )
     changes, seen = [], set()
     for index, change in enumerate(payload.changes):
         resource = REGISTRY.get(change.resource)
@@ -559,7 +603,7 @@ async def create_plan(
                 None
                 if change.delete
                 else await resource.validate(
-                    session, user, change.item, before, change.set or {}
+                    session, authority, change.item, before, change.set or {}
                 )
             )
         except HTTPException as exc:
@@ -848,6 +892,11 @@ async def restore_version(
     not_restored: list[Unrestored] = []
     approximated: list[Unrestored] = []
     managed = await file_managed(session, organization_id)
+    authority = (
+        system_actor(organization_id)
+        if _allowlisted_only(await user_permissions(session, user))
+        else user
+    )
     for name, items in targets.items():
         resource = REGISTRY.get(name)
         if resource is None:
@@ -906,7 +955,7 @@ async def restore_version(
                     # What the item's own route would refuse is skipped, not fatal.
                     await resource.validate(
                         session,
-                        user,
+                        authority,
                         item,
                         now,
                         {
@@ -934,7 +983,7 @@ async def restore_version(
     cleanups: list[PostCommit] | None = []
     if changes and _allowlisted_only(await user_permissions(session, user)):
         # A refused restore creates no plan.
-        await _refuse_unlisted(
+        await _admit_agent(
             session,
             user,
             organization_id,

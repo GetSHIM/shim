@@ -23,9 +23,11 @@ from shim_enterprise.findings.service import (
     RULE_VERSIONS,
     STATUS_IDS,
     STATUS_RESOLVED,
+    AutoUnavailable,
+    auto_unavailable,
     effective_mode,
     finding_from_row,
-    finding_modes,
+    finding_ladder,
     ocsf_detection_finding,
     rule_doc,
 )
@@ -171,7 +173,7 @@ class FindingRuleView(BaseModel):
     action_kind: str | None
     mode: FindingMode
     effective_mode: FindingMode
-    unavailable_reason: Literal["auto_executor_not_installed"] | None
+    unavailable_reason: AutoUnavailable | None
     open_findings: int
 
 
@@ -182,7 +184,7 @@ async def finding_rules(
     session: AsyncSession = Depends(get_db),
 ) -> list[FindingRuleView]:
     tenant_id = _tenant_id(user)
-    modes = await finding_modes(session, tenant_id)
+    ladder = await finding_ladder(session, tenant_id)
     open_counts = {
         rule_id: count
         for rule_id, count in await session.execute(
@@ -200,11 +202,9 @@ async def finding_rules(
             rule_version=RULE_VERSIONS.get(rule_id, RULE_VERSION),
             max_mode=spec.MAX_MODE,
             action_kind=spec.ACTION_KIND,
-            mode=modes.get(rule_id, "observe"),
-            effective_mode=effective_mode(rule_id, modes),
-            unavailable_reason="auto_executor_not_installed"
-            if modes.get(rule_id) == "auto"
-            else None,
+            mode=ladder.modes.get(rule_id, "observe"),
+            effective_mode=effective_mode(rule_id, ladder),
+            unavailable_reason=auto_unavailable(rule_id, ladder),
             open_findings=open_counts.get(rule_id, 0),
         )
         for rule_id, spec in sorted(FINDING_RULES.items())

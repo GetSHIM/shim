@@ -126,6 +126,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "four_eyes": "off",
             "finding_modes": {},
             "request_archive": {"enabled": False, "retention_days": 90},
+            "auto_remediation_paused": False,
         },
         "revision": 0,
         "updated_at": None,

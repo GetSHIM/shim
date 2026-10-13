@@ -16,6 +16,7 @@ from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
 from shim_enterprise.findings.service import evaluate_findings
 from shim_enterprise.gateway.pipeline.reconciliation import ScanReconciler
+from shim_enterprise.policy.remediation import run_remediations
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing, start_span
 from shim_enterprise.workers.readiness import write_heartbeat
@@ -110,6 +111,9 @@ class ReconciliationWorker:
                 findings_due = clock + settings.FINDINGS_EVALUATION_INTERVAL_SECONDS
                 try:
                     await evaluate_findings(
+                        self.session_factory, now=datetime.now(timezone.utc)
+                    )
+                    await run_remediations(
                         self.session_factory, now=datetime.now(timezone.utc)
                     )
                 except asyncio.CancelledError:

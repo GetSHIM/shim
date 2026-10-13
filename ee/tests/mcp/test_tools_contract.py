@@ -51,7 +51,7 @@ def _route(tool) -> APIRoute:
 def test_tool_names_are_unique_and_tools_never_reach_the_closed_areas() -> None:
     names = [tool.name for tool in TOOLS]
 
-    assert len(names) == len(set(names)) == 17
+    assert len(names) == len(set(names)) == 18
     assert all(re.fullmatch(r"^[a-z][a-z0-9_]{1,47}$", name) for name in names)
     assert not [tool.path for tool in TOOLS if _NEVER.search(tool.path)]
     # No tool changes a finding's status or writes a setting directly.

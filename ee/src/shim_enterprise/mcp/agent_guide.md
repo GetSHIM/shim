@@ -11,6 +11,8 @@ only when every part of it tightens or cheapens protection.
 - `explain_finding`: the finding plus its rule's facts and documentation. Explain
   from these facts; quote the finding's evidence ids.
 - `list_finding_rules`: every rule, its mode and how many findings are open.
+- `list_remediations`: changes applied without a person (by shim or by an agent),
+  each with its measurement window and whether it was kept or set back.
 - `list_requests`: request metadata (never prompt or answer text).
 - `get_rules`, `get_privacy_settings`, `get_gateway_settings`, `list_deployments`:
   the current policy.

@@ -59,9 +59,30 @@ def combine_risk(risks: Iterable[Risk]) -> Risk:
 
 
 def actor_type(actor: User | None) -> Literal["user_jwt", "service", "system"]:
-    if actor is None:
+    if actor is None or actor.kind == "system":
         return "system"
     return "service" if actor.kind == "service" else "user_jwt"
+
+
+def actor_id(actor: User | None) -> str | None:
+    return None if actor is None or actor.kind == "system" else str(actor.id)
+
+
+def system_actor(organization_id: UUID) -> User:
+    """shim itself, applying an allowlisted change: never stored, holds an admin's rights.
+
+    Resources check the actor they are given; under the allowlist that check is
+    the allowlist, so they get this actor while the version names who applied.
+    """
+    return User(
+        id=None,
+        organization_id=organization_id,
+        email="system@shim.internal",
+        role="admin",
+        kind="system",
+        is_active=True,
+        is_verified=True,
+    )
 
 
 def version_detail(version: int | None) -> dict[str, int]:
@@ -335,7 +356,7 @@ async def record_managed_write(
                 resource.classify(before, after)
                 for resource, _, before, after in changed
             ),
-            created_by=str(actor.id) if actor is not None else None,
+            created_by=actor_id(actor),
             actor_type=actor_type(actor),
             reason=reason,
         )

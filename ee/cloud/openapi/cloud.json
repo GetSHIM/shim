@@ -5371,7 +5371,12 @@
           "unavailable_reason": {
             "anyOf": [
               {
-                "const": "auto_executor_not_installed",
+                "enum": [
+                  "auto_paused",
+                  "proof_unavailable",
+                  "no_allowlist_entry",
+                  "remediation_restored"
+                ],
                 "type": "string"
               },
               {
@@ -6147,6 +6152,11 @@
               "repeats": 5
             }
           },
+          "auto_remediation_paused": {
+            "default": false,
+            "title": "Auto Remediation Paused",
+            "type": "boolean"
+          },
           "finding_modes": {
             "additionalProperties": {
               "enum": [
@@ -6248,6 +6258,17 @@
                 "type": "null"
               }
             ]
+          },
+          "auto_remediation_paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Remediation Paused"
           },
           "finding_modes": {
             "anyOf": [
@@ -12611,6 +12632,179 @@
         "title": "RecordSetView",
         "type": "object"
       },
+      "RemediationView": {
+        "properties": {
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_type": {
+            "enum": [
+              "system",
+              "service"
+            ],
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "applied_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Version"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "description": "Per change: resource, item, entry, before, after and proof.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "restore_plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Plan Id"
+          },
+          "restored_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restored Version"
+          },
+          "result": {
+            "additionalProperties": true,
+            "description": "Per measured item its baseline and measured refusals; the reasons of a skipped row; the reason of a restore_skipped one.",
+            "title": "Result",
+            "type": "object"
+          },
+          "status": {
+            "enum": [
+              "watching",
+              "kept",
+              "restored",
+              "restore_skipped",
+              "skipped",
+              "undone"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "window_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window End"
+          },
+          "window_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Start"
+          }
+        },
+        "required": [
+          "id",
+          "finding_id",
+          "plan_id",
+          "applied_version",
+          "actor_type",
+          "actor_id",
+          "items",
+          "status",
+          "window_start",
+          "window_end",
+          "result",
+          "restore_plan_id",
+          "restored_version",
+          "created_at",
+          "closed_at"
+        ],
+        "title": "RemediationView",
+        "type": "object"
+      },
       "ReplicatedVoiceConfig": {
         "additionalProperties": false,
         "description": "The configuration for the replicated voice to use.",
@@ -16776,6 +16970,25 @@
         ],
         "title": "Type",
         "type": "string"
+      },
+      "UndoInput": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "UndoInput",
+        "type": "object"
       },
       "Unrestored": {
         "properties": {
@@ -24607,6 +24820,212 @@
         "summary": "Put Record Set Chunk",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/remediations": {
+      "get": {
+        "operationId": "list_remediations_api_v1_management_remediations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "watching",
+                    "kept",
+                    "restored",
+                    "restore_skipped",
+                    "skipped",
+                    "undone"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Rows created before this time; the next page.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows created before this time; the next page.",
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RemediationView"
+                  },
+                  "title": "Response List Remediations Api V1 Management Remediations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Remediations",
+        "tags": [
+          "remediations"
+        ]
+      }
+    },
+    "/api/v1/management/remediations/{remediation_id}": {
+      "get": {
+        "operationId": "get_remediation_api_v1_management_remediations__remediation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "remediation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Remediation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemediationView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Remediation",
+        "tags": [
+          "remediations"
+        ]
+      }
+    },
+    "/api/v1/management/remediations/{remediation_id}/undo": {
+      "post": {
+        "operationId": "undo_remediation_api_v1_management_remediations__remediation_id__undo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "remediation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Remediation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemediationView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "description": "The undo waits for a second approver."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Undo Remediation",
+        "tags": [
+          "remediations"
         ]
       }
     },

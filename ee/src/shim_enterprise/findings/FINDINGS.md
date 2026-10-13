@@ -95,13 +95,19 @@ rule's action:
   [policy plan](POLICY_DECISIONS.md#policy-versions-and-plans) with
   `POST /api/v1/management/findings/{id}/plan`. Nothing changes until someone
   applies the plan, and a restore undoes it.
-- `auto`: shim may apply the action itself. Only an action that tightens or
+- `auto`: shim applies the action itself and watches it
+  ([automatic fixes](#automatic-fixes)). Only an action that tightens or
   cheapens and, by the rule's own condition, touches no request that would
   otherwise be served may be `auto`; today that is disabling a deployment that
-  served nothing in 30 days. No executor is installed yet, so `auto` is stored
-  and shown and works as `suggest`: the finding says `mode: "suggest"`, and the
-  rules read says `effective_mode: "suggest"` with `unavailable_reason:
-  "auto_executor_not_installed"`.
+  served nothing in 30 days. While `auto` cannot run it works as `suggest`: the
+  finding says `mode: "suggest"`, and the rules read says `effective_mode:
+  "suggest"` with an `unavailable_reason`: `auto_paused` (the tenant paused
+  automatic changes), `proof_unavailable` (audit mode `off`, so refusals leave no
+  row to measure), `no_allowlist_entry` (no allowlist entry has the rule's action
+  kind) or, on one finding, `remediation_restored` (its fix was set back,
+  skipped or undone). An effective `auto` finding carries `remediation.proof_after`:
+  `{"metric": "refusals", "window_hours": 24, "baseline": null, "threshold":
+  null, "comparison": "lte"}`.
 
 Each rule declares its highest mode (`max_mode`) and its action; a rule whose fix
 is in the client, the prompt or the provider stays `observe`. The tenant sets
@@ -130,6 +136,80 @@ action this build does not know (another kind, no deployment id) answers 409.
 `deployment.disable` is `{"kind": "deployment.disable", "params":
 {"deployment_id": ...}}`, built from the finding's subject; it is reversible and
 its blast radius is the deployment.
+
+## Automatic fixes
+
+shim applies a change by itself only when the change tightens or cheapens,
+touches one item, changes nothing in a request's content, and is undone by
+setting the item back. The allowlist (`shim_enterprise.policy.allowlist`) holds
+exactly these entries:
+
+| Entry | Resource and fields | Accepted direction | Impact bound | Proof |
+| --- | --- | --- | --- | --- |
+| `deployment.disable` | `deployments.enabled` | true to false | 0 requests in 7 days | refusals of `deployment.registry`, tenant-wide, 24 h |
+| `api_key.narrow_models` | `api_keys.allowed_models` | null to a list, or a list to a strict non-empty subset | 0 | refusals of `access.key_models` and `api_key.access` for that key, 24 h |
+| `team.lower_limit` | `teams.daily_request_limit`, `monthly_request_limit`, `monthly_token_limit` | each changed limit lowered, or null to a number | 0 | refusals of `quota.requests_and_tokens` for the team's keys, 24 h |
+| `budget.lower` | `budgets.limit_usd`, `limit_tokens`, `enabled` | each changed limit lowered (never to or from null), `enabled` false to true | none: budgets only notify | none |
+| `privacy.start_counting` | `privacy.entity_actions` | every changed type from `off` to `monitor` | none: counting leaves content untouched | none |
+
+Never automatic: anything that masks or blocks content, any rule change (route
+rules included, whatever their `match.on`), any gateway setting, creates,
+deletes and loosening moves. An unattended plan holds at most 5 changes, and a
+tenant at most 20 unattended changes in 24 hours (skipped ones not counted;
+above it 429 `REMEDIATION_LIMIT`).
+
+**Who applies.** The reconciliation worker, right after each findings pass, as
+the system actor (`actor: "system"`, versions with source `auto` and actor type
+`system`): per organization, at most 5 open findings whose rule's stored mode is
+`auto`, oldest first, that have no remediation yet. And an agent holding
+`plans.apply_allowlisted` without `plans.apply` (the
+[recommender](MCP.md#what-a-recommender-can-apply)) when it applies a plan: its
+change is watched the same way, with `actor_type: "service"`. Every refusal
+(not on the list, wrong direction, impact above the bound, `proof_unavailable`
+when the tenant's audit mode is `off`, a stale item, a file-managed resource)
+writes a `skipped` row with the reasons and changes nothing. A finding gets one
+remediation, ever: after a skip or an undo shim only suggests it.
+
+**The window.** An applied change with a proof is `watching` for the largest
+proof window (24 hours). The window is closed on the first pass after
+`window_end + REMEDIATION_WINDOW_GRACE_SECONDS` (operator setting, default 900,
+0 to 3,600: the allowance for outbox lag before refusals reach the audit log).
+For each item it counts audit-log requests refused with one of the proof's
+verdicts in the window (`measured`) and in the window before it (`baseline`);
+a key or team proof counts only that key's or team's keys. Every
+`measured <= baseline`: `kept`, and the finding is resolved by `system`. Any
+rise: one plan sets every item back to its `before` in the fields the change
+moved, applied as the system actor even under four eyes (it returns each item to
+a state a person set, and the stale check stops it when anything else changed);
+the row is `restored` and the finding goes back to `new`. When someone changed an
+item since, nothing is written: `restore_skipped` with reason `item_changed`, and
+a notification so a person decides. A measurement that runs out of its 10-second
+statement timeout leaves the row `watching` for the next pass. A change with no
+proof is `kept` at once.
+
+**Seeing and undoing.** `GET /api/v1/management/remediations` (`status`,
+`limit` 1 to 100, `before`, newest first) and `GET .../remediations/{id}`
+(`findings.read` or `audit.read`) show each row's items (resource, item, entry,
+before, after, proof), status, window, result, plans, versions and actor.
+`POST .../remediations/{id}/undo` (`plans.apply`, people only: a service account
+gets 403 `UNDO_NEEDS_HUMAN`), body `{"reason"}`, sets a `watching` or `kept`
+row's items back through a plan with source `restore`, applied as the caller,
+and marks the row `undone`. Under four eyes the undo answers 202 with the plan
+waiting for a second approver and the row unchanged. Any other status is 409
+`REMEDIATION_STATE_CONFLICT`; an item changed since is 409 `PLAN_STALE`.
+
+**The kill switch.** `PATCH /gateway-settings {"auto_remediation_paused": true}`
+stops new automatic and agent applies (409 `AUTO_REMEDIATION_PAUSED`); windows
+keep closing and automatic undo keeps running. Pausing is tightening, resuming is
+relaxing.
+
+**Notifications.** Every phase (`applied`, `kept`, `restored`,
+`restore_skipped`, `undone`) is one outbox event `remediation.changed` that
+reaches every enabled forward target (`kind: "remediation_changed"`, ids, entry
+ids, resources, policy version and actor type, never a before or after value),
+and one audit action `tenant.remediation_<phase>` (`skipped` included). The
+counter `shim_remediations_total{entry, phase}` counts them; a skipped finding
+counts under entry `none`.
 
 ## API
 

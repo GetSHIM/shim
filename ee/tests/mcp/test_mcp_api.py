@@ -19,6 +19,7 @@ from shim_enterprise.core.database import get_db
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.mcp import api as mcp_api
 from shim_enterprise.mcp.tools import TOOLS
+from shim_enterprise.policy import allowlist
 from shim_enterprise.tenants.models import (
     ModelDeployment,
     OrganizationGatewaySettings,
@@ -250,7 +251,7 @@ async def test_tools_are_listed_by_the_callers_permissions(mcp_app, accounts) ->
     every = {tool.name for tool in TOOLS}
     assert listed["recommender"] == listed["admin"] == every
     assert listed["auditor"] == every - WRITE_TOOLS
-    assert len(listed["auditor"]) == 12
+    assert len(listed["auditor"]) == 13
     assert modern.json()["result"]["cacheScope"] == "private"
     tool = next(
         t for t in modern.json()["result"]["tools"] if t["name"] == "apply_plan"
@@ -324,6 +325,12 @@ async def test_every_tool_answers_what_its_route_answers(
             {},
         ),
         "list_finding_rules": ({}, "GET", "/findings/rules", {}),
+        "list_remediations": (
+            {},
+            "GET",
+            "/remediations",
+            {"params": {"limit": 20}},
+        ),
         "list_requests": (
             {},
             "GET",
@@ -373,8 +380,10 @@ async def test_every_tool_answers_what_its_route_answers(
 
 @pytest.mark.asyncio
 async def test_route_refusals_reach_the_agent_with_their_codes(
-    mcp_app, accounts, db, test_api_key
+    mcp_app, accounts, db, test_api_key, monkeypatch
 ) -> None:
+    # The refusal shape, whatever the allowlist holds.
+    monkeypatch.setattr(allowlist, "ALLOWLIST", ())
     agent = accounts["recommender"]
     alias = await _deployment(db, test_api_key, age=timedelta(days=1))
     deployment_id = str(

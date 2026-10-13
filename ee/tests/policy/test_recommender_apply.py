@@ -16,7 +16,7 @@ from shim_enterprise.core.database import get_db
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.policy import allowlist
 from shim_enterprise.policy.allowlist import AllowlistEntry
-from shim_enterprise.policy.models import PolicyPlan, PolicyVersion
+from shim_enterprise.policy.models import PolicyPlan, PolicyRemediation, PolicyVersion
 from shim_enterprise.tenants.models import Organization, User
 
 POLICY = "/api/v1/management/policy"
@@ -125,8 +125,9 @@ async def _count(db, model, organization_id: UUID) -> int:
 
 @pytest.mark.asyncio
 async def test_a_recommender_proposes_but_the_empty_allowlist_applies_nothing(
-    db,
+    db, monkeypatch
 ) -> None:
+    monkeypatch.setattr(allowlist, "ALLOWLIST", ())
     users = await _tenant(db)
     agent, owner = users["agent"], users["owner"]
     tenant = owner.organization_id
@@ -319,3 +320,93 @@ async def test_only_a_person_applies_a_rule_proposal(db) -> None:
     assert [(rule["id"], rule["state"]) for rule in rules.json()["rules"]] == [
         ("project_atlas", "monitor")
     ]
+
+
+async def _counting_plan(db, users) -> str:
+    """The owner turns e-mail detection off; the agent plans to count it again."""
+    response = await _call(
+        db,
+        users["owner"],
+        "PUT",
+        PII,
+        json={"entity_actions": {"EMAIL_ADDRESS": "off"}},
+    )
+    assert response.status_code == 200, response.text
+    count = {
+        "changes": [
+            {
+                "resource": "privacy",
+                "item": "_",
+                "set": {"entity_actions": {"EMAIL_ADDRESS": "monitor"}},
+            }
+        ]
+    }
+    created = await _call(db, users["agent"], "POST", f"{POLICY}/plans", json=count)
+    assert created.status_code == 201, created.text
+    return created.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_apply_is_watched_paused_and_limited_like_shims_own(
+    db,
+) -> None:
+    users = await _tenant(db)
+    agent = users["agent"]
+    tenant = agent.organization_id
+
+    applied = await _call(
+        db, agent, "POST", f"{POLICY}/plans/{await _counting_plan(db, users)}/apply"
+    )
+    [row] = await db.scalars(
+        select(PolicyRemediation).where(PolicyRemediation.organization_id == tenant)
+    )
+    paused = await _call(
+        db,
+        users["owner"],
+        "PATCH",
+        "/api/v1/management/gateway-settings",
+        json={"auto_remediation_paused": True},
+    )
+    assert paused.status_code == 200, paused.text
+    while_paused = await _call(
+        db, agent, "POST", f"{POLICY}/plans/{await _counting_plan(db, users)}/apply"
+    )
+    await _call(
+        db,
+        users["owner"],
+        "PATCH",
+        "/api/v1/management/gateway-settings",
+        json={"auto_remediation_paused": False},
+    )
+    db.add_all(
+        PolicyRemediation(
+            organization_id=tenant, actor_type="system", items=[], status="kept"
+        )
+        for _ in range(19)
+    )
+    await db.flush()
+    over_limit = await _call(
+        db, agent, "POST", f"{POLICY}/plans/{await _counting_plan(db, users)}/apply"
+    )
+
+    assert applied.status_code == 200, applied.text
+    # Counting has nothing to measure: kept at once.
+    assert (row.status, row.actor_type, row.actor_id, row.window_end) == (
+        "kept",
+        "service",
+        str(agent.id),
+        None,
+    )
+    assert [item["entry"] for item in row.items] == ["privacy.start_counting"]
+    assert (while_paused.status_code, while_paused.json()["detail"]["code"]) == (
+        409,
+        "AUTO_REMEDIATION_PAUSED",
+    )
+    assert (over_limit.status_code, over_limit.json()["detail"]["code"]) == (
+        429,
+        "REMEDIATION_LIMIT",
+    )
+    assert [
+        audit["entries"]
+        for audit in await _audits(db, tenant, "tenant.remediation_kept")
+    ] == [["privacy.start_counting"]]

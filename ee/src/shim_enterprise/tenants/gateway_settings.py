@@ -108,6 +108,8 @@ class GatewaySettings(BaseModel):
     # Per finding rule, how far shim may go; a rule left out observes.
     finding_modes: dict[str, FindingMode] = {}
     request_archive: RequestArchiveSettings = RequestArchiveSettings()
+    # Stops new automatic and agent applies; automatic undo keeps running.
+    auto_remediation_paused: bool = False
 
     @field_validator("response_analysis")
     @classmethod
@@ -133,6 +135,7 @@ class GatewaySettingsPatch(BaseModel):
     four_eyes: FourEyes | None = None
     finding_modes: dict[str, FindingMode] | None = None
     request_archive: RequestArchivePatch | None = None
+    auto_remediation_paused: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -306,6 +309,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # A key's identical in-flight requests share one answer after each passes its own
     # limits and privacy; an answer never crosses keys.
     "inflight_sharing_api_key_ids": neutral,
+    # Pausing stops unattended changes; resuming lets them run again.
+    "auto_remediation_paused": toward(False),
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

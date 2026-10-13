@@ -649,6 +649,26 @@
   "service_recommender": "404",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/remediations": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: findings.read or audit.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "service_recommender": "200",
+  "team_admin": "403 Permission required: findings.read or audit.read"
+ },
+ "GET /api/v1/management/remediations/{remediation_id}": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Permission required: findings.read or audit.read",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "service_recommender": "404",
+  "team_admin": "403 Permission required: findings.read or audit.read"
+ },
  "GET /api/v1/management/request-archive/openings": {
   "admin": "200",
   "auditor": "200",
@@ -1288,6 +1308,16 @@
   "service_auditor": "403 Auditor access is read-only",
   "service_recommender": "403 Organization admin required",
   "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/management/remediations/{remediation_id}/undo": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.apply",
+  "owner": "404",
+  "service_admin": "403 {\"code\": \"UNDO_NEEDS_HUMAN\", \"message\": \"A person undoes an automatic change.\"}",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Permission required: plans.apply",
+  "team_admin": "403 Permission required: plans.apply"
  },
  "POST /api/v1/management/roles": {
   "admin": "403 Permission required: roles.manage",

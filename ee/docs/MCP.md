@@ -75,6 +75,7 @@ connect; what it can do is decided by the routes.
 | `get_finding` | `GET /findings/{finding_id}` | `findings.read` |
 | `explain_finding` | `GET /findings/{finding_id}/explain` | `findings.read` |
 | `list_finding_rules` | `GET /findings/rules` | `findings.read` |
+| `list_remediations` | `GET /remediations` (`status`, `limit` at most 50, `before`) | `findings.read`, `audit.read` |
 | `plan_from_finding` | `POST /findings/{finding_id}/plan` | `plans.create` |
 | `list_requests` | `GET /requests` (`start`, `end`, `status`, `model`, `request_id`, `tag`, `limit` at most 50, `offset`) | `usage.read` |
 | `get_rules` | `GET /rules` | `rules.read` |
@@ -90,7 +91,7 @@ connect; what it can do is decided by the routes.
 | `propose_rules` | `POST /rules/proposals` (`body`: `sentence`, `language`, `rules` with `examples`) | `plans.create` |
 
 Routes are under `/api/v1/management`. `tools/list` shows a tool when the caller
-holds one of its permissions (an auditor key sees the twelve read tools); listing
+holds one of its permissions (an auditor key sees the thirteen read tools); listing
 is a convenience, the route decides. `apply_plan` and `restore_version` carry
 `destructiveHint`. A plan created through MCP by a service account has `source:
 "mcp"`: the server sends `X-Shim-Channel: mcp`, a label that grants nothing and is
@@ -108,6 +109,18 @@ over 256 KB is `RESULT_TOO_LARGE` (ask with narrower filters).
 Never a tool: stored request content, provider secrets, gateway keys, members,
 invitations, roles, service accounts, configuration-file mode and signing keys,
 exports, and finding status changes.
+
+## What a recommender can apply
+
+A `recommender` account applies a plan only when every change is on the
+allowlist: disabling a deployment, narrowing a key's model list, lowering a
+team's limits or a budget, and moving a detection type from `off` to `monitor`
+([automatic fixes](FINDINGS.md#automatic-fixes)). Anything else is
+`PLAN_NOT_ALLOWLISTED` with a reason per change. Its applied changes are watched
+like shim's own: `list_remediations` shows them with `actor_type: "service"`, a
+rise in refusals inside the window sets them back, and only a person undoes one.
+A paused tenant answers 409 `AUTO_REMEDIATION_PAUSED`, 20 unattended changes in
+24 hours 429 `REMEDIATION_LIMIT`.
 
 ## Resources and prompts
 
