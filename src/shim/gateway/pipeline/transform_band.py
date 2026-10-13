@@ -34,6 +34,8 @@ def compact_json(text: str) -> str:
     if (
         not JSON_COMPACTION_MIN_CHARS <= len(text) <= JSON_COMPACTION_MAX_CHARS
         or text[0] not in "{["
+        # Already compact: nothing to remove, so no parse.
+        or not any(space in text for space in " \t\r\n")
     ):
         return text
     try:
@@ -59,17 +61,23 @@ def _list(value: object) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _texts(items: list[Any], kind: str, fn: Callable[[str], str]) -> list[Any]:
-    changed = [
-        {**item, "text": text}
-        if isinstance(item, Mapping)
-        and item.get("type") == kind
-        and isinstance(item.get("text"), str)
-        and (text := fn(item["text"])) is not item["text"]
-        else item
-        for item in items
-    ]
+def _rebuilt(items: list[Any], change: Callable[[Any], Any]) -> list[Any]:
+    changed = [change(item) for item in items]
     return changed if any(a is not b for a, b in zip(changed, items)) else items
+
+
+def _texts(items: list[Any], kind: str, fn: Callable[[str], str]) -> list[Any]:
+    return _rebuilt(
+        items,
+        lambda item: (
+            {**item, "text": text}
+            if isinstance(item, Mapping)
+            and item.get("type") == kind
+            and isinstance(item.get("text"), str)
+            and (text := fn(item["text"])) is not item["text"]
+            else item
+        ),
+    )
 
 
 def _field(container: Any, key: str, kind: str, fn: Callable[[str], str]) -> Any:
@@ -96,14 +104,8 @@ def _strings(value: Any, fn: Callable[[str], str], depth: int) -> Any:
             else value
         )
     if isinstance(value, list):
-        items = [_strings(item, fn, depth - 1) for item in value]
-        return items if any(a is not b for a, b in zip(items, value)) else value
+        return _rebuilt(value, lambda item: _strings(item, fn, depth - 1))
     return value
-
-
-def _rebuilt(items: list[Any], change: Callable[[Any], Any]) -> list[Any]:
-    changed = [change(item) for item in items]
-    return changed if any(a is not b for a, b in zip(changed, items)) else items
 
 
 # `payload` with `fn` applied to each tool result string, copying only what changed.
@@ -218,7 +220,14 @@ def _apply(prepared: PreparedInference) -> PreparedInference:
         if prepared.protocol not in protocols:
             continue
         # A changed earlier turn invalidates every later Anthropic thinking block.
-        if prepared.protocol == "messages" and thinking_bound(payload):
+        # OpenAI's encrypted reasoning items were not checked live: skipped alike.
+        if (prepared.protocol == "messages" and thinking_bound(payload)) or (
+            prepared.protocol == "responses"
+            and any(
+                isinstance(item, Mapping) and item.get("type") == "reasoning"
+                for item in _list(payload.get("input"))
+            )
+        ):
             prepared.record_verdict(
                 f"transforms.{step_id}",
                 stage="transforms",

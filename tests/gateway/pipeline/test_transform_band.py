@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -103,6 +104,8 @@ VECTORS = [
     # Python's json parses NaN to one shared float, so both sides compare equal and
     # the literal survives byte for byte, as in shim-cli.
     (_pad('{"a": NaN,  "b": 1}'), True),
+    # A bare NaN is not an object or array, so it is never a candidate.
+    ("NaN" + " " * 64, False),
     ("[" * 100_000 + "]" * 100_000, False),
     (_pad('{"a":1}').replace(" ", ""), False),
 ]
@@ -433,6 +436,43 @@ async def test_thinking_bound_anthropic_requests_are_skipped(fields) -> None:
         "skip",
         "TRANSFORM_THINKING_BOUND",
     )
+
+
+@pytest.mark.asyncio
+async def test_responses_requests_with_reasoning_items_are_skipped() -> None:
+    # Encrypted reasoning has no documented prefix binding and was not checked live.
+    payload = {
+        **_PAYLOADS["responses"],
+        "input": [
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "encrypted_content": "e",
+                "summary": [],
+            },
+            *_PAYLOADS["responses"]["input"],
+        ],
+    }
+
+    banded = await _run("responses", payload)
+
+    assert banded.payload is payload and banded.transforms_applied == ()
+    [verdict] = banded.policy_verdicts
+    assert (verdict.rule_id, verdict.reason_code) == (
+        "transforms.json_compaction",
+        "TRANSFORM_THINKING_BOUND",
+    )
+
+
+def test_text_without_whitespace_is_never_parsed(monkeypatch) -> None:
+    parsed: list[str] = []
+    monkeypatch.setattr(
+        transform_band, "json", SimpleNamespace(loads=lambda text: parsed.append(text))
+    )
+    text = _pad('{"a":1}').replace(" ", "")
+    text = text[:-1] + ',"b":"' + "x" * 64 + '"}'
+
+    assert compact_json(text) == text and parsed == []
 
 
 @pytest.mark.asyncio
