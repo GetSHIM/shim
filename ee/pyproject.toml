@@ -27,6 +27,8 @@ dependencies = [
   "itsdangerous>=2.2,<3",
   "pyjwt[crypto]>=2.12,<3",
   "joserfc>=1.6,<2",
+  # Document scanning is an enterprise feature; the same pin as shim-gateway[documents].
+  "pypdf==6.20.1",
 ]
 
 [project.optional-dependencies]

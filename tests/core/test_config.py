@@ -330,6 +330,23 @@ def test_media_inputs_are_blocked_unless_allowed(value, valid) -> None:
 
 
 @pytest.mark.parametrize(
+    ("name", "values", "default"),
+    [
+        ("SHIM_DOCUMENTS", ("as_media", "scan", "scan_and_convert"), "as_media"),
+        ("SHIM_DOCUMENT_FORMAT", ("native", "by_provider"), "native"),
+    ],
+)
+def test_document_settings_take_their_values(name, values, default) -> None:
+    assert getattr(CommunitySettings(_env_file=None), name) == default
+    for value in values:
+        assert (
+            getattr(CommunitySettings(_env_file=None, **{name: value}), name) == value
+        )
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, **{name: "convert"})
+
+
+@pytest.mark.parametrize(
     ("name", "values"),
     [
         ("SHIM_ANTHROPIC_AUTO_CACHE", ("off", "5m", "1h")),

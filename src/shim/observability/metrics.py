@@ -265,6 +265,11 @@ MEDIA_PARTS_TOTAL = Counter(
     "Images and files in requests, by kind and whether privacy forwarded or blocked them.",
     ("kind", "outcome"),
 )
+DOCUMENTS_TOTAL = Counter(
+    "shim_documents_total",
+    "PDF, Word and text files the privacy stage read, by kind and outcome.",
+    ("kind", "outcome"),
+)
 INJECTION_MARKERS_TOTAL = Counter(
     "shim_injection_markers_total",
     "Tool results and documents carrying a hidden-instruction marker, by marker.",

@@ -243,7 +243,12 @@ them. Privacy refuses them (400 `PRIVACY_POLICY_BLOCKED`) while it protects anyt
 and the tenant's `media_inputs` is `block`; otherwise it forwards them byte for byte
 and never gives their data string to the detector. When they will be forwarded,
 admission sizes the request by its text bytes plus a published token estimate per
-part instead of the base64 bytes.
+part instead of the base64 bytes. With `documents` at `scan` or `scan_and_convert`,
+inline PDF, Word and text parts are not media: the privacy stage reads their text in
+its worker thread (`src/shim/privacy/documents.py`, bounded in size, pages and time;
+pypdf is the optional `documents` extra), scans it with the same actions and rules, and
+forwards the part, stops the request, or replaces the part with its (masked) text,
+recorded as a `document_text` entry of `transforms_applied`.
 
 OpenAI errors use `{error: {message, type, param, code, hint}}`. Anthropic
 errors use `{type: "error", error: {type, message, code, hint}, request_id}`,
@@ -285,7 +290,7 @@ The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `CONCURRENCY_LIMITED`,
 `AGENT_LOOP_DETECTED`,
 `ZERO_RETENTION_REQUIRED`, `RATE_LIMIT_EXCEEDED`, `PRIVACY_POLICY_BLOCKED`,
-`SECRET_BLOCKED`, `PII_BLOCKED`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,
+`SECRET_BLOCKED`, `PII_BLOCKED`, `DOCUMENT_UNSCANNABLE`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,
 `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE`,
 `PRIVACY_STATE_UNAVAILABLE`, `PROVIDER_NOT_CONFIGURED`, `PROVIDER_RATE_LIMITED`,
 `PROVIDER_REJECTED_REQUEST`, `PROVIDER_CONTENT_FILTERED`, `PROVIDER_UNAVAILABLE`,

@@ -4815,3 +4815,195 @@ async def test_the_media_setting_is_part_of_the_privacy_policy_version() -> None
         versions.add(version(line))
 
     assert len(versions) == 2
+
+
+def _document_pdf(text: str) -> str:
+    body = b"BT /F1 12 Tf 72 720 Td (%s) Tj ET" % text.encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 6\n0000000000 65535 f \n"
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    out += b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+    return base64.b64encode(bytes(out)).decode()
+
+
+_MEDIA_REQUESTS["gemini-pdf"] = (
+    "/v1beta/models/gemini-3.5-flash:generateContent",
+    {"x-goog-api-key": _GATEWAY_KEY},
+    lambda data: {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "summarise"},
+                    {"inlineData": {"mimeType": "application/pdf", "data": data}},
+                ],
+            }
+        ]
+    },
+    ("contents", 0, "parts", 1),
+)
+_CLEAN_PDF = _document_pdf("Rapor hazir, ekip onayladi.")
+_EMAIL_PDF = _document_pdf("Iletisim: ayse.yilmaz@example.com adresine yazin.")
+
+
+@pytest.mark.asyncio
+async def test_a_clean_document_is_scanned_and_forwarded_as_it_came() -> None:
+    response, [call], [line] = await _call_with_media(
+        "messages", _CLEAN_PDF, SHIM_DOCUMENTS="scan"
+    )
+
+    assert response.status_code == 200
+    assert _media_sent("messages", call)["source"]["data"] == _CLEAN_PDF
+    assert line["documents"] == {
+        "scanned": 1,
+        "converted": 0,
+        "native": 1,
+        "unscannable": {},
+    }
+    assert line["document_entities"] == {}
+    assert line["media_parts"] == {"pdf": 1} and line["media_unscanned"] == 0
+    assert "transforms_applied" not in line
+
+
+@pytest.mark.asyncio
+async def test_a_document_that_needs_masking_stops_without_a_provider_call() -> None:
+    response, calls, lines = await _call_with_media(
+        "messages", _EMAIL_PDF, SHIM_DOCUMENTS="scan"
+    )
+
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "PII_BLOCKED"
+    assert "EMAIL_ADDRESS" in response.text and "ayse" not in response.text
+    reasons = [
+        verdict["reason_code"]
+        for line in lines
+        for verdict in line.get("policy_verdicts", [])
+        if verdict["rule_id"] == "privacy.input"
+    ]
+    assert reasons == ["DOCUMENT_MASKING_REQUIRED"]
+
+
+@pytest.mark.asyncio
+async def test_a_converted_document_is_masked_and_its_answer_restored() -> None:
+    sent: list[str] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        text = json.loads(request.content)["messages"][0]["content"][0]["source"][
+            "data"
+        ]
+        sent.append(text)
+        placeholder = text[text.index("<") : text.index(">") + 1]
+        reply = _RULE_REPLIES["/v1/messages"]
+        return httpx.Response(
+            200,
+            json={
+                **reply,
+                "content": [{"type": "text", "text": f"Yaz: {placeholder}"}],
+            },
+        )
+
+    path, auth, build, _ = _MEDIA_REQUESTS["messages"]
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                SHIM_DOCUMENTS="scan_and_convert",
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={**auth, "x-provider-key": "provider-secret"},
+                    json=build(_EMAIL_PDF),
+                )
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Yaz: ayse.yilmaz@example.com"
+    assert "ayse" not in sent[0] and "<EMAIL_ADDRESS_" in sent[0]
+    assert line["documents"]["converted"] == 1
+    assert line["document_entities"] == {"EMAIL_ADDRESS": 1}
+    [entry] = line["transforms_applied"]
+    assert entry["id"] == "document_text" and entry["reader"].startswith("pypdf ")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "as_text"), [("messages", True), ("gemini-pdf", False)]
+)
+async def test_by_provider_sends_clean_pdfs_as_the_provider_bills_less(
+    route, as_text
+) -> None:
+    response, [call], [line] = await _call_with_media(
+        route, _CLEAN_PDF, SHIM_DOCUMENTS="scan", SHIM_DOCUMENT_FORMAT="by_provider"
+    )
+
+    assert response.status_code == 200
+    part = _media_sent(route, call)
+    if as_text:
+        assert part["source"]["type"] == "text"
+        assert "Rapor hazir" in part["source"]["data"]
+        assert line["documents"]["converted"] == 1
+    else:
+        assert base64.b64decode(
+            part["inlineData"]["data"].replace("-", "+").replace("_", "/")
+        ) == base64.b64decode(_CLEAN_PDF)
+        assert line["documents"]["native"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unscannable_document_is_refused_or_counted() -> None:
+    broken = base64.b64encode(b"%PDF-1.4 broken").decode()
+
+    refused, calls, _ = await _call_with_media(
+        "gemini-pdf", broken, SHIM_DOCUMENTS="scan"
+    )
+    passed, [call], [line] = await _call_with_media(
+        "gemini-pdf", broken, SHIM_DOCUMENTS="scan", SHIM_MEDIA_INPUTS="allow"
+    )
+
+    assert refused.status_code == 400 and calls == []
+    assert refused.headers["x-shim-error-code"] == "DOCUMENT_UNSCANNABLE"
+    assert "corrupt" in refused.text
+    assert passed.status_code == 200
+    assert line["documents"]["unscannable"] == {"corrupt": 1}
+    assert line["media_unscanned"] == 1
+
+
+def test_without_pypdf_the_gateway_warns_at_start(monkeypatch, caplog) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "pypdf", None)
+    with caplog.at_level("WARNING"):
+        create_community_app(
+            CommunitySettings(_env_file=None, SHIM_DOCUMENTS="scan"),
+            event_stream=io.StringIO(),
+        )
+        create_community_app(
+            CommunitySettings(_env_file=None), event_stream=io.StringIO()
+        )
+
+    assert [record.message for record in caplog.records].count(
+        "SHIM_DOCUMENTS is on but pypdf is not installed: PDFs are unscannable "
+        "(needs_pypdf); install shim-gateway[documents]"
+    ) == 1

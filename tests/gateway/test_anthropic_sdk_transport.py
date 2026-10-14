@@ -1338,3 +1338,89 @@ async def test_tool_search_and_cleared_thinking_answers_pass_through(stream) -> 
     [delta] = [event for event in events if event["type"] == "message_delta"]
     assert blocks == _SEARCHED["content"]
     assert delta["context_management"] == _SEARCHED["context_management"]
+
+
+def _pdf(text: str) -> bytes:
+    """A one-page PDF whose text layer is `text`."""
+    body = b"BT /F1 12 Tf 72 720 Td (%s) Tj ET" % text.encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 6\n0000000000 65535 f \n"
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    return bytes(
+        out + b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_pdf_document_reaches_anthropic_through_the_sdk() -> None:
+    import base64
+    from io import StringIO
+
+    from anthropic import AsyncAnthropic
+
+    from shim.application import create_community_app
+
+    data = base64.b64encode(_pdf("Rapor hazir, ekip onayladi.")).decode()
+    document = {
+        "type": "document",
+        "title": "Rapor",
+        "source": {"type": "base64", "media_type": "application/pdf", "data": data},
+    }
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=_message("ok"))
+
+    events = StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                ANTHROPIC_BASE_URL="https://upstream.test",
+                SHIM_DOCUMENTS="scan",
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+            ) as inbound,
+        ):
+            client = AsyncAnthropic(
+                base_url="http://127.0.0.1",
+                api_key="unused",
+                http_client=inbound,
+                max_retries=0,
+                default_headers={"x-provider-key": "sk-ant-tenant"},
+            )
+            await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=16,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [document, {"type": "text", "text": "Ozetle"}],
+                    }
+                ],
+            )
+
+    [sent] = seen
+    assert sent["messages"][0]["content"][0] == document
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+    assert line["documents"]["native"] == 1

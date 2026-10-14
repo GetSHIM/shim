@@ -438,6 +438,8 @@ class TenantRequestPolicyResolver:
                 ),
                 injection_markers=tenant_settings.gateway_settings.injection_markers,
                 media_inputs=tenant_settings.gateway_settings.media_inputs,
+                documents=tenant_settings.gateway_settings.documents,
+                document_format=tenant_settings.gateway_settings.document_format,
                 price_tier_warning=tenant_settings.gateway_settings.price_tier_warning,
                 model_retiring_warning=tenant_settings.gateway_settings.model_retiring_warning,
                 task_caps=tenant_settings.gateway_settings.task_caps,

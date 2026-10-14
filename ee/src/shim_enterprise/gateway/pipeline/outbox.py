@@ -227,6 +227,8 @@ _DIAGNOSTIC_FIELDS = (
     "media_unscanned",
     "media_images",
     "media_images_truncated",
+    "documents",
+    "document_entities",
     "restore_withheld",
     "rule_matches",
     "rule_matches_truncated",

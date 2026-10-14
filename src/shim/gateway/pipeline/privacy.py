@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 import logging
 from typing import Any, Literal, NoReturn
@@ -19,6 +19,7 @@ from shim.gateway.contracts.inference import ScanEntity, ScanPolicy, ScanVerdict
 from shim.gateway.kernel.stage import TraceValue
 from shim.observability.metrics import (
     INJECTION_MARKERS_TOTAL,
+    DOCUMENTS_TOTAL,
     MEDIA_PARTS_TOTAL,
     PRIVACY_BULK_DISCLOSURES_TOTAL,
     PRIVACY_DETECTION_TOTAL,
@@ -27,6 +28,7 @@ from shim.observability.metrics import (
 )
 from shim.privacy.pii_scrubber import (
     MAX_ANALYZABLE_TEXT_LENGTH,
+    PLACEHOLDER,
     PIIInputTooLarge,
     PIIScrubberService,
     placeholder_period_key,
@@ -44,6 +46,15 @@ from shim.privacy.policies import (
     placeholder_type,
 )
 from shim.privacy.continuation import PrivacyContinuationStore
+from shim.privacy.documents import (
+    DOCUMENT_FORMAT_V1,
+    DOCUMENT_TEXT_VERSION,
+    MAX_REQUEST_CHARS,
+    Unscannable,
+    extract_text,
+    is_document,
+    pdf_reader_version,
+)
 from shim.privacy.injection import scan_payload
 from shim.rules.content import CONTENT_KINDS, ContentRules, content_rules
 from shim.rules.destination import destination_actions
@@ -74,19 +85,22 @@ class PrivacyStage:
             "pii_config": value.pii_config,
             "entity_actions": actions,
             "media_inputs": value.media_inputs,
+            "documents": value.documents,
+            "document_format": value.document_format,
         }
         try:
             prepared = await self._run(value, actions)
         except BaseException as error:
             refused = isinstance(error, HTTPException) and error.status_code < 500
             detail = getattr(error, "detail", None)
-            code = detail.get("code") if refused and isinstance(detail, dict) else None
+            detail = detail if refused and isinstance(detail, dict) else {}
+            code = detail.get("code")
             value.record_verdict(
                 "privacy.input",
                 stage="privacy",
                 outcome="deny" if refused else "error",
-                reason_code=code
-                if code in {"SECRET_BLOCKED", "PII_BLOCKED"}
+                reason_code=detail.get("reason_code", code)
+                if code in {"SECRET_BLOCKED", "PII_BLOCKED", "DOCUMENT_UNSCANNABLE"}
                 else "PRIVACY_POLICY_BLOCKED"
                 if refused
                 else "PRIVACY_UNAVAILABLE",
@@ -153,6 +167,7 @@ class PrivacyStage:
         unmasked: dict[str, str] = {}
         tags = value.admission.tags if value.admission is not None else ()
         media = classify_media(value.payload) if value.media is None else value.media
+        report = DocumentReport()
         content = content_rules(
             value.rules, lambda rule: in_scope(rule, value, tags), value.record_sets
         )
@@ -220,6 +235,18 @@ class PrivacyStage:
             else (),
             media=media,
             media_inputs=value.media_inputs,
+            documents=value.documents,
+            convert_clean=frozenset(
+                {"docx"}
+                | (
+                    {"pdf"}
+                    if DOCUMENT_FORMAT_V1.get(str(value.provider)) == "text"
+                    else set()
+                )
+            )
+            if value.document_format == "by_provider"
+            else frozenset(),
+            report=report,
             # An enforced block cannot see inside media either.
             protects=any(
                 (rule.state, rule.action) == ("enforced", "block")
@@ -292,7 +319,15 @@ class PrivacyStage:
             monitored_values=frozenset(monitored),
             injection_markers=injection_markers,
             restore_withheld=value.restore_withheld,
-            media=_media_record(media) if media else None,
+            media=_media_record(media, report.scanned)
+            | (
+                report.record()
+                if value.documents != "as_media" and any(map(is_document, media))
+                else {}
+            )
+            if media
+            else None,
+            conversions=tuple(report.transforms),
         )
         for part in media:
             MEDIA_PARTS_TOTAL.labels(kind=part.kind, outcome="forwarded").inc()
@@ -336,6 +371,7 @@ class PrivacyStage:
             value,
             payload=safe_payload,
             privacy=privacy,
+            transforms_applied=privacy.conversions or value.transforms_applied,
             rules_evaluated=value.rules_evaluated
             or content is not None
             or bool(destinations),
@@ -391,7 +427,7 @@ def media_refused(value: PreparedInference, tags: Sequence[str]) -> bool:
 _MEDIA_IMAGES_LIMIT = 16
 
 
-def _media_record(media: Sequence[MediaPart]) -> dict[str, Any]:
+def _media_record(media: Sequence[MediaPart], scanned: int) -> dict[str, Any]:
     images = [
         [*part.dimensions, part.decoded_bytes]
         for part in media
@@ -399,7 +435,7 @@ def _media_record(media: Sequence[MediaPart]) -> dict[str, Any]:
     ]
     return {
         "media_parts": dict(Counter(part.kind for part in media)),
-        "media_unscanned": len(media),
+        "media_unscanned": len(media) - scanned,
         **({"media_images": images[:_MEDIA_IMAGES_LIMIT]} if images else {}),
         **(
             {"media_images_truncated": True}
@@ -441,10 +477,16 @@ def scrub_payload(
     batch: Sequence[str] = (),
     media: Sequence[MediaPart] | None = None,
     media_inputs: Literal["block", "allow"] = "block",
+    documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media",
+    convert_clean: frozenset[str] = frozenset(),
+    report: DocumentReport | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """`batch`: texts scanned together in one analyzer pass before the walk.
 
     `media`: the payload's media parts (`classify_media`), found here when None.
+    `documents`: whether inline PDF, Word and text files are read and scanned;
+    `convert_clean` names the kinds sent as text even when nothing was masked;
+    `report` collects what happened to them.
     """
     verification_map = dict(known_placeholders or {})
     if content is None and all(action == "off" for action in actions.values()):
@@ -460,9 +502,16 @@ def scrub_payload(
         or (content is not None and content.protects)
     )
     unmasked = {} if unmasked is None else unmasked
+    report = DocumentReport() if report is None else report
+    refuse_media = protects and media_inputs == "block"
+    document_parts = {
+        id(value_at(payload, part.path)): part
+        for part in media
+        if documents != "as_media" and is_document(part)
+    }
     refused_parts = (
-        {id(value_at(payload, part.path)) for part in media}
-        if protects and media_inputs == "block"
+        {id(value_at(payload, part.path)) for part in media} - document_parts.keys()
+        if refuse_media
         else set()
     )
     # A part's data is never read: base64 is no text, and a false match would corrupt it.
@@ -573,6 +622,79 @@ def scrub_payload(
             unmasked.update(kept)
             text_cache.update(zip(distinct, scrubbed_texts))
 
+    def document(part: MediaPart, scanned: dict[str, Any]) -> dict[str, Any]:
+        data = value_at(payload, part.data_path) if part.data_path else None
+        try:
+            text = extract_text(part, data)
+            if report.characters + len(text) > MAX_REQUEST_CHARS:
+                raise Unscannable("too_large")
+        except Unscannable as error:
+            report.unscannable[error.reason] += 1
+            DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="unscannable").inc()
+            if refuse_media:
+                reject(
+                    f"A document in the request cannot be scanned: {error.reason}.",
+                    code="DOCUMENT_UNSCANNABLE",
+                )
+            return scanned
+        report.characters += len(text)
+        report.scanned += 1
+        DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="scanned").inc()
+        kept: dict[str, str] = {}
+        masked, found = scrubber.scrub(
+            text,
+            actions,
+            known_placeholders=verification_map,
+            placeholders_by_value=placeholders_by_value,
+            unmasked=kept,
+            placeholder_key=placeholder_key,
+            content=content,
+        )
+        verification_map.update(found)
+        unmasked.update(kept)
+        hidden = Counter(
+            placeholder_type(placeholder)
+            for placeholder in {
+                match.group(0) for match in PLACEHOLDER.finditer(masked)
+            }
+            & verification_map.keys()
+        )
+        report.entities.update(hidden + Counter(kept.values()))
+        # A blocked type refuses the whole request after this stage, as in message text.
+        if any(actions.get(kind) == "block" for kind in kept.values()):
+            return scanned
+        if masked != text and documents == "scan":
+            DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="stopped").inc()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": block_code(hidden),
+                    "message": f"Request blocked by privacy policy: {', '.join(sorted(hidden))}. "
+                    "A document carries them; turn on document conversion to send it masked.",
+                    "reason_code": "DOCUMENT_MASKING_REQUIRED",
+                },
+            )
+        if masked == text and part.kind not in convert_clean:
+            report.native += 1
+            return scanned
+        report.converted += 1
+        DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="converted").inc()
+        report.transforms.append(
+            {
+                "id": "document_text",
+                "version": DOCUMENT_TEXT_VERSION,
+                "before_chars": len(data or ""),
+                "after_chars": len(masked),
+                "items": 1,
+                **(
+                    {"reader": f"pypdf {pdf_reader_version()}"}
+                    if part.kind == "pdf"
+                    else {}
+                ),
+            }
+        )
+        return as_text(scanned, masked)
+
     def visit(value: Any, *, content: bool = False, deep: bool = False) -> Any:
         if isinstance(value, str):
             return scrub_text(value)
@@ -611,6 +733,8 @@ def scrub_payload(
                         item,
                         content=content or key in PRIVACY_BEARING_FIELDS,
                     )
+            if document_parts and id(value) in document_parts:
+                return document(document_parts[id(value)], scrubbed)
             return scrubbed
         return value
 
@@ -622,6 +746,48 @@ def scrub_payload(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             code="REQUEST_TOO_LARGE",
         )
+
+
+@dataclass(slots=True)
+class DocumentReport:
+    """What the privacy stage did with a request's documents; counts, never text."""
+
+    scanned: int = 0
+    converted: int = 0
+    native: int = 0
+    unscannable: Counter[str] = field(default_factory=Counter)
+    entities: Counter[str] = field(default_factory=Counter)
+    transforms: list[dict[str, Any]] = field(default_factory=list)
+    characters: int = 0
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "documents": {
+                "scanned": self.scanned,
+                "converted": self.converted,
+                "native": self.native,
+                "unscannable": dict(self.unscannable),
+            },
+            "document_entities": dict(self.entities),
+        }
+
+
+def as_text(part: Mapping[str, Any], text: str) -> dict[str, Any]:
+    """A document part replaced by its text, in the protocol's own text shape."""
+    part_type = part.get("type")
+    if part_type == "document":
+        return {
+            **part,
+            "source": {"type": "text", "media_type": "text/plain", "data": text},
+        }
+    if part_type in {"file", "input_file"}:
+        file = part.get("file") if part_type == "file" else part
+        name = file.get("filename") if isinstance(file, Mapping) else None
+        return {
+            "type": "text" if part_type == "file" else "input_text",
+            "text": f"[document: {name if isinstance(name, str) else 'document'}]\n{text}",
+        }
+    return {"text": text}
 
 
 @dataclass(frozen=True, slots=True)

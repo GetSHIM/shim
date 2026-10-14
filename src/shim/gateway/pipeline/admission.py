@@ -58,6 +58,7 @@ from shim.observability.metrics import (
     TASK_COUNTER_UNAVAILABLE_TOTAL,
     TASK_LIMIT_REFUSALS_TOTAL,
 )
+from shim.privacy.documents import is_document
 from shim.privacy.policies import is_protocol_field
 from shim.rules.evaluate import in_scope, settle_matches
 from shim.rules.request_limit import request_measures
@@ -251,8 +252,15 @@ class AdmissionStage:
             api_key_cost_center=value.policy.cost_center,
             maximum_length=self.cost_tag_max_length,
         )
-        # Media that privacy will refuse is sized as bytes, so its refusal is unchanged.
-        if media and not media_refused(value, attribution.tags):
+        # Media that privacy will refuse is sized as bytes, so its refusal is unchanged;
+        # inline documents it reads pass when clean.
+        if media and (
+            not media_refused(value, attribution.tags)
+            or (
+                value.documents != "as_media"
+                and all(is_document(part) and part.source == "inline" for part in media)
+            )
+        ):
             input_tokens, approximate_tokens = await _sized_by_parts(
                 value, media, input_tokens
             )

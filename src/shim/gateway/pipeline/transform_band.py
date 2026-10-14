@@ -215,7 +215,9 @@ STEPS: tuple[
 
 
 def _apply(prepared: PreparedInference) -> PreparedInference:
-    payload, applied = prepared.payload, []
+    # Documents the privacy stage turned into text come first.
+    payload = prepared.payload
+    applied = list(prepared.privacy.conversions if prepared.privacy else ())
     for step_id, version, protocols, apply in STEPS:
         if prepared.protocol not in protocols:
             continue

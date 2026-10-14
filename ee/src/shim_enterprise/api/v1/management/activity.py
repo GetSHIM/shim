@@ -309,6 +309,15 @@ class RequestActivityView(BaseModel):
     media_images_truncated: bool | None = Field(
         default=None, description="true when the request had more than 16 such images."
     )
+    documents: dict[str, Any] | None = Field(
+        default=None,
+        description="With document scanning on: documents scanned, converted to text, "
+        "sent as they came, and unscannable by reason; null otherwise.",
+    )
+    document_entities: dict[str, int] | None = Field(
+        default=None,
+        description="Detected values in the documents' text, by entity type.",
+    )
     restore_withheld: dict[str, int] | None = Field(
         default=None,
         description=(
@@ -936,6 +945,8 @@ async def export_requests(
                 "media_unscanned",
                 "media_images",
                 "media_images_truncated",
+                "documents",
+                "document_entities",
                 "restore_withheld",
                 "approval_id",
                 "content_archived",
@@ -1001,6 +1012,8 @@ async def export_requests(
                     details.get("media_unscanned"),
                     _json(details.get("media_images")),
                     details.get("media_images_truncated"),
+                    _json(details.get("documents")),
+                    _json(details.get("document_entities")),
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),
                     details.get("request_archive") == "stored",

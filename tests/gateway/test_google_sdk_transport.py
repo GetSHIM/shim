@@ -867,3 +867,98 @@ async def test_a_raw_embed_call_keeps_its_native_path_body_and_answer(
 
     assert response.status_code == 200 and response.json() == reply
     assert seen == [(f"/v1beta/models/gemini-embedding-001:{method}", body, "up")]
+
+
+def _pdf(text: str) -> bytes:
+    """A one-page PDF whose text layer is `text`."""
+    body = b"BT /F1 12 Tf 72 720 Td (%s) Tj ET" % text.encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 6\n0000000000 65535 f \n"
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    return bytes(
+        out + b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_pdf_part_reaches_gemini_through_the_sdk() -> None:
+    import base64
+    from io import StringIO
+
+    from google import genai
+    from google.genai import types
+
+    from shim.application import create_community_app
+
+    pdf = _pdf("Rapor hazir, ekip onayladi.")
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {"role": "model", "parts": [{"text": "ok"}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+            },
+        )
+
+    events = StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None, SHIM_API_KEY=_GATEWAY_KEY, SHIM_DOCUMENTS="scan"
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                client = genai.Client(
+                    api_key=_GATEWAY_KEY,
+                    http_options=types.HttpOptions(
+                        base_url="http://shim.test",
+                        api_version="v1beta",
+                        headers={"x-provider-key": "google-upstream"},
+                        retry_options=types.HttpRetryOptions(attempts=1),
+                        httpx_async_client=inbound,
+                    ),
+                )
+                await client.aio.models.generate_content(
+                    model="gemini-3.5-flash",
+                    contents=[
+                        types.Part.from_bytes(data=pdf, mime_type="application/pdf"),
+                        "Ozetle",
+                    ],
+                )
+
+    [sent] = seen
+    [blob] = [
+        part["inlineData"]
+        for part in sent["contents"][0]["parts"]
+        if "inlineData" in part
+    ]
+    assert blob["mimeType"] == "application/pdf"
+    assert base64.urlsafe_b64decode(blob["data"]) == pdf
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+    assert line["documents"]["native"] == 1

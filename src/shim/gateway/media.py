@@ -51,6 +51,7 @@ _TYPE_KINDS: Mapping[str, MediaKind] = {
     "input_image": "image",
 }
 _MIME_KINDS: Mapping[str, MediaKind] = {
+    "application/json": "text",
     "application/pdf": "pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
 }
@@ -71,6 +72,7 @@ _EXTENSION_KINDS: Mapping[str, MediaKind] = {
     "txt": "text",
     "md": "text",
     "csv": "text",
+    "json": "text",
     "mp3": "audio",
     "wav": "audio",
     "mp4": "video",

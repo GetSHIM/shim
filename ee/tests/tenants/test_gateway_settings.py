@@ -114,6 +114,8 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "response_analysis": [],
             "injection_markers": "off",
             "media_inputs": "block",
+            "documents": "as_media",
+            "document_format": "native",
             "price_tier_warning": False,
             "model_retiring_warning": "record",
             "restore_withheld": {},
@@ -1197,3 +1199,51 @@ async def test_allowing_media_round_trips_and_is_a_privacy_relaxation(
     assert not any(
         event["endpoint"] == "tenant.gateway_protection_relaxed" for event in events
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "before", "after"),
+    [
+        ("documents", "as_media", "scan"),
+        ("documents", "scan_and_convert", "as_media"),
+        ("document_format", "native", "by_provider"),
+        ("document_format", "by_provider", "native"),
+    ],
+)
+def test_document_settings_are_neutral(field, before, after) -> None:
+    assert classify_change(
+        GatewaySettings(**{field: before}), GatewaySettings(**{field: after})
+    ) == ("neutral", [])
+
+
+@pytest.mark.asyncio
+async def test_document_settings_round_trip(db, test_org) -> None:
+    admin = await _admin(db, test_org.id)
+    view = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch(
+            documents="scan_and_convert", document_format="by_provider"
+        ),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert (view.settings.documents, view.settings.document_format) == (
+        "scan_and_convert",
+        "by_provider",
+    )
+    with pytest.raises(ValidationError):
+        GatewaySettingsPatch.model_validate({"documents": "convert"})
+
+
+@pytest.mark.asyncio
+async def test_without_pypdf_the_settings_say_pdf_is_off(
+    db, test_user_with_org, registry, monkeypatch
+) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "pypdf", None)
+
+    view = await management.configuration.get_gateway_settings(test_user_with_org, db)
+
+    assert view.unavailable["documents"] == "PDF off, needs pypdf"

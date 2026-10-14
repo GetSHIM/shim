@@ -2481,3 +2481,103 @@ async def test_tool_search_and_reasoning_context_reach_openai_and_come_back(
         ]
     ) == _native(_SEARCH_ITEMS)
     assert items[-1]["response"]["reasoning"]["context"] == "current_turn"
+
+
+def _pdf(text: str) -> bytes:
+    """A one-page PDF whose text layer is `text`."""
+    body = b"BT /F1 12 Tf 72 720 Td (%s) Tj ET" % text.encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 6\n0000000000 65535 f \n"
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    return bytes(
+        out + b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_pdf_file_reaches_openai_through_the_sdk() -> None:
+    import base64
+
+    from openai import AsyncOpenAI
+
+    data = base64.b64encode(_pdf("Rapor hazir, ekip onayladi.")).decode()
+    file = {
+        "type": "file",
+        "file": {
+            "filename": "rapor.pdf",
+            "file_data": f"data:application/pdf;base64,{data}",
+        },
+    }
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-5-nano",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    events = StringIO()
+    app = create_community_app(
+        CommunitySettings(
+            _env_file=None, SHIM_API_KEY=_EMBEDDING_KEY, SHIM_DOCUMENTS="scan"
+        ),
+        http_client=outbound,
+        event_stream=events,
+    )
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            client = AsyncOpenAI(
+                base_url="http://shim.test/v1",
+                api_key=_EMBEDDING_KEY,
+                http_client=inbound,
+                max_retries=0,
+            )
+            await client.chat.completions.create(
+                model="gpt-5-nano",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [file, {"type": "text", "text": "Ozetle"}],
+                    }
+                ],
+                extra_headers={"x-provider-key": "sk-upstream"},
+            )
+
+    [sent] = seen
+    assert sent["messages"][0]["content"][0] == file
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+    assert line["documents"]["native"] == 1

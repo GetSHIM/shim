@@ -3300,6 +3300,13 @@ async def test_injection_markers_reach_the_lifecycle_the_request_list_and_csv(
             "media_unscanned": 3,
             "media_images": [[4000, 3000, 35000], [10, 20, 24]],
             "media_images_truncated": True,
+            "documents": {
+                "scanned": 1,
+                "converted": 1,
+                "native": 0,
+                "unscannable": {"encrypted": 1},
+            },
+            "document_entities": {"EMAIL_ADDRESS": 1},
         },
         None,
     ],
@@ -3346,7 +3353,7 @@ async def test_media_records_reach_the_lifecycle_the_request_list_and_csv(
             )
         )
     ).scalar_one()
-    for key in ("media_parts", "media_unscanned", "media_images"):
+    for key in ("media_parts", "media_unscanned", "media_images", "documents"):
         assert lifecycle.lifecycle_metadata.get(key) == (media or {}).get(key)
         assert (key in lifecycle.lifecycle_metadata) == (media is not None)
     event = (
@@ -3391,6 +3398,10 @@ async def test_media_records_reach_the_lifecycle_the_request_list_and_csv(
     assert item.media_unscanned == expected.get("media_unscanned")
     assert item.media_images == expected.get("media_images")
     assert item.media_images_truncated == expected.get("media_images_truncated")
+    assert item.documents == expected.get("documents")
+    assert item.document_entities == expected.get("document_entities")
+    for key in ("documents", "document_entities"):
+        assert (json.loads(row[key]) if row[key] else None) == expected.get(key)
     assert (json.loads(row["media_parts"]) if row["media_parts"] else None) == (
         expected.get("media_parts")
     )

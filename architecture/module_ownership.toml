@@ -102,6 +102,7 @@ forbidden_noncloud_import_roots = [
 ]
 "shim.privacy.classification" = ["content_ref"]
 "shim.privacy.continuation" = ["PrivacyContinuationUnavailableError"]
+"shim.privacy.documents" = ["pdf_reader_version"]
 "shim.privacy.pii_scrubber" = ["PIIScrubberService"]
 "shim.privacy.policies" = [
   "EntityAction",
@@ -234,6 +235,7 @@ public = [
   "src/shim/privacy/classification.py",
   "src/shim/privacy/continuation.py",
   "src/shim/privacy/deanonymizer.py",
+  "src/shim/privacy/documents.py",
   "src/shim/privacy/injection.py",
   "src/shim/privacy/pii_scrubber.py",
   "src/shim/privacy/policies.py",
@@ -291,6 +293,7 @@ public = [
   "tests/gateway/privacy/test_boundary_types.py",
   "tests/gateway/privacy/test_continuation.py",
   "tests/gateway/privacy/test_detection_corpus.py",
+  "tests/gateway/privacy/test_documents.py",
   "tests/gateway/privacy/test_injection.py",
   "tests/gateway/privacy/test_injection_corpus.py",
   "tests/gateway/privacy/test_person_corpus.py",

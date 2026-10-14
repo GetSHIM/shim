@@ -89,6 +89,8 @@ class ResolvedRequestPolicy(FrozenContractModel):
     response_analysis: tuple[str, ...] = ()
     injection_markers: Literal["off", "count", "warn"] = "off"
     media_inputs: Literal["block", "allow"] = "block"
+    documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media"
+    document_format: Literal["native", "by_provider"] = "native"
     price_tier_warning: bool = False
     model_retiring_warning: Literal["record", "header"] = "record"
     # Types an embeddings request only counts, where chat masks or blocks them.
@@ -127,6 +129,8 @@ class LocalRequestPolicyResolver:
         "_model_retiring_warning",
         "_injection_markers",
         "_media_inputs",
+        "_documents",
+        "_document_format",
         "_placeholder_key",
         "_price_tier_warning",
         "_rate_limit_rpm",
@@ -148,6 +152,8 @@ class LocalRequestPolicyResolver:
         response_analysis: tuple[str, ...] = (),
         injection_markers: Literal["off", "count", "warn"] = "off",
         media_inputs: Literal["block", "allow"] = "block",
+        documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media",
+        document_format: Literal["native", "by_provider"] = "native",
         price_tier_warning: bool = False,
         task_caps: TaskCaps = TaskCaps(),
         agent_loop: AgentLoop = AgentLoop(),
@@ -165,6 +171,8 @@ class LocalRequestPolicyResolver:
         self._response_analysis = response_analysis
         self._injection_markers: Literal["off", "count", "warn"] = injection_markers
         self._media_inputs: Literal["block", "allow"] = media_inputs
+        self._documents: Literal["as_media", "scan", "scan_and_convert"] = documents
+        self._document_format: Literal["native", "by_provider"] = document_format
         self._price_tier_warning = price_tier_warning
         self._task_caps = task_caps
         self._agent_loop = agent_loop
@@ -207,6 +215,8 @@ class LocalRequestPolicyResolver:
             response_analysis=self._response_analysis,
             injection_markers=self._injection_markers,
             media_inputs=self._media_inputs,
+            documents=self._documents,
+            document_format=self._document_format,
             price_tier_warning=self._price_tier_warning,
             task_caps=self._task_caps,
             agent_loop=self._agent_loop,

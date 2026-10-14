@@ -23,7 +23,7 @@ from shim.rules.model import ACTION_RANK
 
 
 _INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
-_PLACEHOLDER = re.compile(
+PLACEHOLDER = re.compile(
     r"<\s*([A-Z][A-Z0-9_]*_(?:[0-9a-f]{8}|[0-9a-f]{32}))(~[0-9A-Z]{4})?\s*>"
 )
 _PERCENT_BYTE = re.compile(r"%([0-9A-Fa-f]{2})")
@@ -372,7 +372,7 @@ class PIIScrubberService:
                 )
             return match.group() if value is None else value
 
-        return _PLACEHOLDER.sub(restore, text)
+        return PLACEHOLDER.sub(restore, text)
 
     def _detections(
         self,

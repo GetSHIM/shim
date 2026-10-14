@@ -241,6 +241,8 @@ class PreparedInference:
     response_analysis: tuple[str, ...] = ()
     injection_markers: Literal["off", "count", "warn"] = "off"
     media_inputs: Literal["block", "allow"] = "block"
+    documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media"
+    document_format: Literal["native", "by_provider"] = "native"
     # The payload's images and files, classified by admission; None before it ran.
     media: tuple[MediaPart, ...] | None = field(default=None, repr=False)
     price_tier_warning: bool = False

@@ -228,7 +228,8 @@ def next_attempt(
         ),
         route_decision=None,
         settings_applied=None,
-        transforms_applied=None,
+        transforms_applied=(prepared.privacy.conversions if prepared.privacy else ())
+        or None,
         provider_betas=(),
         **own_records(prepared),
     )

@@ -429,6 +429,8 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "media_unscanned",
         "media_images",
         "media_images_truncated",
+        "documents",
+        "document_entities",
         "restore_withheld",
         "response_entities",
         "response_analysis",

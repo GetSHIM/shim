@@ -251,8 +251,11 @@ class PrivacyOutcome:
     )
     # Types this caller gets back as placeholders (enterprise restore permission).
     restore_withheld: frozenset[str] = frozenset()
-    # media_parts, media_unscanned and media_images when the request carried media.
+    # media_parts, media_unscanned, media_images and the document records when the
+    # request carried media.
     media: Mapping[str, Any] | None = None
+    # The document_text transforms the privacy stage applied, for every attempt's record.
+    conversions: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         for name in (

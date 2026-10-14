@@ -29,6 +29,10 @@ dependencies = [
   "google-genai==2.16.0",
 ]
 
+[project.optional-dependencies]
+# PDF text for document scanning (SHIM_DOCUMENTS); pure Python, no dependencies.
+documents = ["pypdf==6.20.1"]
+
 [project.scripts]
 shim = "shim.cli:main"
 

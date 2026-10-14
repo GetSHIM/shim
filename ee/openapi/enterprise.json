@@ -7144,6 +7144,25 @@
               "scopes": []
             }
           },
+          "document_format": {
+            "default": "native",
+            "enum": [
+              "native",
+              "by_provider"
+            ],
+            "title": "Document Format",
+            "type": "string"
+          },
+          "documents": {
+            "default": "as_media",
+            "enum": [
+              "as_media",
+              "scan",
+              "scan_and_convert"
+            ],
+            "title": "Documents",
+            "type": "string"
+          },
           "finding_modes": {
             "additionalProperties": {
               "enum": [
@@ -7324,6 +7343,37 @@
                 "type": "null"
               }
             ]
+          },
+          "document_format": {
+            "anyOf": [
+              {
+                "enum": [
+                  "native",
+                  "by_provider"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Format"
+          },
+          "documents": {
+            "anyOf": [
+              {
+                "enum": [
+                  "as_media",
+                  "scan",
+                  "scan_and_convert"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents"
           },
           "finding_modes": {
             "anyOf": [
@@ -15076,6 +15126,34 @@
               }
             ],
             "title": "Deployment Kind"
+          },
+          "document_entities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Detected values in the documents' text, by entity type.",
+            "title": "Document Entities"
+          },
+          "documents": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With document scanning on: documents scanned, converted to text, sent as they came, and unscannable by reason; null otherwise.",
+            "title": "Documents"
           },
           "endpoint": {
             "anyOf": [

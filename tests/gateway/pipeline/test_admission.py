@@ -2101,3 +2101,35 @@ def test_admission_predicts_exactly_when_privacy_refuses_media(
         refused = "opaque media" in error.detail["message"]
 
     assert media_refused(prepared, ()) is refused
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("documents", "by_parts"),
+    [("as_media", False), ("scan", True), ("scan_and_convert", True)],
+)
+async def test_scanned_documents_are_sized_by_parts(documents, by_parts) -> None:
+    import base64
+
+    text = base64.b64encode(b"x" * 40_000).decode()
+    prepared = _with_media(
+        _prepared("x"),
+        {
+            "type": "file",
+            "file": {
+                "filename": "a.txt",
+                "file_data": f"data:text/plain;base64,{text}",
+            },
+        },
+        documents=documents,
+    )
+    payload_bytes = _compact_bytes(prepared.payload)
+
+    admitted = await _stage(InMemoryRateLimiter()).run(prepared)
+
+    assert admitted.admission is not None
+    assert admitted.admission.estimated_input_tokens == (
+        payload_bytes - len(f"data:text/plain;base64,{text}") + 10_000
+        if by_parts
+        else payload_bytes
+    )

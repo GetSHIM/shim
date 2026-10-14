@@ -465,6 +465,36 @@ at most the model's context window; audio, video and other parts stay measured
 by their bytes. The rate limits and the reservation use this estimate; the
 provider's reported tokens still settle the request.
 
+PDF, Word and text files can be read and checked like message text instead. Install
+the extra for PDFs (`pip install 'shim-gateway[documents]'`, which adds pypdf; the
+gateway logs a warning at start when the setting is on without it), then set
+`SHIM_DOCUMENTS`:
+
+| `SHIM_DOCUMENTS` | An inline PDF, `.docx`, or text file (`text/plain`, `text/markdown`, `text/csv`, `application/json`) |
+| --- | --- |
+| `as_media` (default) | Follows `SHIM_MEDIA_INPUTS`, as above. |
+| `scan` | Its text is read and scanned with the same actions and rules as message text. Nothing to mask: it is forwarded as it came. A value to mask: 400 `PII_BLOCKED` (`SECRET_BLOCKED` for `SECRET` and `DB_URI`) naming the types and saying to turn on conversion; no provider call. A type whose action is `block`: refused as for message text. |
+| `scan_and_convert` | The same, except that a document with a value to mask is sent as its masked text, and the answer gets the values back. |
+
+A document shim cannot read (a URL or file id, a PDF without pypdf, an encrypted or
+corrupt file, a PDF without a text layer, over 32 MB decoded, 1,000 pages, 1,000,000
+characters, 4,000,000 characters in one request, or 10 seconds of reading) is refused
+with 400 `DOCUMENT_UNSCANNABLE` naming the reason while media is refused, and
+forwarded unscanned otherwise. Word files are read from their body, headers, footers,
+notes and comments; a `.docx` with more than 1,000 parts, a part over 20 MB or 50 MB in
+all, or a `DOCTYPE` is not read.
+
+`SHIM_DOCUMENT_FORMAT=by_provider` also sends a clean document as text where the
+provider bills that less: PDFs as text to Anthropic and OpenAI, natively to Gemini
+(which does not bill the embedded text), Word files as text everywhere. A converted
+document loses its layout, images and figures; the model reads its text only. A
+document sent as text becomes, in Anthropic, a `document` with a `text` source (title,
+context, citations and cache control kept); in chat a `text` part and in Responses an
+`input_text` part, each starting `[document: <file name>]`; in Gemini a `text` part.
+The usage event carries `documents` (scanned, converted, native, unscannable by
+reason) and `document_entities`, and each conversion adds a `document_text` entry to
+`transforms_applied`.
+
 ## Read errors and retry
 
 Tell a refusal shim made from one the provider made, and retry only when a retry can succeed.
@@ -520,6 +550,8 @@ except openai.APIStatusError as error:
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
 | Body over `MAX_REQUEST_BODY_SIZE` (default 32,000,000 bytes) | 413 `REQUEST_TOO_LARGE` | none |
 | A detected type whose action is `block` | 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` | none: remove the value the message names |
+| With `SHIM_DOCUMENTS=scan`, a document holds a value to mask | 400 `PII_BLOCKED` or `SECRET_BLOCKED`; the message names the types | none: remove the values, or turn on `scan_and_convert` |
+| With document scanning on, a document cannot be read and media is refused | 400 `DOCUMENT_UNSCANNABLE`; the message names the reason | none: send the document's text instead, or ask the admin |
 | An enforced tenant rule blocks (enterprise) | 400 `RULE_BLOCKED`; `X-Shim-Rule-Id` and `error.param` name the rule | none: change the request or ask the tenant admin |
 | An enforced tenant rule needs approval (enterprise) | 403 `APPROVAL_REQUIRED`, `X-Shim-Approval-Id`; `APPROVAL_REJECTED` once refused, `APPROVAL_QUEUE_FULL` without an id | `x-should-retry: false`: after approval, send the same request with `X-Shim-Approval-Id` |
 | The approval store cannot be reached (enterprise) | 503 `APPROVAL_UNAVAILABLE` | `Retry-After: 5` |
@@ -1024,6 +1056,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_response_analysis_total` | `analyzer`, `result` |
 | `shim_injection_markers_total` | `marker` |
 | `shim_media_parts_total` | `kind`, `outcome` (`forwarded`, `blocked`) |
+| `shim_documents_total` | `kind`, `outcome` (`scanned`, `converted`, `stopped`, `unscannable`) |
 | `shim_transforms_total` | `transform`, `result` (`applied`, `unchanged`, `skipped`) |
 | `shim_extra_attempts_total` (enterprise tenant rules only) | `reason`, `outcome` (`started`, `skipped`, `not_admitted`) |
 | `shim_shadow_copies_total` (enterprise only) | `outcome` (`sent`, `no_candidate`, `skipped_guard`, `dropped_saturated`, `failed`) |

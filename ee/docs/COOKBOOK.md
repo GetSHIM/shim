@@ -266,6 +266,11 @@ it in `media_parts` and `media_unscanned`. Turning it to `allow` records
 `tenant.privacy_protection_relaxed` with `media_inputs`. What "unscanned" means and
 how such requests are sized is in the
 [community cookbook](../../docs/COOKBOOK.md#choose-what-happens-to-each-data-type).
+`documents` (`as_media`, `scan`, `scan_and_convert`) and `document_format` (`native`,
+`by_provider`) read and check PDF, Word and text files like message text, as the same
+recipe describes; the request list shows `documents` and `document_entities`. Neither
+is a relaxation: a scanned document is held to the tenant's rules, and one passed
+unscanned is `media_inputs`' own.
 
 `bulk_threshold` (default 50) raises a bulk-disclosure alert when one request
 carries at least that many distinct detected values, across every type and
@@ -311,6 +316,8 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `restore_withheld` | `{}` | Per entity type or rule label, the teams and keys that get the value back in the answer; every other caller keeps the placeholder. See [show masked values only to some teams](#show-masked-values-only-to-some-teams). |
 | `model_retiring_warning` | `"record"` | `header` also puts `MODEL_RETIRING` and `MODEL_RETIRED` in `X-Shim-Warnings`; the request list's `warnings` always has them. See [retiring models](MODEL_DEPLOYMENTS.md#retiring-models). |
 | `price_tier_warning` | `false` | Add `PRICE_TIER_CROSSED` to `X-Shim-Warnings` when a request's approximate size is above a catalog model's large-context price tier; see [stay under the price tier](#stay-under-the-price-tier). |
+| `documents` | `"as_media"` | `scan` reads PDF, Word and text files and checks their text; `scan_and_convert` also sends one with a value to mask as its masked text ([privacy settings](#change-the-privacy-settings)). `unavailable` says "PDF off, needs pypdf" when pypdf is missing. |
+| `document_format` | `"native"` | `by_provider` sends a clean document as text where the provider bills that less. |
 | `media_inputs` | `"block"` | `allow` forwards images and files unchanged and unscanned instead of refusing them; a privacy relaxation ([privacy settings](#change-the-privacy-settings)). |
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 | `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |

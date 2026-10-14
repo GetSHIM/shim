@@ -19,6 +19,7 @@ from pydantic import (
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
 from shim.gateway.request_policy import AgentLoop, TaskCaps
+from shim.privacy.documents import pdf_reader_version
 from shim.privacy.policies import effective_entity_actions
 from shim_enterprise.core.config import settings
 
@@ -283,6 +284,9 @@ class GatewaySettings(BaseModel):
     injection_markers: Literal["off", "count", "warn"] = "off"
     # Images and files: refused while privacy protects anything, or forwarded unscanned.
     media_inputs: Literal["block", "allow"] = "block"
+    # Read and scan PDF, Word and text files instead of treating them as media.
+    documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media"
+    document_format: Literal["native", "by_provider"] = "native"
     price_tier_warning: bool = False
     model_retiring_warning: Literal["record", "header"] = "record"
     restore_withheld: dict[str, RestoreGrant] = {}
@@ -323,6 +327,8 @@ class GatewaySettingsPatch(BaseModel):
     response_analysis: list[str] | None = None
     injection_markers: Literal["off", "count", "warn"] | None = None
     media_inputs: Literal["block", "allow"] | None = None
+    documents: Literal["as_media", "scan", "scan_and_convert"] | None = None
+    document_format: Literal["native", "by_provider"] | None = None
     price_tier_warning: bool | None = None
     model_retiring_warning: Literal["record", "header"] | None = None
     # Merged into the stored grants type by type; null gives a type back to everyone.
@@ -553,6 +559,11 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "injection_markers": _marker_direction,
     # Forwarded media is not scanned.
     "media_inputs": toward("allow"),
+    # A scanned document is held to the message rules; one passed unscanned is
+    # media_inputs' own relaxation.
+    "documents": neutral,
+    # Clean documents only: what the model reads, not what it may see.
+    "document_format": neutral,
     # A report, not a protection.
     "price_tier_warning": neutral,
     # Where a retirement warning is shown; it is always recorded.
@@ -581,6 +592,9 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
 SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {
+    "documents": lambda: (
+        None if pdf_reader_version() is not None else "PDF off, needs pypdf"
+    ),
     "bedrock_attribution": lambda: (
         None
         if settings.AWS_GATEWAY_IDENTITY != "none"

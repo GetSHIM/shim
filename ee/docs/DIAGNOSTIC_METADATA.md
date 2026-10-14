@@ -244,6 +244,16 @@ refused. They are written with the privacy counts, in the same transaction, and 
 in the analytics row, the request list and its CSV and the community JSONL event.
 No format, path, digest or content is kept.
 
+With document scanning on (`documents` `scan` or `scan_and_convert`), a request that
+carried a PDF, Word or text file also records `documents`: `{"scanned", "converted",
+"native", "unscannable": {"<reason>": n}}` (reasons `not_inline`, `needs_pypdf`,
+`encrypted`, `corrupt`, `too_large`, `too_slow`, `no_text_layer`), and
+`document_entities`, the values detected in the documents' text by entity type. These
+values are also in the request's own counts (`pii_entities`, `monitored_entities`,
+`blocked_entities`), since the document is part of the request; `document_entities`
+is the documents' share. A scanned document is not counted in `media_unscanned`. The
+extracted text is never stored, logged or recorded.
+
 `restore_withheld` counts, per type, the placeholders a caller got back unrestored
 because its key and team are outside the tenant's restore grant for that type
 (`{}` when none was in the request), written with the privacy counts in the same
@@ -388,7 +398,11 @@ character sums cover those strings only. Written with the privacy facts, `[]` wh
 band ran and changed nothing (no JSON tool result qualified, or the request was
 skipped as bound to Anthropic thinking), absent when no transform is on and for token
 counting. Sizes and counts only. The request list and its CSV show it, and the
-community JSONL event carries it whenever the band ran.
+community JSONL event carries it whenever the band ran. A document the privacy stage
+turned into text comes first, one entry per document: `{"id": "document_text",
+"version": 1, "before_chars": <base64 characters>, "after_chars": <text characters>,
+"items": 1}`, with `reader` (`pypdf <version>`) for a PDF; it is written also when no
+transform is on.
 
 `attempt_group_id`, `attempt_number`, `attempt_reason` and `attempt_rule_id` are on
 the row of an extra attempt a tenant rule asked for (number 2 or 3, reason
