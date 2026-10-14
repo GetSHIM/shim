@@ -19,6 +19,8 @@ from shim.privacy.presidio_analyzer import PresidioAnalyzer
 
 
 _INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+# A decimal digit of any script other than 0-9 (Arabic-Indic, Devanagari, fullwidth).
+_OTHER_DIGIT = re.compile(r"[^\D0-9]")
 _PLACEHOLDER = re.compile(
     r"<\s*([A-Z][A-Z0-9_]*_(?:[0-9a-f]{8}|[0-9a-f]{32}))(~[0-9A-Z]{4})?\s*>"
 )
@@ -142,11 +144,29 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
     visible_characters: list[str] = []
     visible_spans: list[_SourceSpan] = []
     for character, span in zip(decoded, spans):
+        # A mark or an invisible character on a digit (an accent, a variation selector,
+        # a keycap, a joiner) would split an identifier: it is dropped for detection
+        # and masked with its digit.
+        if (
+            visible_characters
+            and visible_characters[-1].isdigit()
+            and (
+                unicodedata.category(character)[0] == "M"
+                or _INVISIBLE.fullmatch(character)
+            )
+        ):
+            visible_spans[-1] = (visible_spans[-1][0], span[1])
+            continue
         if not _INVISIBLE.fullmatch(character):
             visible_characters.append(character)
             visible_spans.append(span)
-    visible_text = "".join(visible_characters)
-    return _normalize_with_spans(visible_text, visible_spans)
+    normalized, normalized_spans = _normalize_with_spans(
+        "".join(visible_characters), visible_spans
+    )
+    # Every script's digits as 0-9, one character for one: the number a model reads.
+    return _OTHER_DIGIT.sub(
+        lambda digit: str(unicodedata.decimal(digit[0])), normalized
+    ), normalized_spans
 
 
 class PIIScrubberService:
