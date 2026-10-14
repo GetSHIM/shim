@@ -1203,18 +1203,29 @@ async def test_allowing_media_round_trips_and_is_a_privacy_relaxation(
 
 
 @pytest.mark.parametrize(
-    ("field", "before", "after"),
+    ("field", "before", "after", "direction"),
     [
-        ("documents", "as_media", "scan"),
-        ("documents", "scan_and_convert", "as_media"),
-        ("document_format", "native", "by_provider"),
-        ("document_format", "by_provider", "native"),
+        ("documents", "as_media", "scan", ("tightening", [])),
+        ("documents", "scan", "scan_and_convert", ("tightening", [])),
+        # media_inputs allow then forwards what scan stopped (D3, four-eyes).
+        ("documents", "scan_and_convert", "as_media", ("relaxing", ["documents"])),
+        # Gemini keeps clean PDFs native: page images nobody scanned (D1).
+        (
+            "document_format",
+            "native",
+            "by_provider",
+            ("relaxing", ["document_format"]),
+        ),
+        ("document_format", "by_provider", "native", ("tightening", [])),
     ],
 )
-def test_document_settings_are_neutral(field, before, after) -> None:
-    assert classify_change(
-        GatewaySettings(**{field: before}), GatewaySettings(**{field: after})
-    ) == ("neutral", [])
+def test_document_settings_directions(field, before, after, direction) -> None:
+    assert (
+        classify_change(
+            GatewaySettings(**{field: before}), GatewaySettings(**{field: after})
+        )
+        == direction
+    )
 
 
 @pytest.mark.asyncio
@@ -1247,7 +1258,7 @@ async def test_without_pypdf_the_settings_say_pdf_is_off(
 
     view = await management.configuration.get_gateway_settings(test_user_with_org, db)
 
-    assert view.unavailable["documents"] == "PDF off, needs pypdf"
+    assert view.unavailable["documents.pdf"] == "off, needs pypdf"
 
 
 @pytest.mark.asyncio

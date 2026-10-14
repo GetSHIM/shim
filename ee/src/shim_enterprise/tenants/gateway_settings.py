@@ -566,11 +566,11 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "injection_markers": _marker_direction,
     # Forwarded media is not scanned.
     "media_inputs": toward("allow"),
-    # A scanned document is held to the message rules; one passed unscanned is
-    # media_inputs' own relaxation.
-    "documents": neutral,
-    # Clean documents only: what the model reads, not what it may see.
-    "document_format": neutral,
+    # Under media_inputs allow, as_media forwards documents scan would stop.
+    "documents": toward("as_media"),
+    # by_provider keeps a clean PDF native for Gemini, page images a tenant that hides
+    # values would otherwise get as scanned text.
+    "document_format": toward("by_provider"),
     # A report, not a protection.
     "price_tier_warning": neutral,
     # Where a retirement warning is shown; it is always recorded.
@@ -606,8 +606,8 @@ SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {
         if importlib.util.find_spec("PIL") is not None
         else "off, needs shim-gateway[images]"
     ),
-    "documents": lambda: (
-        None if pdf_reader_version() is not None else "PDF off, needs pypdf"
+    "documents.pdf": lambda: (
+        None if pdf_reader_version() is not None else "off, needs pypdf"
     ),
     "bedrock_attribution": lambda: (
         None

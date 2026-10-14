@@ -1081,7 +1081,6 @@ def test_a_field_change_not_listed_as_neutral_or_tightening_relaxes(
         {"provider_cache": {"anthropic_auto_cache": "1h"}},
         {"transforms": {"image_downscale": "on"}},
         {"image_detail": {"openai": "low", "gemini": "medium"}},
-        {"documents": "scan_and_convert", "document_format": "by_provider"},
     ],
 )
 def test_a_plan_on_the_band_settings_alone_is_neutral(change: dict) -> None:
@@ -1090,6 +1089,14 @@ def test_a_plan_on_the_band_settings_alone_is_neutral(change: dict) -> None:
 
     assert REGISTRY["gateway_settings"].classify(before, after) == "neutral"
     assert REGISTRY["gateway_settings"].classify(after, before) == "neutral"
+
+
+def test_moving_documents_back_to_media_relaxes() -> None:
+    before = GatewaySettings().model_dump(mode="json")
+    scanned = GatewaySettings(documents="scan").model_dump(mode="json")
+
+    assert REGISTRY["gateway_settings"].classify(before, scanned) == "tightening"
+    assert REGISTRY["gateway_settings"].classify(scanned, before) == "relaxing"
 
 
 @pytest.mark.asyncio
