@@ -102,7 +102,9 @@ request it:
   by the `X-Shim-Tag` header. Prompt-cache reads and writes the provider reports
   are priced at their own rates; input whose cache split is unknown is priced at
   the highest input rate, so an estimate is never lower than the bill. In enterprise an API key's assigned cost center
-  takes precedence, and header tags remain breakdown dimensions.
+  takes precedence, and header tags remain breakdown dimensions. What a lever
+  saved is recorded per request: measured where the provider reported the usage,
+  and labelled as an estimate everywhere else.
 - **Sanitizes provider errors**, so a provider error body does not reach your
   caller unchanged. A provider's message is passed on only when it says how to
   correct the request (400, 404, 413 and 422), still masked and at most 500

@@ -377,6 +377,7 @@ class LocalUsageLifecycle:
                 else {}
             ),
             **({"inflight_share": dict(inflight_share)} if inflight_share else {}),
+            **({"savings": dict(usage.savings)} if usage and usage.savings else {}),
             "system_prompt_hash": self._prompt_hashes.pop(
                 str(prepared.request_id), None
             ),

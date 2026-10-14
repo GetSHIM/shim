@@ -287,6 +287,23 @@ price. Such a request settles one request unit with no tokens and no spend row;
 the leader's row carries the provider call and its cost. Both are in the
 lifecycle metadata only.
 
+`savings` is written at finalization of a `completed` request when one of its
+levers has a figure: `{"version": 1, "measured": {...}, "estimated": {...},
+"not_attributed": {...}}`, each section by lever and omitted when empty. Measured:
+`inflight_share` (`usd` is the avoided cost, `tokens` the shared answer's), the
+Anthropic breakpoint the settings band added as `provider_cache` (`usd` = cache reads
+at the input rate minus the read rate, less writes above the input rate, at the
+request's own settled rates, possibly negative; `read_tokens`, `write_tokens`),
+`json_compaction` (`chars`), `image_downscale` (`bytes`) and `context_clearing`
+(`tokens` Anthropic reported clearing). Estimated: `json_compaction` (`tokens` at four
+characters a token, `usd` at the input rate) and `context_clearing` (`usd`, gross).
+Not attributed: `provider_cache_key` (OpenAI caches without the key). Amounts are
+decimal strings with 10 places; a lever whose price was unknown has `"usd": null,
+"unpriced": true`. Only ids, counts and amounts, never content. It is in the
+lifecycle metadata, read through the request list (`savings`) and its CSV (compact
+JSON), and on the community JSONL event. `GET /api/v1/management/savings` sums it
+([enterprise cookbook](COOKBOOK.md#see-what-each-lever-saved)).
+
 `response_entities` holds the distinct values a delivered answer carried that
 the request did not, by entity type, when the tenant's `response_scan` is
 `count`. The scan runs after the answer is sent, so the field is written to the

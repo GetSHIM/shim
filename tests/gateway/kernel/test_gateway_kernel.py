@@ -2538,6 +2538,16 @@ async def test_a_twin_of_one_key_receives_the_answer_without_a_second_call(
         follower["estimated"],
         follower["completion_outcome"],
     ) == (0, 0, "0", False, leader["completion_outcome"])
+    assert follower["savings"] == {
+        "version": 1,
+        "measured": {
+            "inflight_share": {
+                "usd": f"{Decimal(leader['estimated_cost_usd']):.10f}",
+                "tokens": leader["prompt_tokens"] + leader["completion_tokens"],
+            }
+        },
+    }
+    assert "savings" not in leader
     assert {
         (verdict["rule_id"], verdict["outcome"], verdict["reason_code"])
         for verdict in follower["policy_verdicts"]
@@ -5007,3 +5017,117 @@ def test_without_pypdf_the_gateway_warns_at_start(monkeypatch, caplog) -> None:
         "SHIM_DOCUMENTS is on but pypdf is not installed: PDFs are unscannable "
         "(needs_pypdf); install shim-gateway[documents]"
     ) == 1
+
+
+async def _call_messages(settings: dict, reply: httpx.Response, **body: object):
+    events = io.StringIO()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: reply)
+    ) as outbound:
+        app = create_community_app(
+            CommunitySettings(_env_file=None, SHIM_API_KEY=_GATEWAY_KEY, **settings),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    "/v1/messages",
+                    headers={"x-api-key": _GATEWAY_KEY, "x-provider-key": "up"},
+                    json={
+                        "model": "claude-haiku-4-5",
+                        "max_tokens": 16,
+                        "messages": [{"role": "user", "content": "hi"}],
+                        **body,
+                    },
+                )
+                await response.aread()
+    [line] = [
+        json.loads(item)
+        for item in events.getvalue().splitlines()
+        if json.loads(item)["event"] == "request"
+    ]
+    return response, line
+
+
+def _cached_reply(read: int, write: int) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            **_RULE_REPLIES["/v1/messages"],
+            "model": "claude-haiku-4-5",
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 10,
+                "cache_read_input_tokens": read,
+                "cache_creation_input_tokens": write,
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_cache_breakpoint_records_what_it_saved_and_defaults_record_nothing() -> (
+    None
+):
+    _, written = await _call_messages(
+        {"SHIM_ANTHROPIC_AUTO_CACHE": "5m"}, _cached_reply(0, 4000)
+    )
+    _, read = await _call_messages(
+        {"SHIM_ANTHROPIC_AUTO_CACHE": "5m"}, _cached_reply(4000, 0)
+    )
+    _, default = await _call_messages({}, _cached_reply(4000, 0))
+
+    assert Decimal(written["savings"]["measured"]["provider_cache"]["usd"]) < 0
+    assert Decimal(read["savings"]["measured"]["provider_cache"]["usd"]) > 0
+    assert read["savings"]["measured"]["provider_cache"]["read_tokens"] == 4000
+    assert "savings" not in default
+
+
+_CLEARED = {
+    "applied_edits": [
+        {"type": "clear_thinking_20251015", "cleared_input_tokens": 15000}
+    ]
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_cleared_thinking_is_recorded_from_json_and_streams(stream) -> None:
+    if stream:
+        reply = httpx.Response(
+            200,
+            text=(
+                'event: message_start\ndata: {"type":"message_start","message":{"id":"m",'
+                '"type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],'
+                '"usage":{"input_tokens":1,"output_tokens":1}}}\n\n'
+                'event: message_delta\ndata: {"type":"message_delta","delta":'
+                '{"stop_reason":"end_turn"},"usage":{"output_tokens":1},"context_management":'
+                + json.dumps(_CLEARED)
+                + '}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n'
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+    else:
+        reply = httpx.Response(
+            200,
+            json={
+                **_RULE_REPLIES["/v1/messages"],
+                "model": "claude-haiku-4-5",
+                "context_management": _CLEARED,
+            },
+        )
+
+    response, line = await _call_messages(
+        {"SHIM_ANTHROPIC_KEEP_THINKING_TURNS": 1},
+        reply,
+        stream=stream,
+        thinking={"type": "enabled", "budget_tokens": 1024},
+        max_tokens=2048,
+    )
+
+    assert response.status_code == 200
+    assert line["savings"]["measured"] == {"context_clearing": {"tokens": 15000}}
+    assert Decimal(line["savings"]["estimated"]["context_clearing"]["usd"]) > 0

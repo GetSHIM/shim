@@ -302,6 +302,8 @@ class FinalizationCommand:
     policy_verdicts: tuple[dict[str, Any], ...] | None = None
     # S48: the identical in-flight request whose answer this one received.
     inflight_share: dict[str, Any] | None = None
+    # S65: what the request's levers saved.
+    savings: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.quota_action is TerminalAction.NONE:
@@ -701,6 +703,7 @@ class DurableAccountingRepository:
                     if command.inflight_share is not None
                     else {}
                 ),
+                **({"savings": command.savings} if command.savings is not None else {}),
             }
         if command.policy_verdicts is not None and not all_replayed:
             lifecycle.lifecycle_metadata = {

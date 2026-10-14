@@ -15684,6 +15684,19 @@
             ],
             "title": "Rule Matches Truncated"
           },
+          "savings": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the request's levers saved: measured, estimated and not_attributed sections by lever; only measured figures are savings; null when no lever had a figure.",
+            "title": "Savings"
+          },
           "settings_applied": {
             "anyOf": [
               {
@@ -16783,6 +16796,119 @@
           }
         },
         "title": "SafetySetting",
+        "type": "object"
+      },
+      "SavingsLeverView": {
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes"
+          },
+          "chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chars"
+          },
+          "lever": {
+            "title": "Lever",
+            "type": "string"
+          },
+          "method": {
+            "enum": [
+              "measured",
+              "estimated",
+              "not_attributed",
+              "counted"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "requests": {
+            "minimum": 1.0,
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens"
+          },
+          "unpriced": {
+            "default": 0,
+            "description": "Requests of this row whose price was unknown.",
+            "minimum": 0.0,
+            "title": "Unpriced",
+            "type": "integer"
+          },
+          "usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Decimal string; may be negative for the cache.",
+            "title": "Usd"
+          }
+        },
+        "required": [
+          "lever",
+          "method",
+          "requests",
+          "note"
+        ],
+        "title": "SavingsLeverView",
+        "type": "object"
+      },
+      "SavingsView": {
+        "properties": {
+          "levers": {
+            "items": {
+              "$ref": "#/components/schemas/SavingsLeverView"
+            },
+            "title": "Levers",
+            "type": "array"
+          },
+          "measured_usd": {
+            "description": "Only rows whose method is measured; estimates are never added.",
+            "title": "Measured Usd",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/BillingPeriodView"
+          }
+        },
+        "required": [
+          "period",
+          "measured_usd",
+          "levers"
+        ],
+        "title": "SavingsView",
         "type": "object"
       },
       "ScanInput": {
@@ -29953,6 +30079,95 @@
         "summary": "Propose Rules",
         "tags": [
           "rules"
+        ]
+      }
+    },
+    "/api/v1/management/savings": {
+      "get": {
+        "operationId": "savings_api_v1_management_savings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Savings",
+        "tags": [
+          "management"
         ]
       }
     },

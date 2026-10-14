@@ -381,6 +381,12 @@ class RequestActivityView(BaseModel):
         description="The request approval this request created, was refused under "
         "or consumed; null when no approval gate decided it.",
     )
+    savings: dict[str, Any] | None = Field(
+        default=None,
+        description="What the request's levers saved: measured, estimated and "
+        "not_attributed sections by lever; only measured figures are savings; null "
+        "when no lever had a figure.",
+    )
     content_archived: bool = Field(
         default=False,
         description="The self-hosted request archive kept this request's content; "
@@ -538,8 +544,9 @@ async def list_requests(
                 content_archived=(row.details or {}).get("request_archive") == "stored",
                 response_entities=response_entities,
                 response_analysis=response_analysis,
+                savings=savings,
             )
-            for row, cost_usd, response_entities, response_analysis in rows
+            for row, cost_usd, response_entities, response_analysis, savings in rows
         ],
         total=summary.requests,
         limit=limit,
@@ -950,10 +957,11 @@ async def export_requests(
                 "restore_withheld",
                 "approval_id",
                 "content_archived",
+                "savings",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
-        for row, cost_usd, response_entities, response_analysis in rows:
+        for row, cost_usd, response_entities, response_analysis, savings in rows:
             details = row.details or {}
             output.seek(0)
             output.truncate(0)
@@ -1017,6 +1025,9 @@ async def export_requests(
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),
                     details.get("request_archive") == "stored",
+                    json.dumps(savings, sort_keys=True, separators=(",", ":"))
+                    if savings is not None
+                    else None,
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -1327,6 +1338,7 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
             RequestLifecycle.lifecycle_metadata["response_analysis"].label(
                 "response_analysis"
             ),
+            RequestLifecycle.lifecycle_metadata["savings"].label("savings"),
         )
         .outerjoin(
             RequestLifecycle,

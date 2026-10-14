@@ -13,7 +13,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,8 @@ from shim_enterprise.billing.read_models import (
     BillingReadModels,
     DailyUsage,
 )
+from shim.billing.savings import Method
+from shim_enterprise.billing.savings import measured_usd, tenant_savings
 from shim_enterprise.compliance.reporting import (
     build_pdf,
     evidence_table,
@@ -428,4 +430,58 @@ def _billing_breakdown_pdf(
             ),
         ],
         "shim Cost Showback",
+    )
+
+
+class SavingsLeverView(BaseModel):
+    lever: str
+    method: Method
+    requests: int = Field(ge=1)
+    usd: str | None = Field(
+        default=None, description="Decimal string; may be negative for the cache."
+    )
+    tokens: int | None = None
+    chars: int | None = None
+    bytes: int | None = None
+    unpriced: int = Field(
+        default=0, ge=0, description="Requests of this row whose price was unknown."
+    )
+    note: str
+
+
+class SavingsView(BaseModel):
+    period: BillingPeriodView
+    measured_usd: str = Field(
+        description="Only rows whose method is measured; estimates are never added."
+    )
+    levers: list[SavingsLeverView]
+
+
+@router.get("/savings", response_model=SavingsView)
+async def savings(
+    start_date: AwareDatetime | None = Query(default=None),
+    end_date: AwareDatetime | None = Query(default=None),
+    api_key_id: UUID | None = Query(default=None),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> SavingsView:
+    start, end = _sync_window(start_date, end_date, days=30)
+    rows = await tenant_savings(session, _tenant_id(user), start, end, api_key_id)
+    return SavingsView(
+        period=BillingPeriodView(start=start, end=end),
+        measured_usd=measured_usd(rows),
+        levers=[
+            SavingsLeverView(
+                lever=row.lever,
+                method=row.method,
+                requests=row.requests,
+                usd=row.usd,
+                tokens=row.tokens,
+                chars=row.chars,
+                bytes=row.bytes,
+                unpriced=row.unpriced,
+                note=row.note,
+            )
+            for row in rows
+        ],
     )

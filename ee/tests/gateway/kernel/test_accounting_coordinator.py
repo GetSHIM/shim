@@ -4062,6 +4062,15 @@ async def test_a_shared_answer_settles_one_request_unit_without_tokens_or_spend(
             compute_cost_usd("gpt-5.6-luna", 100, 20, provider="openai")
         ),
     }
+    assert metadata["savings"] == {
+        "version": 1,
+        "measured": {
+            "inflight_share": {
+                "usd": f"{compute_cost_usd('gpt-5.6-luna', 100, 20, provider='openai'):.10f}",
+                "tokens": 120,
+            }
+        },
+    }
     assert ("inflight.share", "skip", "INFLIGHT_RESPONSE_SHARED") in {
         (verdict["rule_id"], verdict["outcome"], verdict["reason_code"])
         for verdict in metadata["policy_verdicts"]
@@ -4596,3 +4605,23 @@ async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
     }
     [row] = csv_rows
     assert json.loads(row["route_decision"]) == {**decision, "conversation_id": None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "saved", [None, {"version": 1, "measured": {"image_downscale": {"bytes": 10}}}]
+)
+async def test_finalization_carries_the_savings_record(saved) -> None:
+    @asynccontextmanager
+    async def session_scope():
+        yield object()
+
+    accounting = SimpleNamespace(finalize=AsyncMock())
+    terminal = _terminal()
+    terminal = replace(terminal, usage=replace(terminal.usage, savings=saved))
+
+    await DurableUsageLifecycle(accounting, session_scope).finalize(
+        _prepared(), terminal
+    )
+
+    assert accounting.finalize.await_args.args[1].savings == saved

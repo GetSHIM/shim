@@ -26,6 +26,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Read images at a cheaper detail level](#read-images-at-a-cheaper-detail-level)
 - [Shrink oversized images](#shrink-oversized-images)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
+- [See what each lever saved](#see-what-each-lever-saved)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
 - [Put shim behind Portkey](#put-shim-behind-portkey)
@@ -1080,6 +1081,40 @@ when the request failed. The mapping from provider finish reasons is in
 [diagnostic metadata](../ee/docs/DIAGNOSTIC_METADATA.md). A stream that fails
 after its headers were sent ends with a sanitized terminal event, described in
 [current architecture](CURRENT_ARCHITECTURE.md#native-responses-streams-and-errors).
+
+## See what each lever saved
+
+Learn what the settings you turned on saved on your own traffic, measured apart from
+estimated.
+
+A completed request whose lever had a figure carries `savings` on its usage event:
+
+```json
+{"version":4,"event":"request","request_id":"req_…","savings":{"version":1,"measured":{"provider_cache":{"usd":"-0.0010000000","read_tokens":0,"write_tokens":4000}}}}
+```
+
+| Lever | Measured (saved) | Estimated or not attributed (never add) |
+| --- | --- | --- |
+| In-flight sharing (`SHIM_INFLIGHT_SHARING`) | `usd`: the provider call the shared answer avoided; `tokens` | none |
+| Anthropic breakpoint (`SHIM_ANTHROPIC_AUTO_CACHE`) | `usd`: cache reads at the input rate minus the read rate, less writes above the input rate, at the request's own rates; can be negative | none |
+| OpenAI cache key (`SHIM_OPENAI_PROMPT_CACHE_KEY`) | nothing | `not_attributed`: OpenAI caches without the key |
+| JSON compaction | `chars` removed | `tokens` at four characters a token, and their `usd` |
+| Image downscaling | `bytes` not sent; the token bill is the same | none |
+| Clearing old thinking | `tokens` Anthropic reported clearing | `usd`, gross of the cache rewrite clearing causes |
+
+Image detail, tool search, reasoning context and parameter pins have no figure: the
+providers report no tokens for them, and `settings_applied` already counts them. Sum
+the saved money per lever over a log file:
+
+```console
+jq -s '[.[] | select(.event == "request" and .savings.measured) | .savings.measured
+  | to_entries[] | select(.value.usd != null) | {lever: .key, usd: (.value.usd | tonumber)}]
+  | group_by(.lever) | map({lever: .[0].lever, usd: (map(.usd) | add)})' usage.jsonl
+```
+
+Never add `estimated` or `not_attributed` to that sum. A price the gateway does not know
+gives `"usd": null, "unpriced": true`. Failed and refused requests saved nothing and
+carry no record.
 
 ## Observe the gateway
 

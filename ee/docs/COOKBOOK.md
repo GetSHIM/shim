@@ -1222,6 +1222,37 @@ Notes: loosening or turning the lock off is relaxing (four eyes applies when on)
 one PATCH or a version restore takes it back. Destinations refresh on each health
 check.
 
+## See what each lever saved
+
+Read what the gateway's levers saved on your own traffic, saved money kept apart from
+estimates.
+
+1. `GET /api/v1/management/savings` (`usage.read`: owner, admin, auditor and service
+   readers), optional `start_date` and `end_date` (with an offset; the last 30 days by
+   default, at most 31) and `api_key_id`.
+2. Read `measured_usd`, the only total: in-flight sharing and the Anthropic cache
+   breakpoint shim added, priced at the requests' own settled rates. It can be
+   negative when cache writes cost more than the reads saved.
+3. Read `levers`: one row per lever and method (`measured`, `estimated`,
+   `not_attributed`, `counted`) with `requests`, `usd`, `tokens`, `chars`, `bytes`,
+   `unpriced` (requests whose price was unknown) and a `note` on the method.
+
+```console
+curl "http://localhost:8000/api/v1/management/savings?start_date=2026-10-01T00:00:00Z" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Estimated rows are never added to the total: JSON compaction's tokens (four characters
+a token), context clearing's money (gross, before the cache rewrite clearing causes),
+and `routing` and `routing_monitor`, the same settled tokens priced at both models of a
+route rule's decision (an alias by its deployment price, else its upstream model's
+catalog price; the other model would have written a different answer). The OpenAI
+prompt-cache key's discount is `not_attributed`, because OpenAI caches without it.
+Image detail, tool search, reasoning context, parameter pins and document conversion
+are only counted: the providers report no tokens for them. Only completed requests
+count, and each request's record is in the request list as `savings`
+([diagnostic metadata](DIAGNOSTIC_METADATA.md)).
+
 ## Allocate hardware cost to teams
 
 Share the monthly cost of your own model servers among the teams that use them.
