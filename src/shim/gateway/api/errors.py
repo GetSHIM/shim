@@ -5,10 +5,8 @@ from http import HTTPStatus
 from typing import Any, NoReturn
 
 from fastapi import HTTPException, Request
-from fastapi.exception_handlers import (
-    http_exception_handler,
-    request_validation_exception_handler,
-)
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -98,7 +96,18 @@ async def gateway_exception_handler(
             status_code=422,
             detail=exc.errors(),
         )
-        return response or await request_validation_exception_handler(request, exc)
+        # Never the input: a refused body can hold a provider key or a client secret.
+        return response or JSONResponse(
+            status_code=422,
+            content={
+                "detail": jsonable_encoder(
+                    [
+                        {key: value for key, value in error.items() if key != "input"}
+                        for error in exc.errors()
+                    ]
+                )
+            },
+        )
 
     assert isinstance(exc, StarletteHTTPException)
     headers = dict(exc.headers or {})

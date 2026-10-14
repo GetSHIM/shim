@@ -748,3 +748,36 @@ async def test_a_lone_surrogate_is_a_native_400_before_privacy_or_the_provider(
     assert response.status_code == 400, response.text
     assert response.headers["x-shim-error-code"] == "INVALID_REQUEST"
     assert attempts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        f'{{"text": {_LONE}}}',
+        '{"text": {"client_secret": "cs-hotfix-secret-123", "key": "sk-hotfix-key-456"}}',
+    ],
+    ids=["lone-surrogate", "secret-fields"],
+)
+async def test_a_refused_scan_is_a_422_that_never_echoes_the_input(body: str) -> None:
+    application = create_community_app(_settings())
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/scan",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "content-type": "application/json",
+                },
+                content=body.encode(),
+            )
+
+    # A refused body can hold a provider key or a client secret: never echoed.
+    assert response.status_code == 422, response.text
+    [error] = response.json()["detail"]
+    assert error["loc"] == ["body", "text"]
+    assert "input" not in error
+    assert "secret-123" not in response.text and "key-456" not in response.text
