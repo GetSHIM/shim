@@ -81,6 +81,10 @@ class SemanticReview(Base):
             "status",
             "claimed_at",
         ),
+        Index("ix_semantic_reviews_org_claimed_at", "organization_id", "claimed_at"),
+        Index(
+            "ix_semantic_reviews_org_completed_at", "organization_id", "completed_at"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(

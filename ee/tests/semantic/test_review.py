@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 from types import SimpleNamespace
+from uuid import uuid4
 
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 import pytest
 from sqlalchemy import delete, func, select
@@ -27,7 +29,9 @@ from shim_enterprise.semantic.models import (
     OrganizationSemanticQuestions,
     SemanticReview,
 )
-from shim_enterprise.semantic.review import review_once, review_tenant
+from shim.gateway.usage import UsageLimitExceeded
+from shim_enterprise.semantic import review as review_module
+from shim_enterprise.semantic.review import STALE_CLAIM, review_once, review_tenant
 from shim_enterprise.tenants.gateway_settings import (
     GatewaySettings,
     SemanticReviewSettings,
@@ -53,12 +57,29 @@ def encryption(monkeypatch):
 class _Kernel:
     """Answers every call with `matches`; records each request's text."""
 
-    def __init__(self, match: bool = True) -> None:
+    def __init__(
+        self,
+        match: bool = True,
+        *,
+        error: Exception | None = None,
+        status: int = 200,
+        delay: float = 0,
+        ids: list[str] | None = None,
+    ) -> None:
         self.match = match
+        self.error = error
+        self.status = status
+        self.delay = delay
+        self.ids = ids
         self.texts: list[str] = []
 
     async def execute(self, invocation):
         self.texts.append(invocation.payload["messages"][1]["content"])
+        await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+        if self.status != 200:
+            return JSONResponse({"error": {}}, status_code=self.status)
         answer = {"matches": [{"question_id": "atlas", "match": self.match}]}
         return JSONResponse(
             {
@@ -69,7 +90,11 @@ class _Kernel:
                     }
                 ]
             },
-            headers={"x-shim-request-id": f"req_review_{len(self.texts)}"},
+            headers={
+                "x-shim-request-id": self.ids[len(self.texts) - 1]
+                if self.ids
+                else f"req_review_{len(self.texts)}"
+            },
         )
 
 
@@ -197,33 +222,27 @@ async def test_a_claimed_item_is_reviewed_from_its_masked_payload_only(
 async def test_an_item_is_reviewed_once_per_revision_and_a_stale_claim_returns(
     db,
 ) -> None:
-    user, _, _, review, archived = await _setup(db, items=2)
+    user, _, _, review, archived = await _setup(db, items=3)
     kernel = _Kernel(match=False)
-
-    await review_tenant(kernel, _factory(db), user.organization_id, review, NOW)
-    await review_tenant(kernel, _factory(db), user.organization_id, review, NOW)
-    first = await _reviews(db, user.organization_id)
     db.add(
         SemanticReview(
             organization_id=user.organization_id,
-            archive_id=archived[0].id,
-            request_id=archived[0].request_id,
-            questions_revision=7,
+            archive_id=archived[2].id,
+            request_id=archived[2].request_id,
+            questions_revision=1,
             status="pending",
             claimed_at=NOW - timedelta(minutes=11),
         )
     )
     await db.flush()
+    once = review.model_copy(update={"max_items_per_hour": 2})
+
+    await review_tenant(kernel, _factory(db), user.organization_id, once, NOW)
     await review_tenant(kernel, _factory(db), user.organization_id, review, NOW)
 
-    assert [row.status for row in first] == ["clear", "clear"]
+    rows = await _reviews(db, user.organization_id)
+    assert [row.status for row in rows] == ["clear", "clear", "clear"]
     assert len(kernel.texts) == 3
-    stale = [
-        row
-        for row in await _reviews(db, user.organization_id)
-        if row.questions_revision == 7
-    ]
-    assert stale[0].status == "clear"
 
 
 @pytest.mark.asyncio
@@ -264,16 +283,19 @@ async def test_the_hourly_and_daily_caps_stop_new_claims(db) -> None:
         ("internal", "https://b.internal/v1"),
     ],
 )
-async def test_an_internal_item_is_never_sent_to_an_external_review_model(
-    db, alias_kind, alias_url
+@pytest.mark.parametrize("item_kind", ["internal", "external", None])
+async def test_no_item_is_sent_to_a_review_model_that_is_not_internal(
+    db, alias_kind, alias_url, item_kind
 ) -> None:
-    user, _, _, review, _ = await _setup(db, alias_kind=alias_kind, alias_url=alias_url)
+    user, _, _, review, _ = await _setup(
+        db, alias_kind=alias_kind, alias_url=alias_url, item_kind=item_kind
+    )
     kernel = _Kernel()
 
     await review_tenant(kernel, _factory(db), user.organization_id, review, NOW)
 
-    [row] = await _reviews(db, user.organization_id)
-    assert row.status == "skipped_guard"
+    # Nothing claimed: the items wait for an internal model, none is used up.
+    assert await _reviews(db, user.organization_id) == []
     assert kernel.texts == []
 
 
@@ -326,25 +348,39 @@ async def test_the_pass_reads_only_tenants_that_turned_the_review_on(db) -> None
     await db.flush()
     kernel = _Kernel()
 
-    await review_once(kernel, _factory(db), NOW)
+    await review_once(kernel, _factory(db))
 
     assert len(kernel.texts) == 1
 
 
 def test_a_review_or_check_call_is_never_archived(monkeypatch) -> None:
     monkeypatch.setattr(settings, "REQUEST_ARCHIVE_ENABLED", True)
-    gateway = GatewaySettings.model_validate({"request_archive": {"enabled": True}})
+    review_key, check_key, other_key = uuid4(), uuid4(), uuid4()
+    gateway = GatewaySettings.model_validate(
+        {
+            "request_archive": {"enabled": True},
+            "semantic_review": {"model": "denetci", "api_key_id": str(review_key)},
+            "semantic_check": {"model": "kontrol", "api_key_id": str(check_key)},
+        }
+    )
 
-    def prepared(tags):
+    def prepared(tags, key):
         return SimpleNamespace(
             tenant_gateway_settings=gateway,
             protocol="chat",
             admission=SimpleNamespace(tags=tags),
+            api_key_id=key,
         )
 
-    assert archive_service._retention_days(prepared(("mobil",))) == 90
-    assert archive_service._retention_days(prepared((REVIEW_TAG,))) is None
-    assert archive_service._retention_days(prepared((CHECK_TAG,))) is None
+    assert archive_service._retention_days(prepared(("hukuk",), other_key)) == 90
+    assert archive_service._retention_days(prepared((REVIEW_TAG,), review_key)) is None
+    assert archive_service._retention_days(prepared((CHECK_TAG,), check_key)) is None
+    # The tag alone, from any other key, opts nothing out (D10).
+    for tag in (REVIEW_TAG, CHECK_TAG):
+        assert (
+            archive_service._retention_days(prepared(("hukuk", tag), other_key)) == 90
+        )
+    assert archive_service._retention_days(prepared((CHECK_TAG,), review_key)) == 90
 
 
 @pytest.mark.asyncio
@@ -470,3 +506,136 @@ async def test_the_reviews_read_filters_and_bounds_its_window(db) -> None:
     ]
     assert none.json()["total"] == 0
     assert too_long.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kernel",
+    [
+        _Kernel(error=HTTPException(401, detail={"code": "INVALID_API_KEY"})),
+        _Kernel(error=HTTPException(429, detail={"code": "CONCURRENCY_LIMITED"})),
+        _Kernel(error=UsageLimitExceeded("budget")),
+        _Kernel(status=503),
+        _Kernel(error=RuntimeError("shim down")),
+    ],
+)
+async def test_a_temporary_refusal_is_tried_again_and_never_uses_up_the_backlog(
+    db, kernel
+) -> None:
+    user, _, _, review, _ = await _setup(db, items=3)
+
+    await review_tenant(kernel, _factory(db), user.organization_id, review, NOW)
+
+    # The first refusal ends the pass; the item waits for a re-claim, the rest
+    # go back unclaimed.
+    [row] = await _reviews(db, user.organization_id)
+    assert (row.status, row.completed_at) == ("pending", None)
+    assert len(kernel.texts) == 1
+    await review_tenant(
+        _Kernel(match=False),
+        _factory(db),
+        user.organization_id,
+        review,
+        NOW + STALE_CLAIM + timedelta(seconds=1),
+    )
+    assert [row.status for row in await _reviews(db, user.organization_id)] == [
+        "clear"
+    ] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_of_the_content_itself_is_final(db) -> None:
+    user, _, _, review, _ = await _setup(db)
+    kernel = _Kernel(error=HTTPException(400, detail={"code": "RULE_BLOCKED"}))
+
+    await review_tenant(kernel, _factory(db), user.organization_id, review, NOW)
+
+    [row] = await _reviews(db, user.organization_id)
+    assert (row.status, row.error_code) == ("failed", "RULE_BLOCKED")
+
+
+@pytest.mark.asyncio
+async def test_a_slow_item_and_a_slow_pass_stop_at_their_bounds(
+    db, monkeypatch
+) -> None:
+    user, _, _, review, _ = await _setup(db, items=3)
+    monkeypatch.setattr(review_module, "ITEM_SECONDS", 0.2)
+    started = asyncio.get_running_loop().time()
+
+    await review_tenant(
+        _Kernel(delay=5), _factory(db), user.organization_id, review, NOW
+    )
+
+    [row] = await _reviews(db, user.organization_id)
+    assert (row.status, row.error_code) == ("pending", "TIMEOUT")
+    monkeypatch.setattr(review_module, "ITEM_SECONDS", 5)
+    monkeypatch.setattr(review_module, "PASS_SECONDS", 0.5)
+    await review_tenant(
+        _Kernel(delay=0.3), _factory(db), user.organization_id, review, NOW
+    )
+    # One item answered inside the pass; the one cut off and the rest are unclaimed,
+    # so nothing is left to be claimed again and reviewed twice.
+    statuses = sorted(row.status for row in await _reviews(db, user.organization_id))
+    assert statuses == ["matched", "pending"]
+    assert asyncio.get_running_loop().time() - started < 5
+    assert review_module.PASS_SECONDS * 2 <= review_module.STALE_CLAIM.total_seconds()
+
+
+@pytest.mark.asyncio
+async def test_the_daily_cost_cap_is_read_before_every_call(db) -> None:
+    user, key, _, review, _ = await _setup(db, items=3)
+    ids = [_request(db, key, None, cost="6") for _ in range(3)]
+    await db.flush()
+    kernel = _Kernel(ids=ids)
+
+    await review_tenant(kernel, _factory(db), user.organization_id, review, NOW)
+
+    assert len(kernel.texts) == 1
+    [row] = await _reviews(db, user.organization_id)
+    assert row.cost_usd == Decimal("6")
+
+
+@pytest.mark.asyncio
+async def test_a_stale_claim_of_older_questions_is_reviewed_at_the_current_ones(
+    db,
+) -> None:
+    user, _, _, review, archived = await _setup(db)
+    db.add(
+        SemanticReview(
+            organization_id=user.organization_id,
+            archive_id=archived[0].id,
+            request_id=archived[0].request_id,
+            questions_revision=0,
+            status="pending",
+            claimed_at=NOW - timedelta(minutes=11),
+        )
+    )
+    await db.flush()
+
+    await review_tenant(_Kernel(), _factory(db), user.organization_id, review, NOW)
+
+    [row] = await _reviews(db, user.organization_id)
+    assert (row.questions_revision, row.status) == (1, "matched")
+
+
+@pytest.mark.asyncio
+async def test_each_tenant_claims_at_its_own_time(db, monkeypatch) -> None:
+    claimed = []
+
+    async def recording(kernel, factory, organization_id, review, now):
+        claimed.append(now)
+
+    user, _, _, review, _ = await _setup(db)
+    db.add(
+        OrganizationGatewaySettings(
+            organization_id=user.organization_id,
+            settings=GatewaySettings(semantic_review=review).model_dump(mode="json"),
+        )
+    )
+    await db.flush()
+    monkeypatch.setattr(review_module, "review_tenant", recording)
+    before = datetime.now(timezone.utc)
+
+    await review_once(_Kernel(), _factory(db))
+
+    assert claimed and claimed[0] >= before

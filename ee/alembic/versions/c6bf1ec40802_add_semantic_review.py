@@ -124,6 +124,17 @@ def upgrade() -> None:
         "semantic_reviews",
         ["organization_id", "status", "claimed_at"],
     )
+    # The hourly cap counts claims; the finding reads completed reviews.
+    op.create_index(
+        "ix_semantic_reviews_org_claimed_at",
+        "semantic_reviews",
+        ["organization_id", "claimed_at"],
+    )
+    op.create_index(
+        "ix_semantic_reviews_org_completed_at",
+        "semantic_reviews",
+        ["organization_id", "completed_at"],
+    )
 
 
 def downgrade() -> None:

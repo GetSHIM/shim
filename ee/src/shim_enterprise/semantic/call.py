@@ -3,11 +3,13 @@ the tenant's own model through shim, as an ordinary request with its own cost.""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
-from typing import Any, Literal
+import secrets
+from typing import Any, Literal, NamedTuple
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -15,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
+from shim.gateway.kernel.result import PreparedInference, ProviderTarget
 from shim.gateway.pipeline.authenticate import (
     GatewayInvocation,
     GatewayRequestMetadata,
@@ -23,7 +26,12 @@ from shim.gateway.pipeline.provider_execution import ProviderCallError
 from shim.gateway.streaming.meter import answer_text
 from shim.gateway.usage import UsageLimitExceeded
 from shim.jsonschema_subset import check
-from shim_enterprise.tenants.deployments import internal_origin_approved
+from shim_enterprise.tenants.deployments import (
+    deployment_target,
+    internal_origin_approved,
+    validate_deployment_url,
+)
+from shim_enterprise.tenants.gateway_settings import GatewaySettings
 from shim_enterprise.tenants.models import ModelDeployment
 
 PROMPT_VERSION = "semantic-v1"
@@ -45,12 +53,32 @@ PROTOCOLS: dict[str, tuple[Literal["chat", "messages", "generate_content"], str]
 }
 
 
+def semantic_call(prepared: PreparedInference, gateway: GatewaySettings) -> bool:
+    """A review or check call: its tag, sent with the key the tenant set for it. A
+    client that sends the tag with any other key is an ordinary request."""
+    tags = prepared.admission.tags if prepared.admission is not None else ()
+    return any(
+        tag in tags and key is not None and prepared.api_key_id == key
+        for tag, key in (
+            (REVIEW_TAG, gateway.semantic_review.api_key_id),
+            (CHECK_TAG, gateway.semantic_check.api_key_id),
+        )
+    )
+
+
 @dataclass(frozen=True)
 class SemanticResult:
     outcome: Literal["matched", "clear", "invalid_answer", "failed"]
     matched_ids: tuple[str, ...]
     request_id: str | None
     error_code: str | None
+    # A temporary refusal (limits, an inactive key, the provider or shim down): the
+    # same call can succeed later.
+    retryable: bool = False
+
+
+def _temporary(status: int) -> bool:
+    return status in {401, 408, 429} or status >= 500
 
 
 def _strings(value: Any, *types: str) -> list[str]:
@@ -130,8 +158,19 @@ def user_text(text: str, questions: Sequence[Mapping[str, Any]]) -> str:
         criteria += [f"- id: {question['id']}", f"  meaning: {question['text']}"]
         if question.get("examples"):
             criteria.append(f"  examples: {'; '.join(question['examples'])}")
+    # A fence the text cannot know, so the text cannot close it and add criteria.
+    fence = f"REQUEST-{secrets.token_hex(8)}"
+    text = text.replace(fence, "")
     return "\n".join(
-        ["Criteria:", *criteria, "", "Request text:", "<<<REQUEST", text, "REQUEST>>>"]
+        [
+            "Criteria:",
+            *criteria,
+            "",
+            "Request text:",
+            f"<<<{fence}",
+            text,
+            f"{fence}>>>",
+        ]
     )
 
 
@@ -141,7 +180,9 @@ def semantic_payload(
     schema = answer_schema([question["id"] for question in questions])
     prompt = user_text(text, questions)
     if provider == "openai":
-        # No token limit: reasoning models refuse max_tokens; the schema bounds it.
+        # No token limit: reasoning models refuse max_tokens, and not every
+        # OpenAI-compatible server accepts max_completion_tokens. The strict schema
+        # bounds the answer where the server honours it; the daily caps bound the rest.
         return {
             "model": alias,
             "temperature": 0,
@@ -207,6 +248,13 @@ def _error_code(error: BaseException) -> str:
     return "INTERNAL"
 
 
+def _error_retryable(error: BaseException) -> bool:
+    if isinstance(error, (HTTPException, ProviderCallError)):
+        return _temporary(error.status_code)
+    # Usage limits, and anything unexpected, may pass on the next attempt.
+    return True
+
+
 def _error_request_id(error: BaseException) -> str | None:
     headers = getattr(error, "headers", None) or {}
     return headers.get("X-Shim-Request-Id") or getattr(error, "shim_request_id", None)
@@ -241,17 +289,34 @@ async def run_semantic_call(
         provider_credential=None,
         metadata=GatewayRequestMetadata(endpoint=path.format(alias=alias)),
     )
-    try:
+
+    async def execute() -> Any:
         response = await kernel.execute(invocation)
         if response.background is not None:
             await response.background()
+        return response
+
+    try:
+        # Its own task: the call's context variables, its request id among them,
+        # never become the caller's. Cancelling the caller cancels it.
+        response = await asyncio.create_task(execute())
     except Exception as error:
         return SemanticResult(
-            "failed", (), _error_request_id(error), _error_code(error)
+            "failed",
+            (),
+            _error_request_id(error),
+            _error_code(error),
+            _error_retryable(error),
         )
     request_id = response.headers.get("x-shim-request-id")
     if response.status_code != 200:
-        return SemanticResult("failed", (), request_id, f"HTTP_{response.status_code}")
+        return SemanticResult(
+            "failed",
+            (),
+            request_id,
+            f"HTTP_{response.status_code}",
+            _temporary(response.status_code),
+        )
     try:
         body = json.loads(response.body)
     except ValueError:
@@ -260,28 +325,34 @@ async def run_semantic_call(
     return SemanticResult(outcome, matched, request_id, None)
 
 
+class SemanticTarget(NamedTuple):
+    provider: str
+    # A request to it stays internal, as the resolver sees it.
+    internal: bool
+    # Where the call goes; None when the operator no longer approves its origin.
+    target: ProviderTarget | None
+
+
 async def semantic_target(
     session: AsyncSession, organization_id: Any, alias: str | None
-) -> tuple[str, bool] | None:
-    """The semantic model's provider, and whether a request to it would stay internal."""
-    row = (
-        await session.execute(
-            select(
-                ModelDeployment.provider,
-                ModelDeployment.deployment_kind,
-                ModelDeployment.base_url,
-            ).where(
-                ModelDeployment.organization_id == organization_id,
-                ModelDeployment.alias == alias,
-            )
+) -> SemanticTarget | None:
+    """The semantic model's provider, kind and destination."""
+    row = await session.scalar(
+        select(ModelDeployment).where(
+            ModelDeployment.organization_id == organization_id,
+            ModelDeployment.alias == alias,
         )
-    ).one_or_none()
+    )
     if row is None:
         return None
-    # As the resolver sees it: an internal label outside the internal origins is external.
+    try:
+        target = deployment_target(row, validate_deployment_url(row.base_url))
+    except ValueError:
+        target = None
+    # An internal label outside the internal origins is external.
     internal = (
         row.deployment_kind == "internal"
-        and row.base_url is not None
-        and internal_origin_approved(row.base_url)
+        and target is not None
+        and internal_origin_approved(target.base_url)
     )
-    return row.provider, internal
+    return SemanticTarget(row.provider, internal, target)

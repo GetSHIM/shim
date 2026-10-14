@@ -72,6 +72,7 @@ forbidden_noncloud_import_roots = [
   "AttemptReason",
   "Target",
   "guarded",
+  "protects_less",
   "skip_attempt",
 ]
 "shim.gateway.kernel.gateway_kernel" = ["GatewayKernel"]

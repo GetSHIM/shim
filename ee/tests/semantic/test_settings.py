@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import update
 
 from ee.tests.rules.test_rules_resource import (
     MANAGEMENT,
@@ -18,7 +19,7 @@ from shim_enterprise.tenants.gateway_settings import (
     SemanticCheckSettings,
     SemanticReviewSettings,
 )
-from shim_enterprise.tenants.models import ApiKey
+from shim_enterprise.tenants.models import ApiKey, ModelDeployment
 
 SETTINGS = f"{MANAGEMENT}/gateway-settings"
 
@@ -99,6 +100,42 @@ async def test_an_incomplete_or_foreign_review_setting_is_refused(
     )
 
     assert refused.status_code == 422, refused.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "internal_origins"),
+    [
+        ("external", []),
+        # Labelled internal, but outside the operator's internal origins.
+        ("internal", ["https://b.internal"]),
+    ],
+)
+async def test_only_an_internal_review_model_reads_archived_requests(
+    db, monkeypatch, kind, internal_origins
+) -> None:
+    owner, key = await _tenant(db)
+    await db.execute(
+        update(ModelDeployment)
+        .where(ModelDeployment.organization_id == owner.organization_id)
+        .values(deployment_kind=kind)
+    )
+    monkeypatch.setattr(settings, "MODEL_DEPLOYMENT_INTERNAL_ORIGINS", internal_origins)
+    on = {"enabled": True, "model": "denetci", "api_key_id": str(key.id)}
+
+    review = await _call(db, owner, "PATCH", SETTINGS, json={"semantic_review": on})
+    # The live check may use such a model: the core guard runs per request.
+    check = await _call(
+        db,
+        owner,
+        "PATCH",
+        SETTINGS,
+        json={"semantic_check": {**on, "scope": {"tags": ["hukuk"]}}},
+    )
+
+    assert review.status_code == 422, review.text
+    assert "internal" in review.json()["detail"]
+    assert check.status_code == 200, check.text
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from dataclasses import replace
 from datetime import datetime, timezone
 from hashlib import sha256
 import logging
@@ -14,7 +15,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim.gateway.contracts.ids import RequestId, TenantId
-from shim.gateway.kernel.attempts import AttemptOutcome
+from shim.gateway.kernel.attempts import AttemptOutcome, protects_less
 from shim.gateway.kernel.result import PreparedInference
 from shim.rules import KINDS
 from shim_enterprise.billing.models import RequestLifecycle
@@ -25,9 +26,11 @@ from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.semantic.call import (
     CHECK_TAG,
     PROMPT_VERSION,
-    REVIEW_TAG,
+    PROTOCOLS,
+    SemanticTarget,
     request_text,
     run_semantic_call,
+    semantic_call,
     semantic_target,
 )
 from shim_enterprise.semantic.models import OrganizationSemanticQuestions
@@ -47,6 +50,24 @@ def counter_key(tenant_id: Any, now: datetime) -> str:
     # The tenant id stays out of Redis keys in clear.
     digest = sha256(str(tenant_id).encode()).hexdigest()[:40]
     return f"semchk:{digest}:{now.strftime('%Y%m%d')}"
+
+
+def protects_less_at(prepared: PreparedInference, check: SemanticTarget) -> bool:
+    """Privacy ran for the caller's target only: an enforced caller rule that would act
+    at the check model and not there never saw the text (core `protects_less`)."""
+    if prepared.rules is None:
+        return False
+    if check.target is None:
+        return True
+    return protects_less(
+        prepared,
+        replace(
+            prepared,
+            target=check.target,
+            deployment_kind="internal" if check.internal else "external",
+            protocol=PROTOCOLS[check.provider][0],
+        ),
+    )
 
 
 def in_check_scope(check: SemanticCheckSettings, prepared: PreparedInference) -> bool:
@@ -91,18 +112,20 @@ class SemanticPreCheck:
         ):
             return None
         check = gateway.semantic_check
-        tags = prepared.admission.tags if prepared.admission is not None else ()
         if (
             prepared.protocol not in check.endpoints
             or not in_check_scope(check, prepared)
-            or CHECK_TAG in tags
-            or REVIEW_TAG in tags
+            or semantic_call(prepared, gateway)
             or prepared.api_key_id == check.api_key_id
         ):
             return None
         started = monotonic()
         try:
-            record = await self._check(prepared, check)
+            # Everything before the answer counts: the reads, the counter, the call.
+            async with asyncio.timeout(check.timeout_ms / 1_000):
+                record = await self._check(prepared, check)
+        except TimeoutError:
+            record = {"outcome": "timeout"}
         except Exception as exc:
             logger.warning("Semantic check failed type=%s", type(exc).__name__)
             record: dict[str, Any] = {"outcome": "failed"}
@@ -131,8 +154,13 @@ class SemanticPreCheck:
             )
             if target is None:
                 return {"outcome": "failed"}
-            # What a move to another target would need: nothing detected leaves inside.
-            if prepared.deployment_kind == "internal" and not target[1] and detected:
+            # What a move to another target would need: nothing detected leaves
+            # inside, and no caller rule protects more at the check model.
+            if (
+                prepared.deployment_kind == "internal"
+                and not target.internal
+                and detected
+            ) or protects_less_at(prepared, target):
                 return {"outcome": "skipped_guard"}
             if not await self._count(prepared, check):
                 return {"outcome": "skipped_cap"}
@@ -142,27 +170,24 @@ class SemanticPreCheck:
         text = request_text(prepared.payload, prepared.protocol)
         if not questions or not text.strip():
             return {"outcome": "skipped_empty", "questions_revision": revision}
-        try:
-            result = await asyncio.wait_for(
-                run_semantic_call(
-                    self.kernel,
-                    api_key_id=check.api_key_id,
-                    alias=check.model,
-                    provider=target[0],
-                    text=text,
-                    questions=questions,
-                    tag=CHECK_TAG,
-                ),
-                check.timeout_ms / 1_000,
-            )
-        except TimeoutError:
-            return {"outcome": "timeout", "questions_revision": revision}
-        return {
+        result = await run_semantic_call(
+            self.kernel,
+            api_key_id=check.api_key_id,
+            alias=check.model,
+            provider=target.provider,
+            text=text,
+            questions=questions,
+            tag=CHECK_TAG,
+        )
+        record: dict[str, Any] = {
             "outcome": result.outcome,
-            "matched": list(result.matched_ids[:MAX_MATCHED]),
             "questions_revision": revision,
             "check_request_id": result.request_id,
         }
+        # Legal: of a request that carried personal data, only the outcome is kept.
+        if prepared.privacy is None or not prepared.privacy.pii_detected:
+            record["matched"] = list(result.matched_ids[:MAX_MATCHED])
+        return record
 
     async def _count(
         self, prepared: PreparedInference, check: SemanticCheckSettings

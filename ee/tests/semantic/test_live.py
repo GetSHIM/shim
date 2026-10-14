@@ -23,7 +23,7 @@ from shim.gateway.kernel.result import PreparedInference
 from shim.rules.model import RuleMatch
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.semantic import live
-from shim_enterprise.semantic.call import CHECK_TAG, REVIEW_TAG
+from shim_enterprise.semantic.call import CHECK_TAG
 from shim_enterprise.semantic.live import SemanticPreCheck, counter_key
 from shim_enterprise.semantic.models import OrganizationSemanticQuestions
 from shim_enterprise.tenants.gateway_settings import (
@@ -121,6 +121,7 @@ def _prepared(check: dict | None, **values) -> SimpleNamespace:
         deployment_kind=values.pop("deployment_kind", "internal"),
         privacy=SimpleNamespace(pii_detected=values.pop("pii_detected", False)),
         rule_matches=values.pop("rule_matches", []),
+        rules=None,
         payload={"messages": [{"role": "user", "content": TEXT}]},
         request_id=values.pop("request_id", "req_marked"),
         warnings=[],
@@ -177,8 +178,7 @@ async def _record(db, request_id) -> dict | None:
         ({"scope": {"models": ["asistan"]}}, {"model": "other"}),
         ({"scope": {"api_key_ids": [OTHER_KEY]}}, {}),
         ({"endpoints": ["messages"]}, {}),
-        ({}, {"tags": ("hukuk", CHECK_TAG)}),
-        ({}, {"tags": ("hukuk", REVIEW_TAG)}),
+        ({}, {"tags": ("hukuk", CHECK_TAG), "api_key_id": CHECK_KEY}),
         ({}, {"api_key_id": CHECK_KEY}),
     ],
 )
@@ -316,6 +316,34 @@ async def test_an_internal_request_reaches_an_external_check_model_only_when_cle
     )
 
     assert (await _record(db, request_id))["outcome"] == outcome
+
+
+@pytest.mark.asyncio
+async def test_a_slow_database_counts_toward_the_timeout(db) -> None:
+    user, _, check_key, request_id = await _setup(db)
+    opened = []
+
+    @asynccontextmanager
+    async def slow():
+        # The first session (the target and question reads) hangs; the record does not.
+        opened.append(1)
+        if len(opened) == 1:
+            await asyncio.sleep(5)
+        yield db
+
+    strategy = SemanticPreCheck(slow, SimpleNamespace(redis=_Redis()))
+    strategy.kernel = _Kernel("match")
+    prepared = _prepared(
+        _check(check_key, timeout_ms=500),
+        tenant_id=user.organization_id,
+        request_id=request_id,
+    )
+
+    started = time.monotonic()
+    await strategy.after_privacy(prepared)
+
+    assert time.monotonic() - started < 0.5 + 0.1
+    assert (await _record(db, request_id))["outcome"] == "timeout"
 
 
 @pytest.mark.asyncio
