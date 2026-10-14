@@ -431,6 +431,24 @@
         "structured_output": true,
         "tools": true
       },
+      "gemini-4-argon": {
+        "cache_read_per_million": "0.1",
+        "context_window": 1048576,
+        "input_modalities": [
+          "audio",
+          "image",
+          "pdf",
+          "text",
+          "video"
+        ],
+        "input_per_million": "2",
+        "max_output_tokens": 32768,
+        "name": "Gemini 4 Argon",
+        "output_per_million": "10",
+        "release_date": "2026-10-13",
+        "structured_output": true,
+        "tools": true
+      },
       "gemini-embedding-001": {
         "context_window": 2048,
         "input_modalities": [
@@ -1293,5 +1311,5 @@
     }
   },
   "source": "https://models.dev/api.json",
-  "version": "models.dev:282e275bc7c0993c2c42fcc5"
+  "version": "models.dev:056578ed0334d50e2d531f60"
 }
