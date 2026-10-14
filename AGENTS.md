@@ -80,9 +80,10 @@ Every `uses:` in every workflow stays pinned to a full commit SHA.
 Rolling back production is a traffic change on Cloud Run, not a new tag.
 
 The model catalog workflow opens a pull request and does not merge it. Pricing
-feeds cost accounting, so it reaches `main` through review. A pull request
-opened with the workflow token starts no checks of its own, so the workflow
-dispatches `Verify`, `prose` and `CodeQL` on the pull request's branch.
+feeds cost accounting, so it reaches `main` through review. It pushes and opens the
+pull request with a token from the `shim-catalog-bot` GitHub App (secrets `CATALOG_APP_ID`
+and `CATALOG_APP_PRIVATE_KEY`), because a pull request opened with the workflow token
+starts no checks.
 
 Preserve the mixed-licence boundary: Apache-2.0 applies outside `ee/`, and
 Elastic-2.0 applies under `ee/`. Keep both packages' `license`, `license-files`,
