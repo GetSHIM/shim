@@ -311,14 +311,22 @@ async def test_at_most_eight_reads_at_once_and_the_deadline_skips_the_rest(
     await _listed(
         db, user, [{"deployment_id": str(d.id), "server": "vllm"} for d in deployments]
     )
-    running = peak = 0
+    running = peak = calls = 0
+    eight_at_once = asyncio.Event()
 
     async def slow(client, server, *args):
-        nonlocal running, peak
+        nonlocal running, peak, calls
+        calls += 1
         running += 1
         peak = max(peak, running)
-        await asyncio.sleep(0.6)
-        running -= 1
+        if running == 8:
+            eight_at_once.set()
+        try:
+            # The first eight return once all eight run together; the other four never
+            # return, so the deadline, not the machine's speed, is what skips them.
+            await (eight_at_once if calls <= 8 else asyncio.Event()).wait()
+        finally:
+            running -= 1
         return inference_metrics.Sample(running=1, waiting=0)
 
     monkeypatch.setattr(inference_metrics, "read_sample", slow)
@@ -331,8 +339,8 @@ async def test_at_most_eight_reads_at_once_and_the_deadline_skips_the_rest(
             interval_seconds=6,
         )
 
-    # The pass deadline is interval - 5 = 1 s: the first eight finish in 0.6 s, the
-    # other four would need 1.2 s and are skipped this pass.
+    # The pass deadline is interval - 5 = 1 s: the first eight finish, the other four
+    # are still reading at the deadline and are skipped this pass.
     assert peak == 8
     assert sampled == 8
 

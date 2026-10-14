@@ -7,6 +7,7 @@ import hmac
 import json
 import re
 import time
+import timeit
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -1308,11 +1309,16 @@ def test_a_local_part_longer_than_the_rfc_limit_is_still_masked_whole(
     ],
 )
 def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -> None:
-    started = time.perf_counter()
-    scrubber.analyze(text, DEFAULT_ACTIONS)
-
-    # Unbounded, the email patterns took 20 s and more on 32 KB.
-    assert time.perf_counter() - started < 5
+    # Unbounded, the email patterns took 20 s and more on 32 KB. This thread's CPU time,
+    # collection paused (timeit): other processes and a collection are not counted.
+    assert (
+        timeit.timeit(
+            lambda: scrubber.analyze(text, DEFAULT_ACTIONS),
+            timer=time.thread_time,
+            number=1,
+        )
+        < 5
+    )
 
 
 def test_a_json_document_survives_scrubbing_with_only_the_phone_replaced(
@@ -2177,10 +2183,15 @@ def test_every_other_detector_wins_a_span_shared_with_a_name(
     ],
 )
 def test_person_names_stay_linear(scrubber: PIIScrubberService, text: str) -> None:
-    started = time.perf_counter()
-    scrubber.analyze(text, _NAMES_ONLY)
-
-    assert time.perf_counter() - started < 5
+    # CPU time with collection paused, as in test_adversarial_runs_stay_linear.
+    assert (
+        timeit.timeit(
+            lambda: scrubber.analyze(text, _NAMES_ONLY),
+            timer=time.thread_time,
+            number=1,
+        )
+        < 5
+    )
 
 
 def test_person_name_data_is_reviewed_and_consistent() -> None:
@@ -2279,7 +2290,7 @@ def test_a_batch_scans_each_text_as_it_would_be_alone(texts) -> None:
     assert found == {k: v for _, mapping in alone for k, v in mapping.items()}
 
 
-def test_a_batch_of_a_thousand_texts_scans_faster_than_one_by_one() -> None:
+def test_a_batch_of_a_thousand_texts_is_one_analyzer_pass(monkeypatch) -> None:
     actions = effective_entity_actions()
     words = "delivery delay north region warehouse invoice refund shipment".split()
     texts = [
@@ -2288,12 +2299,20 @@ def test_a_batch_of_a_thousand_texts_scans_faster_than_one_by_one() -> None:
         for i in range(1_000)
     ]
 
-    def best_of_three(batch: list[str]) -> float:
-        timings = []
-        for _ in range(3):
-            started = time.perf_counter()
-            scrub_payload({"input": texts}, actions, PIIScrubberService(), batch=batch)
-            timings.append(time.perf_counter() - started)
-        return min(timings)
+    passes: list[str] = []
+    detect = PIIScrubberService._source_detections
 
-    assert best_of_three(texts) < 0.85 * best_of_three([])
+    def counted(self, text, *args, **kwargs):
+        passes.append(text)
+        return detect(self, text, *args, **kwargs)
+
+    monkeypatch.setattr(PIIScrubberService, "_source_detections", counted)
+
+    def analyzer_passes(batch: list[str]) -> int:
+        passes.clear()
+        scrub_payload({"input": texts}, actions, PIIScrubberService(), batch=batch)
+        return len(passes)
+
+    # Work, not time: the analyzer's fixed cost per pass is what batching saves. One
+    # pass reads the thousand texts and one the field name, against a pass for each.
+    assert (analyzer_passes(texts), analyzer_passes([])) == (2, 1_001)

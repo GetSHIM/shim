@@ -522,9 +522,9 @@ async def test_the_span_carries_items_and_characters_saved() -> None:
     ids=["escaped-quotes", "spaces", "unterminated", "keys-without-values"],
 )
 def test_a_million_hostile_characters_take_well_under_a_second(text) -> None:
-    from time import perf_counter
+    from time import thread_time
+    import timeit
 
-    started = perf_counter()
-    compact_json(text)
-
-    assert perf_counter() - started < 1
+    # This thread's CPU time, collection paused (timeit): neither other processes nor
+    # a collection of the whole test heap is counted.
+    assert timeit.timeit(lambda: compact_json(text), timer=thread_time, number=1) < 1

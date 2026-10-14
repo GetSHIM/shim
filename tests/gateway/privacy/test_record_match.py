@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import random
 import time
+import timeit
 import tracemalloc
 
 import pytest
@@ -315,19 +316,24 @@ def test_an_email_shape_scans_a_blob_without_an_at_sign_in_linear_time() -> None
     blob = (base64.urlsafe_b64encode(bytes(range(256)) * 48).decode() * 2)[:16_000]
     prose = ("Ali Veli bugün aradı ve siparişini sordu. " * 400)[:16_000]
 
-    def best_of_three(text: str) -> float:
-        timings = []
-        for _ in range(3):
-            started = time.perf_counter()
-            index.match_records(text, 2)
-            timings.append(time.perf_counter() - started)
-        return min(timings)
+    def cpu_seconds(text: str) -> float:
+        # This thread's CPU time, collection paused (timeit), best of five: neither
+        # other processes nor a collection of the whole test heap is counted.
+        # Fifty calls a sample, so a sample is milliseconds, not microseconds.
+        return min(
+            timeit.repeat(
+                lambda: index.match_records(text, 2),
+                timer=time.thread_time,
+                number=50,
+                repeat=5,
+            )
+        )
 
-    assert best_of_three(blob) < 4 * best_of_three(prose)
+    assert cpu_seconds(blob) < 4 * cpu_seconds(prose)
     assert index.match_records("ali@example.com yazdı, Ali Veli", 2)[0] == {0}
 
 
-def test_a_spent_budget_stops_the_match_while_it_runs() -> None:
+def test_a_spent_budget_stops_the_match_while_it_runs(monkeypatch) -> None:
     rule = _record_rule()
     content = ContentRules(
         _rules(rule),
@@ -336,12 +342,22 @@ def test_a_spent_budget_stops_the_match_while_it_runs() -> None:
         record_sets={"00000000-0000-0000-0000-000000000051": _customers()},
     )
     text = "MUS000007 İsmail Işık " * 2_000
+    reads = 0
 
-    started = time.perf_counter()
+    def clock() -> float:
+        """A clock a millisecond later at every read, whatever the machine's load."""
+        nonlocal reads
+        reads += 1
+        return reads / 1_000
+
+    monkeypatch.setattr("shim.rules.content.perf_counter", clock)
+    monkeypatch.setattr(record_match, "perf_counter", clock)
     hits = content.search(text)
 
-    assert time.perf_counter() - started < 0.2
     assert hits == [] and content.errors == {"customers"}
+    # The 20 ms budget ran out after about 20 checks, of the 4,000 a full match makes
+    # (2,000 tokens, 2,000 candidates): the match stopped while it ran.
+    assert reads < 40
 
 
 def test_a_hyphenated_name_is_the_same_name_in_the_list_and_in_text() -> None:

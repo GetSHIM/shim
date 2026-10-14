@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The model-catalog workflow dispatches this on its pull request's branch.
+  workflow_dispatch:
   schedule:
     - cron: "42 5 * * 1"
 

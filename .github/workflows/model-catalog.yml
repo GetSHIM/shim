@@ -19,6 +19,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # A pull request opened with the workflow token starts no checks; a dispatch does.
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,3 +69,8 @@ jobs:
               --title "chore: update Models.dev catalog" \
               --body-file "$RUNNER_TEMP/body.md"
           fi
+
+          # Checks on the pushed head, so the pull request can merge without approving runs.
+          for workflow in test.yml prose.yml codeql.yml; do
+            gh workflow run "$workflow" --ref "$BRANCH"
+          done

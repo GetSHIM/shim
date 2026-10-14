@@ -142,11 +142,7 @@ async def test_a_listed_deployment_becomes_a_target_and_the_first_candidate_wins
     [
         ({}, ["gpt-5-nano"], "ATTEMPT_TARGET_NOT_ALLOWED"),
         ({"enabled": False}, None, "ATTEMPT_TARGET_UNAVAILABLE"),
-        (
-            {"health": "unhealthy", "health_checked_at": datetime.now(timezone.utc)},
-            None,
-            "ATTEMPT_TARGET_UNAVAILABLE",
-        ),
+        ({"health": "unhealthy"}, None, "ATTEMPT_TARGET_UNAVAILABLE"),
         ({"provider": "anthropic"}, None, "ATTEMPT_TARGET_UNAVAILABLE"),
         ({"base_url": "https://b.internal/v1"}, None, "ATTEMPT_TARGET_UNAVAILABLE"),
         # The region lock runs only where a request starts, never on a move.
@@ -162,6 +158,10 @@ async def test_a_deployment_the_key_or_the_registry_refuses_is_skipped(
     db, test_api_key, origins, values, allowed, code
 ) -> None:
     if values is not None:
+        if values.get("health") == "unhealthy":
+            # Marked now, not at collection: the mark lapses after five minutes, and a
+            # slow suite reaches this test later than that.
+            values = {**values, "health_checked_at": datetime.now(timezone.utc)}
         await _deployment(db, test_api_key, "spare-llm", **values)
     test_api_key.allowed_models = allowed
     await db.flush()

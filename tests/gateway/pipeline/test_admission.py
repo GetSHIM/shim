@@ -4,6 +4,7 @@ from decimal import Decimal
 from hashlib import sha256
 import json
 import time
+import timeit
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -1276,16 +1277,22 @@ def test_a_plain_answer_after_a_tool_call_ends_the_signature(protocol) -> None:
 def test_deeply_nested_arguments_are_hashed_as_text_in_linear_time(protocol) -> None:
     from shim.gateway.pipeline.admission import _tool_signature
 
-    def best_of_three(arguments: str) -> float:
-        timings = []
-        for _ in range(3):
-            started = time.perf_counter()
-            signature = _tool_signature(_history(protocol, arguments), protocol)
-            timings.append(time.perf_counter() - started)
-            assert signature is not None
-        return min(timings)
+    def cpu_seconds(arguments: str) -> float:
+        history = _history(protocol, arguments)
+        assert _tool_signature(history, protocol) is not None
+        # This thread's CPU time, collection paused (timeit), best of five: neither
+        # other processes nor a collection of the whole test heap is counted.
+        # Twenty calls a sample, so a sample is milliseconds, not microseconds.
+        return min(
+            timeit.repeat(
+                lambda: _tool_signature(history, protocol),
+                timer=time.thread_time,
+                number=20,
+                repeat=5,
+            )
+        )
 
-    assert best_of_three("[" * 200_000) < 4 * best_of_three('"' + "a" * 199_998 + '"')
+    assert cpu_seconds("[" * 200_000) < 4 * cpu_seconds('"' + "a" * 199_998 + '"')
 
 
 @pytest.mark.parametrize(
