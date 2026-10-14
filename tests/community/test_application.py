@@ -5,6 +5,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tomllib
@@ -134,6 +135,154 @@ async def test_community_chat_json_scrubs_and_restores_without_leaking_keys() ->
     assert EMAIL not in lines[0]
     assert GATEWAY_KEY not in lines[0]
     assert PROVIDER_KEY not in lines[0]
+
+
+_IDENTIFIERS = {
+    "TR_NATIONAL_ID": "10000000146",
+    "TR_VKN": "Vergi no 1234567890",
+    "IBAN_CODE": "TR33 0006 1005 1978 6457 8413 26",
+    "CREDIT_CARD": "4111 1111 1111 1111",
+    "PHONE_NUMBER": "+90 532 123 45 67",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("zero", "mark"),
+    [
+        (0x30, ""),
+        (0x0660, ""),
+        (0x06F0, ""),
+        (0x0966, ""),
+        (0x09E6, ""),
+        (0xFF10, ""),
+        (0x30, "\u0301"),
+        (0x30, "\u0301\u0323"),
+        (0x30, "\ufe0f"),
+        (0x30, "\ufe0f\u20e3"),
+        (0x30, "\u034f"),
+        (0x30, "\u200d"),
+        (0x0660, "\u0301"),
+    ],
+    ids=[
+        "ascii",
+        "arabic-indic",
+        "extended-arabic-indic",
+        "devanagari",
+        "bengali",
+        "fullwidth",
+        "acute-on-each-digit",
+        "two-marks-on-each-digit",
+        "variation-selector",
+        "keycap",
+        "grapheme-joiner",
+        "zero-width-joiner",
+        "arabic-indic-with-acute",
+    ],
+)
+async def test_identifiers_in_any_script_s_digits_never_reach_the_provider(
+    zero: int,
+    mark: str,
+) -> None:
+    def written(value: str) -> str:
+        return "".join(chr(zero + int(c)) + mark if c.isdigit() else c for c in value)
+
+    values = [written(value) for value in _IDENTIFIERS.values()]
+    prompt = "Müşteri: " + ", ".join(values) + "."
+    sent: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][0]["content"]
+        sent.append(content)
+        return httpx.Response(200, json=_completion(content))
+
+    events = StringIO()
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    application = create_community_app(
+        _settings(
+            PII_ENTITY_ACTIONS=json.dumps({kind: "mask" for kind in _IDENTIFIERS})
+        ),
+        http_client=upstream,
+        event_stream=events,
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 200, response.text
+    [upstream_text] = sent
+    assert (
+        re.sub(r"<[A-Z_]+_[0-9a-f]{32}>", "", upstream_text)
+        == "Müşteri: , Vergi no , , , ."
+    ), upstream_text
+    # Masked at the right offsets: the answer restores the original characters.
+    assert response.json()["choices"][0]["message"]["content"] == prompt
+    assert json.loads(events.getvalue())["privacy_counts"] == dict.fromkeys(
+        _IDENTIFIERS, 1
+    )
+
+
+_TCKN = "10000000146"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _TCKN,
+        "١٠٠٠٠٠٠٠١٤٦",
+        "\u0301".join(_TCKN) + "\u0301",
+        "100 000 001 46",
+    ],
+    ids=["ascii", "arabic-indic", "accent-on-each-digit", "grouped"],
+)
+async def test_a_tckn_written_any_way_never_reaches_the_provider(raw: str) -> None:
+    # The v0.3.0 production probe, with the gateway's default actions.
+    sent: list[bytes] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content)
+        return httpx.Response(200, json=_completion("ok"))
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    application = create_community_app(_settings(), http_client=upstream)
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [
+                        {"role": "user", "content": f"Müşteri TCKN {raw} kaydı"}
+                    ],
+                },
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 200, response.text
+    [body] = sent
+    assert raw not in json.loads(body)["messages"][0]["content"]
 
 
 class _SplitStream(httpx.AsyncByteStream):
@@ -526,3 +675,109 @@ async def test_community_traces_only_when_an_endpoint_is_set(
             endpoint=endpoint, service_name="shim"
         )
         shutdown_tracing.assert_called_once_with()
+
+
+# "\ud800" as a client sends it: a JSON escape that decodes to a lone surrogate.
+_LONE = '"hi \\ud800"'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pii", ["scrub", "disabled"])
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/v1/chat/completions",
+            f'{{"model": "{MODEL}", "messages": [{{"role": "user", "content": {_LONE}}}]}}',
+        ),
+        (
+            "/v1/responses",
+            f'{{"model": "{MODEL}", "input": {_LONE}}}',
+        ),
+        (
+            "/v1/messages",
+            '{"model": "claude-sonnet-4-6", "max_tokens": 16, '
+            f'"messages": [{{"role": "user", "content": {_LONE}}}]}}',
+        ),
+        (
+            "/v1/messages/count_tokens",
+            '{"model": "claude-sonnet-4-6", '
+            f'"messages": [{{"role": "user", "content": {_LONE}}}]}}',
+        ),
+        (
+            "/v1beta/models/gemini-3.5-flash:generateContent",
+            f'{{"contents": [{{"role": "user", "parts": [{{"text": {_LONE}}}]}}]}}',
+        ),
+    ],
+)
+async def test_a_lone_surrogate_is_a_native_400_before_privacy_or_the_provider(
+    path: str, body: str, pii: str
+) -> None:
+    from shim.privacy.policies import effective_entity_actions
+
+    attempts: list[httpx.Request] = []
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: attempts.append(request) or httpx.Response(500)
+        )
+    )
+    actions = (
+        {}
+        if pii == "scrub"
+        else {kind: "off" for kind in effective_entity_actions(None, None)}
+    )
+    application = create_community_app(
+        _settings(PII_ENTITY_ACTIONS=actions), http_client=upstream
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                path,
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                    "content-type": "application/json",
+                },
+                content=body.encode(),
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 400, response.text
+    assert response.headers["x-shim-error-code"] == "INVALID_REQUEST"
+    assert attempts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        f'{{"text": {_LONE}}}',
+        '{"text": {"client_secret": "cs-hotfix-secret-123", "key": "sk-hotfix-key-456"}}',
+    ],
+    ids=["lone-surrogate", "secret-fields"],
+)
+async def test_a_refused_scan_is_a_422_that_never_echoes_the_input(body: str) -> None:
+    application = create_community_app(_settings())
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/scan",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "content-type": "application/json",
+                },
+                content=body.encode(),
+            )
+
+    # A refused body can hold a provider key or a client secret: never echoed.
+    assert response.status_code == 422, response.text
+    [error] = response.json()["detail"]
+    assert error["loc"] == ["body", "text"]
+    assert "input" not in error
+    assert "secret-123" not in response.text and "key-456" not in response.text

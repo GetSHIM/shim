@@ -490,8 +490,20 @@ def _lower_bound_input(payload: Mapping[str, object]) -> int:
 
 def _estimate_input_tokens(payload: Mapping[str, object]) -> int:
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    try:
+        encoded = serialized.encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate ("\ud800" in the JSON) is no text: refused before privacy
+        # could miss it, never rewritten into something the provider would get.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_REQUEST",
+                "message": "The request contains an unpaired UTF-16 surrogate.",
+            },
+        ) from None
     # One token per UTF-8 byte bounds tokenizer-hostile provider payloads.
-    return max(1, len(serialized.encode("utf-8", errors="backslashreplace")))
+    return max(1, len(encoded))
 
 
 def candidate_count(prepared: PreparedInference) -> int:
