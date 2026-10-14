@@ -973,7 +973,8 @@ curl -X PUT http://localhost:8000/api/v1/management/semantic-questions \
 ```
 
 2. Create a gateway key for the reviews (a service account's key is best) and turn the
-   review on with an internal model: `PATCH /api/v1/management/gateway-settings` with
+   review on with an internal model on an approved internal origin (any other is
+   refused with 422): `PATCH /api/v1/management/gateway-settings` with
    `{"semantic_review": {"enabled": true, "model": "denetci", "api_key_id": "<key id>",
    "max_items_per_hour": 60, "max_cost_usd_per_day": "5"}}`.
 3. Read `GET /api/v1/management/semantic-reviews?status=matched` and the
@@ -993,7 +994,9 @@ With [questions written](#ask-the-archive-your-own-questions) (no archive needed
 3. Watch `GET /api/v1/management/semantic-check`, the `semantic_check` column of
    `GET /api/v1/management/requests?semantic_outcome=matched` and the
    `gateway.semantic_check_match` finding. Each marked request waits for its check, at
-   most `timeout_ms`.
+   most `timeout_ms`. A request whose rules would protect more at the check model than
+   at its own target is not checked (`skipped_guard`): scope such rules so they also
+   hold at the check model, or use an internal one.
 4. Once the matches look right, send `{"semantic_check": {"warn_header": true}}`:
    matched requests then carry `SEMANTIC_WARN` in `X-Shim-Warnings`.
 

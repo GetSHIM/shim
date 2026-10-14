@@ -378,9 +378,11 @@ examples), a managed policy resource: removing or rewriting a question relaxes, 
 one tightens, so four eyes and one-step restore apply. The questions are confidential
 like rule terms: never in Redis, a log, a metric or an audit event, which carries ids
 only. The switch is the `semantic_review` gateway setting: the review model (an
-enabled alias of the tenant), the gateway key the calls are made with and billed to,
-and caps per hour (1 to 1,000 items) and per day (0.01 to 1,000 USD, which one call
-may pass). Turning it on or changing the model is relaxing.
+enabled `internal` alias of the tenant on an origin in `MODEL_DEPLOYMENT_INTERNAL_ORIGINS`,
+because the rules that applied to each item are not kept, so no other target can be
+checked against them), the gateway key the calls are made with and billed to, and caps
+per hour (1 to 1,000 items) and per day (0.01 to 1,000 USD, read before every call, so
+one call may pass it). Turning it on or changing the model is relaxing.
 
 The gateway process reviews every `SEMANTIC_REVIEW_INTERVAL_SECONDS` (default 60, 5 to
 3,600), at most `SEMANTIC_REVIEW_BATCH` items a pass (default 20, 1 to 200), newest
@@ -388,12 +390,25 @@ first, each archived item once per question revision, never an item the review k
 made. Each claim batch writes an audit intent `tenant.request_content_scanned` with the
 request ids, so the [openings read](#request-archive) shows that a member's request was
 read by `system:semantic_review`. The review decrypts the masked payload only, never
-the values it replaced, and never sees the answer. An item that went to an internal
-deployment is never sent to a review model that is not internal (`skipped_guard`); one
-labelled internal outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` counts as external.
+the values it replaced, and never sees the answer. A review model that is no longer
+internal at run time (an edited deployment, or one labelled internal outside
+`MODEL_DEPLOYMENT_INTERNAL_ORIGINS`) claims nothing until it is again. A tenant's pass
+ends within five minutes, half the age at which another process may claim its items
+again, and each call within two; a temporary refusal (a 401 such as an inactive key,
+a 408, a 429 or a usage limit, a 5xx, a timeout) leaves the item `pending`, ends the
+pass and returns the unreviewed claims, so the item is tried again on a later pass
+and never becomes a permanent `failed`. A refusal of the content itself, such as
+`RULE_BLOCKED`, is final. A claim left at an older question revision is claimed again
+at the current one.
 Each call is an ordinary request of the review key, tagged `shim:semantic_review`:
 its limits, privacy, rules, budgets and ledger apply, it has its own cost, and it is
-never archived itself. A tenant rule that blocks a word used in a question makes the
+never archived itself. The tag means this only on a request of the configured review
+key; a client that sends it with any other key is archived and checked as usual. The
+request text sits between fence lines with a random marker per call, so the text cannot
+close the fence and add criteria. An OpenAI call carries no output limit (reasoning
+models refuse `max_tokens`, and not every compatible server takes
+`max_completion_tokens`): its strict answer schema bounds the answer where the server
+honours it, and the caps bound the rest. A tenant rule that blocks a word used in a question makes the
 call fail with `RULE_BLOCKED`; scope such a rule to `deployment_kinds: ["external"]`
 with an internal review model, or reword the question.
 
@@ -422,18 +437,25 @@ the model, widening a scope list or adding an endpoint is relaxing; turning it o
 tightening.
 
 The check runs after privacy, so the model reads the masked text, never the values it
-replaced, and never sees the answer. An internal request is never sent to a check model
-that is not internal when anything was detected in it (`skipped_guard`); a model
-labelled internal outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` counts as external, as it
-does for the request itself. The request waits
-at most `timeout_ms` (`timeout`, the call is cancelled), then goes on unchanged: the check
+replaced, and never sees the answer. Privacy ran for the request's own target, so the
+check model gets the same core guard as any later change of target (`skipped_guard`):
+an internal request is never sent to a check model that is not internal when anything
+was detected in it, and no request is sent where one of the caller's enforced mask,
+block or approval rules would act and did not at its own target (a rule scoped to the
+caller's key, team or tag and to the check model or its kind). A model labelled
+internal outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` counts as external, as it does for
+the request itself. The request waits at most `timeout_ms` for everything the check
+does, the reads and the counter included (`timeout`, the call is cancelled), then goes
+on unchanged: the check
 never blocks, masks, reroutes or edits a request, and a failure inside it never reaches
 the caller. A match adds `SEMANTIC_WARN` to `X-Shim-Warnings` only when `warn_header` is
 true; otherwise it is only recorded, so a tenant can watch the questions behave before
 callers see anything. Each check is an ordinary request of the check key, tagged
 `shim:semantic_check`: its limits, privacy, rules, budgets and ledger apply, it has its own
-cost, it is never checked or archived itself, and it holds the marked request's admission
-lease while it runs, so a separate check deployment is recommended.
+cost, it is never checked or archived itself (the tag counts only with the configured
+check key), and it holds the marked request's admission lease while it runs, so a
+separate check deployment is recommended. Of a request that carried personal data, the
+record keeps the outcome only, never the matched question ids.
 
 The outcome is in the request's [`semantic_check`](DIAGNOSTIC_METADATA.md) record.
 `GET /api/v1/management/semantic-check` (`usage.read`, 1 to 168 hours, default 24) reads

@@ -417,7 +417,11 @@ always `from`), no `outcome`, and two keys of its own: `canary_side` (`stable` o
 `reason: "long_request"`, no `outcome`, `input_tokens_approx` (the request's size in
 admission's TPM unit), `to` the lane (in `monitor`, the lane it would have used;
 enforced, the alias that served) and, when the lane could not serve, `held` with the
-same values.
+same values. A split or lane whose `to` has another kind than `from` at run time (an
+internal split to a target that is no longer internal, a lane that is not a replica of
+the same kind) holds with `not_approved`. A monitor split or lane never changes the
+target: when a route rule or an enforced lane then decides, the monitor record moves
+under that decision's `previous` (one level).
 
 `shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
 to a candidate model: the primary request's id and the rule that chose it. The copy
@@ -445,7 +449,8 @@ stored. The request list and its CSV carry it.
 short transaction of its own after privacy and before the provider call: `outcome`
 (`matched`, `clear`, `invalid_answer`, `failed`, `timeout`, `skipped_guard`, `skipped_cap`,
 `skipped_empty`), `latency_ms`, `prompt_version`, and when known `questions_revision`,
-`matched` (question ids, at most 20) and `check_request_id` (the check call's own row). No
+`matched` (question ids, at most 20; never on a request that carried personal data, whose
+record keeps the outcome only) and `check_request_id` (the check call's own row). No
 request text, question text or model answer is stored. The request list and its CSV carry
 it, and `GET /api/v1/management/requests?semantic_outcome=<outcome>` and the export filter
 on one outcome.

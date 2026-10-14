@@ -217,7 +217,10 @@ when:
 | `provider_error` | the attempt failed with 500, 502, 503 or 504, a timeout or a connection error | after the call, a new attempt |
 | `rate_limited` | the provider answered 429 | after the call, a new attempt |
 
-No other 4xx triggers, and a disabled `from` is still refused with 403. A tenant
+No other 4xx triggers, a disabled `from` is still refused with 403, and a token count
+(`/v1/messages/count_tokens`) for an unhealthy `from` is refused with 503 as before: it
+never reaches the step that moves a request. The rule's scope is read at `from`, so a
+rule scoped by `models` or `deployment_kinds` tries its second `to` too. A tenant
 holds at most one `unavailable` rule per alias; the rules PUT refuses an unknown or
 cross-provider alias, a third `to` and an empty `triggers` with 422 and the field path.
 
@@ -255,7 +258,9 @@ another alias of the same provider: `from` the stable alias, `to` the candidate,
 `share_percent` 0 to 100 (one decimal), `fallback_to_stable` false by default. An
 `internal` alias never splits to an `external` one, since a split moves every kind of
 request; an alias has at most one split, and a split's `to` is never another split's
-`from`. While an alias is under a split, its request-start route rules do not run.
+`from`. While an alias is under an enforced split, its long-request lane and
+request-start route rules do not run; a `monitor` split never changes the target, so
+they decide as without it.
 
 Each request's bucket is `sha256("<tenant id>|<rule id>|<identity>")`, its first eight
 hex digits as a number, modulo 10,000; the request goes to `to` when the bucket is below
@@ -264,11 +269,16 @@ characters), else `key:<gateway key id>`, so without the header every conversati
 one key lands on one side; send the header, on every turn, for a finer split. Nothing
 is stored: the same conversation always lands on the same side, raising the share keeps
 every conversation already on `to` there, and lowering it moves only the top buckets
-back. A Responses chain stays on its side only while its turns carry the same identity.
+back. A Responses chain stays on its side only while its turns carry the same identity
+and the share stays: raising the share moves the conversations of the new buckets to
+`to` mid-chain, so their next `previous_response_id` turn gets the provider's "not
+found", as a rollback does for chains that started on `to`.
 
 Enforced, the candidate is checked as a direct request to it would be (enabled, not
-unhealthy, approved origin, in the key's allowlist); one that cannot serve leaves the
-request on `from` with the reason in `held`. Still one provider call; with
+unhealthy, approved origin, in the key's allowlist) and, for an internal `from`, still
+internal at run time; one that cannot serve leaves the request on `from` with the reason
+in `held`. A candidate call that fails is the split's to answer: a fallback rule on
+`from` does not take it. Still one provider call; with
 `fallback_to_stable`, a candidate call that fails before its first byte with 500, 502,
 503, 504, a timeout or a connection error gets one more attempt on `from`
 (`attempt_reason: "canary_fallback"`, `X-Shim-Attempts: 2`). In `monitor` every request
@@ -299,12 +309,14 @@ One lane per alias.
 The measure is admission's TPM unit: the UTF-8 bytes of the compact JSON request,
 divided by four and rounded up, computed only for an alias that has a lane. At or above
 the threshold an enforced rule sends the request to the lane, checked as a direct
-request to it (enabled, not unhealthy, approved origin, in the key's allowlist); a lane
-that cannot serve leaves it on `from` with the reason in `held`. One provider call, one
+request to it (enabled, not unhealthy, approved origin, in the key's allowlist, still
+of the kind of `from` at run time); a lane that cannot serve leaves it on `from` with
+the reason in `held`. One provider call, one
 row, `route_decision` with `reason: "long_request"` and `input_tokens_approx`; a
 request below the threshold gets nothing, and a long request is served by its lane
-alone (request-start route rules do not run for it). In `monitor` every request is
-served by `from` and a long one records the lane it would have used. A conversation
+alone (request-start route rules do not run for it), and a fallback rule on `from`
+does not move it again. In `monitor` every request is served by `from`, a long one
+records the lane it would have used, and route rules decide as without the lane. A conversation
 whose history grows past the threshold moves to the lane once and stays there while it
 keeps growing; a model server's prefix cache is per replica, so that one turn misses
 it. The 7-day preview cannot count past sizes, so it answers "start in monitor".
