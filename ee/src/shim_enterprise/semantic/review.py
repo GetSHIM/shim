@@ -113,6 +113,9 @@ async def review_tenant(
     async with session_factory() as session:
         claims, questions, target = await _claim(session, organization_id, review, now)
         await session.commit()
+    if target is None:
+        # Nothing was claimed.
+        return
     done: set[UUID] = set()
     try:
         async with asyncio.timeout(PASS_SECONDS):
@@ -178,7 +181,7 @@ async def _claim(
     organization_id: UUID,
     review: SemanticReviewSettings,
     now: datetime,
-) -> tuple[list[Any], list[dict[str, Any]], tuple[str, bool] | None]:
+) -> tuple[list[Any], list[dict[str, Any]], SemanticTarget | None]:
     """The reviews this pass makes, claimed under the hourly and daily caps."""
     row = await session.get(OrganizationSemanticQuestions, organization_id)
     if row is None or row.revision < 1 or not row.questions:
