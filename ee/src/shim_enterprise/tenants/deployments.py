@@ -29,10 +29,12 @@ from shim.gateway.kernel.result import (
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.api.v1.chat import model_record
 from shim.rules import Rule, in_scope
+from shim.rules.evaluate import record_rule_verdicts
 from shim.rules.route import conversation_id, owned, route_reason, start_view
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.observability.enterprise_metrics import ROUTE_DECISIONS_TOTAL
+from shim_enterprise.rules.route_triggers import unavailable_rules
 from shim_enterprise.secrets.references import format_reference
 from shim_enterprise.tenants.gateway_settings import GatewaySettings
 from shim_enterprise.tenants.models import (
@@ -59,6 +61,17 @@ def unhealthy_seconds_left(deployment: ModelDeployment) -> int:
         return 0
     elapsed = (datetime.now(timezone.utc) - checked_at).total_seconds()
     return max(0, math.ceil(UNHEALTHY_MARK_SECONDS - elapsed))
+
+
+def unhealthy_refusal(retry_after: int) -> HTTPException:
+    return HTTPException(
+        503,
+        detail={
+            "code": "DEPLOYMENT_UNHEALTHY",
+            "message": "The model deployment is marked unhealthy.",
+        },
+        headers={"Retry-After": str(retry_after), "x-should-retry": "false"},
+    )
 
 
 def _origin(url: str) -> tuple[str, str | None, int]:
@@ -242,6 +255,49 @@ async def alias_target(
     return deployment_target(deployment, base_url), kind
 
 
+def _tags(prepared: PreparedInference, headers: Mapping[str, str]) -> tuple[str, ...]:
+    return CostAttribution.resolve(
+        headers.get("x-shim-tag"),
+        api_key_cost_center=prepared.policy.cost_center,
+        maximum_length=settings.COST_TAG_MAX_LENGTH,
+    ).tags
+
+
+def _fallback_takes_over(
+    prepared: PreparedInference,
+    deployment: ModelDeployment,
+    headers: Mapping[str, str],
+) -> bool:
+    """An enforced `health_flag` fallback rule covers this request; a monitor one
+    records where it would have gone."""
+
+    covering = list(unavailable_rules(prepared.rules, prepared.model))
+    if not covering:
+        return False
+    # Scope is read at the deployment the request reaches, as everywhere else.
+    reached = replace(
+        prepared,
+        target=deployment_target(deployment, deployment.base_url),
+        deployment_kind=cast(
+            Literal["internal", "external"], deployment.deployment_kind
+        ),
+    )
+    tags = _tags(prepared, headers)
+    applying = [
+        rule
+        for rule, match in covering
+        if "health_flag" in match.triggers and in_scope(rule, reached, tags)
+    ]
+    if any(rule.state == "enforced" for rule in applying):
+        return True
+    if applying:
+        record_rule_verdicts(
+            prepared,
+            {rule.id: ("allow", "RULE_WOULD_ROUTE") for rule in applying},
+        )
+    return False
+
+
 def _conversation_key() -> bytes:
     base = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
     return hmac.new(base, b"shim-route-conversation-v1", hashlib.sha256).digest()
@@ -260,7 +316,7 @@ class DeploymentResolver:
     async def resolve(
         self, prepared: PreparedInference, headers: Mapping[str, str]
     ) -> PreparedInference:
-        resolved = await self._registered(prepared)
+        resolved = await self._registered(prepared, headers)
         routes = [
             rule
             for rule in (prepared.rules.rules if prepared.rules is not None else ())
@@ -280,11 +336,7 @@ class DeploymentResolver:
         view = start_view(prepared.payload, prepared.protocol)
         if view is None:
             return prepared
-        tags = CostAttribution.resolve(
-            headers.get("x-shim-tag"),
-            api_key_cost_center=prepared.policy.cost_center,
-            maximum_length=settings.COST_TAG_MAX_LENGTH,
-        ).tags
+        tags = _tags(prepared, headers)
         for rule in sorted(routes, key=lambda rule: rule.state != "enforced"):
             if prepared.model not in rule.match["from"] or not in_scope(
                 rule, prepared, tags
@@ -330,7 +382,9 @@ class DeploymentResolver:
         ).inc()
         return replace(routed, route_decision=decision)
 
-    async def _registered(self, prepared: PreparedInference) -> PreparedInference:
+    async def _registered(
+        self, prepared: PreparedInference, headers: Mapping[str, str]
+    ) -> PreparedInference:
         async with self.session_factory() as session:
             try:
                 key = await self._active_key(session, prepared.api_key_id)
@@ -436,25 +490,23 @@ class DeploymentResolver:
                 },
             )
         retry_after = unhealthy_seconds_left(deployment)
+        taken_over = bool(retry_after) and _fallback_takes_over(
+            prepared, deployment, headers
+        )
         if retry_after:
+            # An enforced fallback rule takes over after privacy (gateway/fallback.py).
             prepared.record_verdict(
                 "deployment.registry",
                 stage="admission",
-                outcome="deny",
+                outcome="skip" if taken_over else "deny",
                 reason_code="DEPLOYMENT_UNHEALTHY",
                 policy={
                     "deployment_id": str(deployment.id),
                     "health_checked_at": deployment.health_checked_at,
                 },
             )
-            raise HTTPException(
-                503,
-                detail={
-                    "code": "DEPLOYMENT_UNHEALTHY",
-                    "message": "The model deployment is marked unhealthy.",
-                },
-                headers={"Retry-After": str(retry_after), "x-should-retry": "false"},
-            )
+            if not taken_over:
+                raise unhealthy_refusal(retry_after)
         bedrock = deployment.upstream == "aws_bedrock"
         if bedrock and prepared.protocol == "count_tokens":
             prepared.record_verdict(
@@ -497,13 +549,14 @@ class DeploymentResolver:
             if bedrock
             else None
         )
-        prepared.record_verdict(
-            "deployment.registry",
-            stage="admission",
-            outcome="allow",
-            reason_code="MODEL_REGISTERED",
-            policy=registry_policy,
-        )
+        if not taken_over:
+            prepared.record_verdict(
+                "deployment.registry",
+                stage="admission",
+                outcome="allow",
+                reason_code="MODEL_REGISTERED",
+                policy=registry_policy,
+            )
         prepared.record_verdict(
             "deployment.destination",
             stage="admission",

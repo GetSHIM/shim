@@ -212,8 +212,9 @@ and everything after run against the chosen target. A `PUT` refuses with 422
 `RULE_MATCH_INVALID` a `to` that is not a registered alias, or one of another provider
 than a registered `from` alias. A `route` rule with a `match.on` value belongs to
 another feature and is skipped here with no verdict; `on` is one of `unavailable`,
-`capacity`, `format_invalid`, `split`, `degrade`, `size` or `shadow`, and any other
-value is refused with 422. Enforcing a route rule, or changing an enforced one, is a relaxing change for
+`capacity`, `format_invalid`, `split`, `degrade`, `size` or `shadow`, any other
+value is refused with 422, and so is a value whose feature this release does not
+have yet (`RULE_MATCH_INVALID` at `match.on`): nothing would evaluate it. Enforcing a route rule, or changing an enforced one, is a relaxing change for
 [four eyes](#four-eyes); moving it back to monitor or deleting it tightens.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
@@ -255,6 +256,27 @@ at most 32, blocks first) and `rule_matches_truncated`; see
 [diagnostic metadata](DIAGNOSTIC_METADATA.md). Terms and patterns stay in the
 database row and in process memory, never in Redis, a log, a metric or an audit
 event.
+
+### Fallback rules
+
+A `route` rule with `match.on: "unavailable"` ([fallback rule](MODEL_DEPLOYMENTS.md#fallback-rule))
+leaves one `rule.<id>` verdict, stage `rules`, on the row where it decided:
+
+| Decision | Outcome | `reason_code` |
+| --- | --- | --- |
+| took the request to a `to` | `allow` | `FALLBACK_UNHEALTHY`, `FALLBACK_CIRCUIT_OPEN`, `FALLBACK_PROVIDER_ERROR` or `FALLBACK_RATE_LIMITED`, by trigger |
+| no `to` was usable | `skip` | `FALLBACK_NO_CANDIDATE` |
+| state `monitor` | `allow` | `RULE_WOULD_ROUTE` |
+
+When an enforced rule takes over an unhealthy alias, the resolver records
+`deployment.registry` as `skip` with `DEPLOYMENT_UNHEALTHY` instead of `deny`, and
+the request goes on to admission. A monitor rule's verdict for an unhealthy alias is
+on the refusal's audit event (the resolver's refusals have no row); for an open
+circuit or a provider error it is on the failing row. A decision before the call
+also enters `rule_matches` with count 1. Which `to` was refused and why is the
+`gateway.attempt` `skip` verdict (`ATTEMPT_TARGET_NOT_ALLOWED`,
+`ATTEMPT_TARGET_UNAVAILABLE`, `ATTEMPT_WOULD_LEAVE_INTERNAL`, ...); which one served is
+`route_decision` and the `attempt_*` keys.
 
 ### Request approval
 

@@ -17,6 +17,7 @@ from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shim_enterprise.gateway.attempts import TenantAttemptPolicy
+from shim_enterprise.gateway.fallback import UnavailableFallback
 from shim_enterprise.api.v1.router import gateway_router, management_router
 from shim.api.v1.gemini import router as gemini_router
 from shim.billing.lifecycle import load_lifecycle
@@ -202,6 +203,10 @@ def _create_gateway_kernel(
     aws_roles = AwsRoles(http_client, AsyncSessionLocal)
     chain_store = RedisPrivacyContinuationStore(cache)
     usage = DurableUsageLifecycle(DurableAccountingCoordinator(), AsyncSessionLocal)
+    circuit_for = {
+        provider: tenant_target_circuit(provider, cache)
+        for provider in ("openai", "anthropic", "google")
+    }
     return GatewayKernel(
         {
             "openai": OpenAIExecution(
@@ -214,7 +219,7 @@ def _create_gateway_kernel(
                     ),
                     aws_roles=aws_roles,
                 ),
-                circuit_for=tenant_target_circuit("openai", cache),
+                circuit_for=circuit_for["openai"],
                 settings=settings,
                 chain_store=chain_store,
                 http_client=http_client,
@@ -224,7 +229,7 @@ def _create_gateway_kernel(
                 credential_resolver=ManagedProviderCredentialResolver(
                     "anthropic", secret_store, AsyncSessionLocal, aws_roles=aws_roles
                 ),
-                circuit_for=tenant_target_circuit("anthropic", cache),
+                circuit_for=circuit_for["anthropic"],
                 settings=settings,
                 http_client=http_client,
                 pii_scrubber=pii_scrubber,
@@ -233,7 +238,7 @@ def _create_gateway_kernel(
                 credential_resolver=ManagedProviderCredentialResolver(
                     "google", secret_store, AsyncSessionLocal
                 ),
-                circuit_for=tenant_target_circuit("google", cache),
+                circuit_for=circuit_for["google"],
                 settings=settings,
                 sync_http_client=google_sync_client,
                 http_client=http_client,
@@ -245,7 +250,10 @@ def _create_gateway_kernel(
         prepare_inference=DeploymentResolver(
             AsyncSessionLocal, policy_resolver.policy_service
         ).resolve,
-        attempt_policy=TenantAttemptPolicy(AsyncSessionLocal, strategies=()),
+        attempt_policy=TenantAttemptPolicy(
+            AsyncSessionLocal,
+            strategies=(UnavailableFallback(AsyncSessionLocal, circuit_for),),
+        ),
         shadow_max_in_flight=settings.SHADOW_MAX_IN_FLIGHT,
         rate_limiter=BurstRateLimiter(cache),
         loop_detector=LoopDetectionService(cache),

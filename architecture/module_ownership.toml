@@ -71,6 +71,7 @@ forbidden_noncloud_import_roots = [
   "AttemptOutcome",
   "AttemptReason",
   "Target",
+  "guarded",
   "skip_attempt",
 ]
 "shim.gateway.kernel.gateway_kernel" = ["GatewayKernel"]
@@ -113,6 +114,7 @@ forbidden_noncloud_import_roots = [
 "shim.rules" = ["ACTION_RANK", "KINDS", "LIMITS", "Rule", "RuleScope", "RuleSet", "RuleSetError", "count_rule_matches", "in_scope", "load_rule_set", "match_records", "validate_rule_set"]
 "shim.rules.approval" = ["ApprovalDecision", "ApprovalRequest"]
 "shim.rules.content" = ["turkish_fold"]
+"shim.rules.evaluate" = ["record_rule_verdicts"]
 "shim.rules.route" = ["conversation_id", "owned", "route_reason", "start_view"]
 "shim.secrets.azure" = ["EntraClientCredential", "EntraTokenCache"]
 "shim.secrets.credentials" = ["EphemeralProviderCredential"]
@@ -482,6 +484,7 @@ enterprise = [
   "ee/src/shim_enterprise/gateway/contracts/audit.py",
   "ee/src/shim_enterprise/gateway/contracts/enterprise_errors.py",
   "ee/src/shim_enterprise/gateway/contracts/enterprise_scan.py",
+  "ee/src/shim_enterprise/gateway/fallback.py",
   "ee/src/shim_enterprise/gateway/kernel/__init__.py",
   "ee/src/shim_enterprise/gateway/kernel/scan_pipeline.py",
   "ee/src/shim_enterprise/gateway/pipeline/__init__.py",
@@ -536,6 +539,7 @@ enterprise = [
   "ee/src/shim_enterprise/rules/preview.py",
   "ee/src/shim_enterprise/rules/proposals.py",
   "ee/src/shim_enterprise/rules/resource.py",
+  "ee/src/shim_enterprise/rules/route_triggers.py",
   "ee/src/shim_enterprise/secrets/__init__.py",
   "ee/src/shim_enterprise/secrets/aws_secrets_manager.py",
   "ee/src/shim_enterprise/secrets/azure_key_vault.py",
@@ -630,6 +634,7 @@ enterprise = [
   "ee/tests/gateway/pipeline/test_scan_recovery.py",
   "ee/tests/gateway/privacy/test_chain_store.py",
   "ee/tests/gateway/test_attempts.py",
+  "ee/tests/gateway/test_fallback.py",
   "ee/tests/mcp/test_mcp_api.py",
   "ee/tests/mcp/test_protocol.py",
   "ee/tests/mcp/test_tools_contract.py",
@@ -654,6 +659,7 @@ enterprise = [
   "ee/tests/rules/test_preview.py",
   "ee/tests/rules/test_proposal_data.py",
   "ee/tests/rules/test_proposals.py",
+  "ee/tests/rules/test_route_triggers.py",
   "ee/tests/rules/test_rule_sets.py",
   "ee/tests/rules/test_rules_resource.py",
   "ee/tests/scripts/test_hash_record_set.py",

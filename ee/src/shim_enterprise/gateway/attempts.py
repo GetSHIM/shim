@@ -23,6 +23,8 @@ class AttemptCandidate:
     alias: str | None
     reason: AttemptReason
     rule_id: str
+    # Set when the strategy already resolved and checked `alias` itself.
+    target: Target | None = None
 
 
 class AttemptStrategy(Protocol):
@@ -103,6 +105,8 @@ class TenantAttemptPolicy:
         *,
         after_error: bool,
     ) -> Target | None:
+        if candidate.target is not None:
+            return candidate.target
         if candidate.alias is None:
             # The target that just failed is never asked again: that is a retry.
             if after_error:

@@ -65,7 +65,8 @@ to `unknown`. After 300 seconds the deployment serves again and the per-tenant
 provider circuit breaker protects callers if it is still failing; a mark without
 a check time never refuses traffic. To keep traffic away for longer, disable the
 deployment (`enabled: false`). Nothing is routed to another deployment or to the
-public catalog instead, and no probe runs automatically.
+public catalog instead unless the tenant wrote a [fallback rule](#fallback-rule), and
+no probe runs automatically.
 Health is not a version-verification guarantee.
 
 The declared version/hash/digest is operator supplied and included in the
@@ -201,6 +202,51 @@ embeddings, and Responses requests the provider stores (`store` not `false`, or 
 `previous_response_id` or `conversation`), since that conversation's state lives where
 it started. New route rules start in `monitor`, which only records where a request
 would have gone. Recipe: [Send simple requests to a cheaper model](COOKBOOK.md#send-simple-requests-to-a-cheaper-model).
+
+## Fallback rule
+
+A route rule with `match.on: "unavailable"` names what serves an alias when its
+deployment cannot: `from` is one registered alias, `to` one or two others of the same
+provider, tried in order (never `from`, never a catalog model), and `triggers` says
+when:
+
+| Trigger | When | Decided |
+|---|---|---|
+| `health_flag` | `from` is marked `unhealthy` | before the call, one attempt |
+| `circuit_open` | the tenant's circuit for `from` is open | before the call, one attempt |
+| `provider_error` | the attempt failed with 500, 502, 503 or 504, a timeout or a connection error | after the call, a new attempt |
+| `rate_limited` | the provider answered 429 | after the call, a new attempt |
+
+No other 4xx triggers, and a disabled `from` is still refused with 403. A tenant
+holds at most one `unavailable` rule per alias; the rules PUT refuses an unknown or
+cross-provider alias, a third `to` and an empty `triggers` with 422 and the field path.
+
+Before the call, an enforced rule takes the request to the first `to` the key may use
+and that can serve (enabled, not unhealthy, approved origin, never Bedrock): one
+provider call, one row, `X-Shim-Request-Id` its id, and `route_decision` with
+`reason: "fallback"`. After a failed call, the next `to` not yet tried runs as its
+own attempt (`X-Shim-Attempts`, rows linked by `attempt_group_id`, the failed one
+refunded, one request unit); streams only before their first byte and never a
+Responses continuation. A request leaves an `internal` deployment for an `external`
+`to` only when nothing was detected in it and no privacy rule matched; otherwise that
+`to` is skipped with `ATTEMPT_WOULD_LEAVE_INTERNAL`.
+
+When no `to` is usable, an unhealthy alias still answers 503 `DEPLOYMENT_UNHEALTHY`
+with the same body and headers, but after admission: the request used its share of
+the rate window and has a refunded row. An open circuit answers 503
+`PROVIDER_UNAVAILABLE` as before. The answer comes from the deployment the tenant
+named; when that is another model, the tenant chose it. A client's Anthropic beta
+`fallbacks` field is a different thing, left untouched and still priced at the
+requested model, so a provider-side fallback to a dearer model is under-priced.
+
+A `monitor` rule never changes the target or adds an attempt. It records where the
+request would have gone, verdict `RULE_WOULD_ROUTE`, from what the request actually
+met: on the refusal's audit event for an unhealthy alias, on the failing row for an
+open circuit or a provider error. The 7-day preview cannot replay health or circuit
+state, so it answers "start in monitor". The circuit is read only for an alias an
+enforced rule covers with `circuit_open`; without a rule nothing is read. Evidence:
+[the record](POLICY_DECISIONS.md#fallback-rules). Recipe:
+[Add a fallback rule](COOKBOOK.md#add-a-fallback-rule).
 
 ## The inventory
 

@@ -1026,8 +1026,9 @@ Notes:
 
 - A deployment marked `unhealthy` gets no traffic: its alias answers 503
   `DEPLOYMENT_UNHEALTHY` and leaves `/v1/models`. Nothing probes it
-  automatically and nothing fails over. Run the health check again, or update the
-  deployment with `PUT`, which resets it to `unknown`.
+  automatically and nothing fails over unless you [add a fallback rule](#add-a-fallback-rule).
+  Run the health check again, or update the deployment with `PUT`, which resets it
+  to `unknown`.
 - With `MODEL_DEPLOYMENT_REQUIRED=true`, a model that is not a registered alias
   gets 403 `MODEL_NOT_REGISTERED`, and `/v1/models` lists only aliases. A
   disabled alias gets 403 `MODEL_NOT_ALLOWED`; one whose origin was later
@@ -1036,6 +1037,30 @@ Notes:
   public price catalog is unpriced, so a provider spending limit refuses it with
   403 `MODEL_PRICE_UNKNOWN`. The full contract is in
   [model deployments](MODEL_DEPLOYMENTS.md).
+
+### Add a fallback rule
+
+Two replicas of one model, `kurum-llama` and `kurum-llama-b`, both registered: when
+the first cannot serve, send its requests to the second. Add this predefined rule to
+the [rule set](#write-a-tenant-rule):
+
+```json
+{"id": "llama_a_yedek", "name": "Llama A down: use B", "kind": "route", "action": "route",
+ "state": "monitor", "scope": {},
+ "match": {"on": "unavailable", "from": "kurum-llama", "to": ["kurum-llama-b"],
+           "triggers": ["health_flag", "circuit_open", "provider_error"]}}
+```
+
+`to` holds one or two aliases of the same provider, tried in order. `triggers` picks
+from `health_flag` (marked unhealthy), `circuit_open`, `provider_error` (500, 502,
+503, 504, timeout, connection error) and `rate_limited` (429). In `monitor`, requests
+end as before and each one that met a trigger records `RULE_WOULD_ROUTE`. Send the
+set again with `"state": "enforced"`: an unhealthy or open-circuit alias is served by
+`kurum-llama-b` in one call, and a failed call is followed by one attempt there
+(`X-Shim-Attempts: 2`). A request with personal data never leaves an `internal`
+deployment for an `external` fallback. To undo, restore the previous
+[policy version](#plan-apply-and-undo-a-change). The contract is in
+[model deployments](MODEL_DEPLOYMENTS.md#fallback-rule).
 
 ## Register an Azure OpenAI deployment
 
