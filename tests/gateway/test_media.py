@@ -527,3 +527,12 @@ def test_part_tokens_follow_the_published_estimates() -> None:
     assert media_tokens(part("text")) == 1_000
     for kind in ("audio", "video", "other"):
         assert media_tokens(part(kind)) is None
+
+
+def test_an_image_costs_what_its_model_is_billed() -> None:
+    image = MediaPart(("p",), "image", "inline", None, None, 4_000, (1024, 1024))
+
+    # gpt-4o-mini bills 33 times gpt-4o's tile price; 1,369 tiles were reserved before.
+    assert media_tokens(image, provider="openai", model="gpt-4o-mini") == 25_501
+    assert media_tokens(image, provider="openai", model="gpt-4o") == 765
+    assert media_tokens(image, provider="openai", model="gpt-5-nano") == 37 * 37

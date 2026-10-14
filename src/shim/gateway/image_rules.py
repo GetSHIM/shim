@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from fractions import Fraction
 from functools import partial
+import io
 import math
 import re
+from typing import Any
+import warnings
 
 # Read on 2026-10-08 from platform.openai.com/docs/guides/images-vision ("Choose an
 # image detail level", "Model sizing behavior", "Patch-based image tokenization",
@@ -14,8 +17,8 @@ import re
 # ai.google.dev/gemini-api/docs/media-resolution and
 # platform.claude.com/docs/en/build-with-claude/vision ("Resolution and token cost",
 # and vision-coordinates "How Claude resizes and pads images"). A new family or size
-# rule is a new version.
-IMAGE_RULES_VERSION = 2
+# rule is a new version. 3: Anthropic's published reference resize (2026-10-14).
+IMAGE_RULES_VERSION = 3
 
 # OpenAI: the detail levels that lower a family's image budget below its default
 # (`auto`). gpt-5.4's `low` can cost more than its `high`, so it lists none.
@@ -78,25 +81,30 @@ def anthropic_tier(model: str) -> str | None:
 
 
 def anthropic_size(width: int, height: int, tier: str) -> Size:
-    """Anthropic's reference resize: the largest aspect-preserving size within both limits."""
-    edge, tokens = _ANTHROPIC_TIERS[tier]
+    """Anthropic's published `resized_size` (vision-coordinates, read 2026-10-14)."""
+    max_edge, max_tokens = _ANTHROPIC_TIERS[tier]
 
     def fits(w: int, h: int) -> bool:
-        return max(w, h) <= edge and math.ceil(w / 28) * math.ceil(h / 28) <= tokens
+        return (
+            math.ceil(w / 28) * 28 <= max_edge
+            and math.ceil(h / 28) * 28 <= max_edge
+            and math.ceil(w / 28) * math.ceil(h / 28) <= max_tokens
+        )
 
     if fits(width, height):
-        return width, height
-    portrait = height > width
-    long, short = (height, width) if portrait else (width, height)
-    low, high = 1, long
-    while low < high:
-        middle = (low + high + 1) // 2
-        if fits(middle, max(1, round(short * middle / long))):
-            low = middle
+        return (width, height)
+    if height > width:
+        resized_h, resized_w = anthropic_size(height, width, tier)
+        return (resized_w, resized_h)
+    aspect_ratio = width / height
+    lo, hi = 1, width  # lo always fits; hi never fits
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if fits(mid, max(round(mid / aspect_ratio), 1)):
+            lo = mid
         else:
-            high = middle - 1
-    resized = (low, max(1, round(short * low / long)))
-    return (resized[1], resized[0]) if portrait else resized
+            hi = mid
+    return (lo, max(round(lo / aspect_ratio), 1))
 
 
 def fit(width: int, height: int, edge: int) -> Size:
@@ -181,6 +189,137 @@ SIZE_RULES_V1: Mapping[str, Mapping[str, Callable[[int, int], Size]]] = {
         "auto": _FIT_MAX,
     },
 }
+
+
+# Image tokens as billed, read 2026-10-14 from the OpenAI page above ("Calculating
+# costs"): tile families cost a base plus a price per 512-pixel tile of the size they
+# read at; patch families cost their 32-pixel patches times a multiplier.
+IMAGE_TOKENS_V1: Mapping[str, tuple[int, int] | float] = {
+    "gpt-5.1": (70, 140),
+    "gpt-4o": (85, 170),
+    "gpt-4.1": (85, 170),
+    "gpt-4o-mini": (2833, 5667),
+    **dict.fromkeys(
+        (
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.2",
+        ),
+        1.2,
+    ),
+    "gpt-4.1-mini": 1.62,
+}
+# OpenAI refuses an image over this many patches after its resize.
+_OPENAI_MAX_PATCHES = 30_000
+
+
+def image_tokens(
+    provider: str, model: str, detail: str | None, width: int, height: int
+) -> int | None:
+    """The input tokens a provider bills for an image; None where none is published."""
+    if provider == "anthropic":
+        tier = anthropic_tier(model)
+        if tier is None:
+            return None
+        resized = anthropic_size(width, height, tier)
+        return math.ceil(resized[0] / 28) * math.ceil(resized[1] / 28)
+    family = openai_family(model) if provider == "openai" else None
+    cost = IMAGE_TOKENS_V1.get(family or "")
+    if family is None or cost is None:
+        return None
+    rules = SIZE_RULES_V1[family]
+    if isinstance(cost, tuple):
+        base, per_tile = cost
+        if detail == "low":
+            return base
+        tiled = tile(width, height)
+        return base + per_tile * math.ceil(tiled[0] / 512) * math.ceil(tiled[1] / 512)
+    # A level with no published size is read at the largest one the family lists.
+    sizes = (
+        [rules[detail or "auto"](width, height)]
+        if (detail or "auto") in rules
+        else [rule(width, height) for rule in rules.values()]
+    )
+    patches = max(math.ceil(w / 32) * math.ceil(h / 32) for w, h in sizes)
+    return math.ceil(min(patches, _OPENAI_MAX_PATCHES) * cost)
+
+
+def image_detail(protocol: str, image: Mapping[str, Any]) -> object:
+    """The `detail` an OpenAI image part asks for, as sent."""
+    if protocol == "chat":
+        url = image.get("image_url")
+        return url.get("detail") if isinstance(url, Mapping) else None
+    return image.get("detail") if protocol == "responses" else None
+
+
+# Header pixels an image may declare before it is decoded, here and in Pillow.
+MAX_IMAGE_PIXELS = 64_000_000
+_FORMATS = {"PNG": "png", "JPEG": "jpeg", "WEBP": "webp"}
+# Same format out as in; JPEG and WEBP lossy at quality 90, PNG lossless. A JPEG
+# comment is not carried over: like EXIF and XMP, it is metadata.
+_ENCODE: Mapping[str, Mapping[str, Any]] = {
+    "PNG": {"compress_level": 6, "optimize": False},
+    "JPEG": {
+        "quality": 90,
+        "subsampling": 2,
+        "optimize": False,
+        "progressive": False,
+        "comment": b"",
+    },
+    "WEBP": {"quality": 90, "method": 4, "lossless": False},
+}
+
+
+class Unsupported(Exception):
+    """An image this resize leaves alone: its format, animation, rotation or mode."""
+
+
+def resize(raw: bytes, target: Size) -> tuple[bytes, str]:
+    """The image re-encoded at `target` in its own format, and that format.
+
+    Runs in an isolated worker (`shim.core.isolation`): decoding is the costly part.
+    """
+    from PIL import Image
+
+    Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+    with warnings.catch_warnings():
+        # Pillow only warns between its limit and twice it.
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        resized, source_format, icc = _decoded(Image.open(io.BytesIO(raw)), target)
+    output = io.BytesIO()
+    resized.save(
+        output,
+        format=source_format,
+        **_ENCODE[source_format],
+        **({"icc_profile": icc} if icc else {}),
+    )
+    return output.getvalue(), _FORMATS[source_format]
+
+
+def _decoded(image: Any, target: Size) -> tuple[Any, str, bytes | None]:
+    from PIL import Image
+
+    with image:
+        if image.format not in _FORMATS or getattr(image, "is_animated", False):
+            raise Unsupported
+        # Rotating it would change what the model sees.
+        if image.getexif().get(0x0112, 1) != 1:
+            raise Unsupported
+        source_format, icc = image.format, image.info.get("icc_profile")
+        if image.mode == "P":
+            image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+        elif image.mode not in {"L", "LA", "RGB", "RGBA"}:
+            raise Unsupported
+        if source_format == "JPEG":
+            image.draft(image.mode, target)
+        resized = image.resize(target, Image.Resampling.LANCZOS, reducing_gap=None)
+    return resized, source_format, icc
 
 
 def target_size(

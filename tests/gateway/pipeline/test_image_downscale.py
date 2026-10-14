@@ -12,6 +12,8 @@ from uuid import UUID
 from PIL import Image
 import pytest
 
+from shim.core import isolation
+import shim.gateway.image_rules as image_rules
 import shim.gateway.pipeline.transform_band as transform_band
 from shim.gateway.contracts.context import (
     AuditPolicy,
@@ -166,7 +168,7 @@ async def test_an_oversized_image_is_shrunk_to_the_providers_size(
     assert entry is not None
     assert (
         entry["items"] == 1
-        and entry["rules"] == 2
+        and entry["rules"] == 3
         and entry["library"].startswith("pillow-")
     )
     assert entry["images"] == [
@@ -244,7 +246,7 @@ def test_each_kept_mode_is_resized_in_its_own_mode(mode, kept) -> None:
         image.info["transparency"] = 0
     data = _encode(image, "PNG")
 
-    resized, image_format = transform_band._resize(data, (150, 100))
+    resized, image_format = image_rules.resize(data, (150, 100))
 
     shrunk = Image.open(io.BytesIO(resized))
     assert (shrunk.size, shrunk.mode, image_format) == ((150, 100), kept, "png")
@@ -302,12 +304,12 @@ async def test_unknown_models_and_unlisted_deployments_are_left_alone() -> None:
 
 @pytest.mark.asyncio
 async def test_too_many_pixels_are_never_decoded(monkeypatch) -> None:
-    monkeypatch.setattr(transform_band, "_MAX_IMAGE_PIXELS", 12_000_000 - 1)
+    monkeypatch.setattr(transform_band, "MAX_IMAGE_PIXELS", 12_000_000 - 1)
 
-    def fail(*_args):
+    def fail(*_args, **_kwargs):
         raise AssertionError("decoded")
 
-    monkeypatch.setattr(transform_band, "_resize", fail)
+    monkeypatch.setattr(isolation, "run", fail)
     prepared = _prepared("messages", [_anthropic_image(JPEG)])
 
     assert (await _run(prepared)).payload == prepared.payload
@@ -315,7 +317,11 @@ async def test_too_many_pixels_are_never_decoded(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_a_result_that_is_not_smaller_keeps_the_original(monkeypatch) -> None:
-    monkeypatch.setitem(transform_band._ENCODE, "PNG", {"compress_level": 0})
+    monkeypatch.setitem(image_rules._ENCODE, "PNG", {"compress_level": 0})
+    # In this process, so the patched encoder is the one used.
+    monkeypatch.setattr(
+        isolation, "run", lambda function, *args, deadline: function(*args)
+    )
     data = _encode(Image.new("RGB", (3000, 2000), (10, 20, 30)), "PNG", optimize=True)
     prepared = _prepared("messages", [_anthropic_image(data, "image/png")])
 
@@ -403,19 +409,23 @@ async def test_the_record_lists_at_most_its_cap_of_images(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_resize_runs_off_the_event_loop(monkeypatch) -> None:
-    threads: list[int] = []
-    resize = transform_band._resize
+async def test_the_resize_runs_in_a_worker_process_off_the_event_loop(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[object, int]] = []
+    run = isolation.run
 
-    def recording(raw, target):
-        threads.append(threading.get_ident())
-        return resize(raw, target)
+    def recording(function, *args, deadline):
+        calls.append((function, threading.get_ident()))
+        return run(function, *args, deadline=deadline)
 
-    monkeypatch.setattr(transform_band, "_resize", recording)
+    monkeypatch.setattr(isolation, "run", recording)
 
-    await _run(_prepared("messages", [_anthropic_image(JPEG)]))
+    done = await _run(_prepared("messages", [_anthropic_image(JPEG)]))
 
-    assert threads and threads[0] != threading.get_ident()
+    assert _entry(done) is not None
+    assert calls == [(image_rules.resize, calls[0][1])]
+    assert calls[0][1] != threading.get_ident()
 
 
 @pytest.mark.asyncio
@@ -431,9 +441,9 @@ async def test_a_text_request_never_imports_pillow(monkeypatch) -> None:
 def test_the_same_image_gives_the_same_bytes_in_another_process() -> None:
     script = (
         "import base64, hashlib, sys\n"
-        "from shim.gateway.pipeline.transform_band import _resize\n"
+        "from shim.gateway.image_rules import resize\n"
         "raw = base64.b64decode(sys.stdin.read())\n"
-        "print(hashlib.sha256(_resize(raw, (1270, 952))[0]).hexdigest())\n"
+        "print(hashlib.sha256(resize(raw, (1270, 952))[0]).hexdigest())\n"
     )
     for data in (JPEG, PNG, WEBP):
         digests = {
@@ -446,7 +456,7 @@ def test_the_same_image_gives_the_same_bytes_in_another_process() -> None:
             ).stdout.strip()
             for _ in range(2)
         }
-        local = hashlib.sha256(transform_band._resize(data, (1270, 952))[0]).hexdigest()
+        local = hashlib.sha256(image_rules.resize(data, (1270, 952))[0]).hexdigest()
         assert digests == {local}
 
 
@@ -459,3 +469,38 @@ async def test_base64_that_does_not_decode_leaves_the_request_alone() -> None:
     done = await _run(prepared)
 
     assert done.payload == prepared.payload and _entry(done) is None
+
+
+def test_a_jpeg_comment_is_not_carried_over() -> None:
+    data = _encode(_gradient(400, 300), "JPEG", comment=b"TCKN 10000000146")
+    assert Image.open(io.BytesIO(data)).info["comment"]
+
+    resized, _ = image_rules.resize(data, (200, 150))
+
+    assert "comment" not in Image.open(io.BytesIO(resized)).info
+    assert b"10000000146" not in resized
+
+
+def test_pillow_refuses_more_pixels_than_the_cap() -> None:
+    data = _encode(Image.new("L", (9000, 8000)), "PNG")
+
+    with pytest.raises(Image.DecompressionBombWarning):
+        image_rules.resize(data, (100, 89))
+
+
+@pytest.mark.asyncio
+async def test_a_request_without_images_gets_no_thinking_bound_verdict() -> None:
+    before = IMAGE_DOWNSCALE_TOTAL.labels(outcome="thinking_bound")._value.get()
+    prepared = replace(
+        _prepared(
+            "messages",
+            [{"type": "text", "text": "hi"}],
+            thinking={"type": "adaptive"},
+        ),
+        media=(),
+    )
+
+    done = await _run(prepared)
+
+    assert done.policy_verdicts == []
+    assert IMAGE_DOWNSCALE_TOTAL.labels(outcome="thinking_bound")._value.get() == before

@@ -9,6 +9,7 @@ import math
 import re
 from typing import Any, Literal
 
+from shim.gateway.image_rules import image_tokens
 from shim.privacy.policies import (
     DEEP_PRIVACY_FIELDS,
     OPAQUE_MEDIA_FIELDS,
@@ -229,12 +230,25 @@ def image_dimensions(data: bytes) -> tuple[int, int] | None:
     return None
 
 
-def media_tokens(part: MediaPart, pdf_pages: int | None = None) -> int | None:
-    """A part's estimated input tokens; None when it is measured as text, by its bytes."""
+def media_tokens(
+    part: MediaPart,
+    pdf_pages: int | None = None,
+    *,
+    provider: str = "",
+    model: str = "",
+    detail: str | None = None,
+) -> int | None:
+    """A part's estimated input tokens; None when it is measured as text, by its bytes.
+
+    An image costs what its provider publishes for `model` (`image_tokens`) where it does.
+    """
     if part.kind == "image":
         if part.dimensions is None:
             return IMAGE_UNKNOWN_TOKENS
         width, height = part.dimensions
+        billed = image_tokens(provider, model, detail, width, height)
+        if billed is not None:
+            return billed
         return min(
             math.ceil(width / IMAGE_TILE) * math.ceil(height / IMAGE_TILE),
             IMAGE_MAX_TOKENS,

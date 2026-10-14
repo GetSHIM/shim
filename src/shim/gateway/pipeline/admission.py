@@ -51,6 +51,7 @@ from shim.gateway.media import (
     pdf_page_count,
     value_at,
 )
+from shim.gateway.image_rules import image_detail
 from shim.gateway.pipeline.privacy import media_refused
 from shim.observability.metrics import (
     AGENT_LOOP_SIGNALS_TOTAL,
@@ -241,6 +242,8 @@ class AdmissionStage:
             f"{value.provider}|{value.protocol}|{value.model}|{value.stream}",
         )
         media = classify_media(payload) if MEDIA_MARKERS.search(serialized) else ()
+        # A byte cap measures the body as sent, whatever its parts are estimated at.
+        body_bytes = input_tokens
         candidates = candidate_count(value)
         output_tokens = per_candidate_output_tokens * candidates
         tier = value.context.tier_policy
@@ -291,7 +294,7 @@ class AdmissionStage:
         limited = value.protocol != "count_tokens" and _request_limits(
             value,
             attribution.tags,
-            input_bytes=input_tokens,
+            input_bytes=body_bytes,
             approximate_tokens=approximate_tokens,
         )
         token_limit = tier.rate_limit_tpm
@@ -906,6 +909,7 @@ def _missing_capability(
             part.kind
             for part in media
             if part.kind in _CATALOG_MODALITIES
+            and part.path
             and part.path[0] in _PROMPT_FIELDS
             and not _openai_file(value_at(payload, part.path))
         } - set(entry.input_modalities)
@@ -934,12 +938,24 @@ async def _sized_by_parts(
             if part.kind == "pdf" and data is not None
             else None
         )
-        part_tokens = media_tokens(part, pages)
+        detail = (
+            image_detail(value.protocol, value_at(value.payload, part.path))
+            if part.kind == "image"
+            else None
+        )
+        part_tokens = media_tokens(
+            part,
+            pages,
+            provider=str(value.provider),
+            model=value.pricing_model,
+            detail=detail if isinstance(detail, str) else None,
+        )
         if part_tokens is None:
             continue
         tokens += part_tokens
         if data is not None:
-            text_bytes -= len(json.dumps(data, ensure_ascii=False).encode()) - 2
+            # Base64 and data URLs are ASCII with nothing JSON escapes.
+            text_bytes -= len(data)
     window = _context_window(value)
     if window is not None:
         tokens = min(tokens, window)

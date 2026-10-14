@@ -8,6 +8,7 @@ from shim.gateway.image_rules import (
     anthropic_tier,
     fit,
     gemini3,
+    image_tokens,
     openai_family,
     patch,
     target_size,
@@ -45,7 +46,7 @@ def test_a_dated_mini_is_the_mini_family() -> None:
 
 def test_the_table_is_version_one() -> None:
     low, both, none = frozenset({"low"}), frozenset({"low", "high"}), frozenset()
-    assert IMAGE_RULES_VERSION == 2
+    assert IMAGE_RULES_VERSION == 3
     assert DETAIL_LOWERS_V1 == {
         "gpt-4o": low,
         "gpt-4o-mini": low,
@@ -188,3 +189,43 @@ def test_unknown_models_and_gemini_have_no_size() -> None:
     assert target_size("google", "gemini-3.5-flash", None, 4000, 3000) is None
     assert target_size("anthropic", "claude-instant", None, 4000, 3000) is None
     assert target_size("anthropic", "claude-haiku-4-5", None, 4000, 3000) == (1270, 952)
+
+
+@pytest.mark.parametrize(
+    ("size", "tier", "expected"),
+    [
+        # Where a reconstruction rounding the short side differently was off by one.
+        ((1961, 2458), "standard", (980, 1228)),
+        ((1651, 2158), "standard", (952, 1244)),
+        ((2016, 2004), "high", (1932, 1921)),
+        # The published examples.
+        ((1075, 1520), "standard", (924, 1307)),
+        ((1920, 1080), "standard", (1456, 819)),
+        ((3840, 2160), "high", (2576, 1449)),
+    ],
+)
+def test_anthropic_resizes_as_its_published_reference(size, tier, expected) -> None:
+    assert anthropic_size(*size, tier) == expected
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "detail", "size", "tokens"),
+    [
+        # The live run billed 25,514 for one 1024-pixel square image, text included.
+        ("openai", "gpt-4o-mini", None, (1024, 1024), 2833 + 5667 * 4),
+        ("openai", "gpt-4o-mini", "low", (1024, 1024), 2833),
+        ("openai", "gpt-4o", "high", (100, 100), 85 + 170),
+        ("openai", "gpt-5.1-2025-11-13", None, (2048, 768), 70 + 140 * 8),
+        ("openai", "gpt-4.1-mini", None, (1024, 1024), 1659),
+        ("openai", "gpt-5.4", "original", (6000, 6000), 12_000),
+        ("anthropic", "claude-haiku-4-5", None, (3840, 2160), 52 * 30),
+        ("anthropic", "claude-opus-5-5", None, (3840, 2160), 4784),
+        ("anthropic", "claude-instant", None, (100, 100), None),
+        ("openai", "gpt-5-nano", None, (100, 100), None),
+        ("google", "gemini-3.5-flash", None, (100, 100), None),
+    ],
+)
+def test_image_tokens_are_what_the_provider_bills(
+    provider, model, detail, size, tokens
+) -> None:
+    assert image_tokens(provider, model, detail, *size) == tokens

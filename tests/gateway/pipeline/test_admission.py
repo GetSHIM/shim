@@ -1944,7 +1944,8 @@ async def test_forwarded_media_is_sized_by_its_parts(fields) -> None:
     data = _png_b64(size=36_000)
     prepared = _with_media(_prepared("x"), _image(data), **fields)
     text_bytes = _compact_bytes(prepared.payload) - len(f"data:image/png;base64,{data}")
-    approximate = -(-text_bytes // 4) + 4_784
+    # gpt-5.6-luna reads 4000x3000 whole: 125 x 94 patches at 1.2 tokens each.
+    approximate = -(-text_bytes // 4) + 14_100
 
     admitted = await _stage(InMemoryRateLimiter()).run(
         replace(
@@ -1959,7 +1960,7 @@ async def test_forwarded_media_is_sized_by_its_parts(fields) -> None:
         )
     )
     assert admitted.admission is not None
-    assert admitted.admission.estimated_input_tokens == text_bytes + 4_784
+    assert admitted.admission.estimated_input_tokens == text_bytes + 14_100
 
     with pytest.raises(HTTPException) as refused:
         await _stage(InMemoryRateLimiter()).run(
@@ -2133,3 +2134,40 @@ async def test_scanned_documents_are_sized_by_parts(documents, by_parts) -> None
         if by_parts
         else payload_bytes
     )
+
+
+@pytest.mark.asyncio
+async def test_a_byte_cap_measures_the_body_even_when_media_is_sized_by_parts() -> None:
+    # Night 4 M1: a forwarded image was measured at its tokens, so the cap was skipped.
+    stage, usage, _ = _limit_stage()
+    prepared = _with_media(
+        _prepared("x"),
+        _image(_png_b64(size=200_000)),
+        media_inputs="allow",
+        rules=_limit_rule({"max_input_bytes": 100_000}),
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        await stage.run(prepared)
+
+    assert refused.value.detail["code"] == "RULE_BLOCKED"
+    usage.admit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_media_part_at_the_payload_root_is_no_server_error() -> None:
+    # Night 4 L1: a root part has an empty path; the catalog check read path[0].
+    prepared = replace(
+        _prepared("x"),
+        payload={
+            "model": "gpt-5.6-luna",
+            "type": "image_generation",
+            "input_image_mask": {"image_url": f"data:image/png;base64,{_png_b64()}"},
+            "messages": [{"role": "user", "content": "draw"}],
+        },
+        media_inputs="allow",
+    )
+
+    admitted = await _stage(InMemoryRateLimiter()).run(prepared)
+
+    assert admitted.media is not None and admitted.media[0].path == ()

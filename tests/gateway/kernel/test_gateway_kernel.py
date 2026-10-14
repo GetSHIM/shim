@@ -6,6 +6,8 @@ from decimal import Decimal
 import io
 import json
 from types import SimpleNamespace
+import zipfile
+import zlib
 from unittest.mock import AsyncMock
 
 import httpx
@@ -13,6 +15,7 @@ import pytest
 from starlette.responses import Response
 
 from shim.application import create_community_app
+from shim.core import isolation
 from shim.core.community_config import CommunitySettings
 import shim.gateway.kernel.gateway_kernel as kernel_module
 from shim.gateway.contracts.ids import CURRENT_REQUEST_ID, ProviderId
@@ -21,6 +24,7 @@ from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
 from shim.gateway.pipeline.provider_execution import ERROR_HINTS, ProviderCallError
 from shim.gateway.request_policy import BandSettings
 from shim.gateway.usage import LocalUsageLifecycle
+from shim.observability.metrics import IMAGE_DOWNSCALE_TOTAL
 from shim.privacy.policies import (
     PrivacyAction,
     PrivacyOutcome,
@@ -4871,8 +4875,9 @@ _EMAIL_PDF = _document_pdf("Iletisim: ayse.yilmaz@example.com adresine yazin.")
 
 @pytest.mark.asyncio
 async def test_a_clean_document_is_scanned_and_forwarded_as_it_came() -> None:
+    # Monitor only: a tenant that masks gets the scanned text instead (D1).
     response, [call], [line] = await _call_with_media(
-        "messages", _CLEAN_PDF, SHIM_DOCUMENTS="scan"
+        "messages", _CLEAN_PDF, SHIM_DOCUMENTS="scan", PII_ENTITY_ACTIONS=_ALL_MONITOR
     )
 
     assert response.status_code == 200
@@ -4998,6 +5003,348 @@ async def test_an_unscannable_document_is_refused_or_counted() -> None:
     assert passed.status_code == 200
     assert line["documents"]["unscannable"] == {"corrupt": 1}
     assert line["media_unscanned"] == 1
+
+
+def _raw_pdf(*objects: bytes, catalog: bytes = b"") -> bytes:
+    """A PDF whose first object is the catalog, its second the page tree."""
+    body = [b"<< /Type /Catalog /Pages 2 0 R %s>>" % catalog, *objects]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(body, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(body) + 1)
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(body) + 1,
+        xref,
+    )
+    return bytes(out)
+
+
+def _one_page_pdf(
+    content: bytes, *, flate: bool = False, page: bytes = b"", catalog: bytes = b""
+) -> bytes:
+    stream = zlib.compress(content, 9) if flate else content
+    return _raw_pdf(
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> %s>>" % page,
+        b"<< /Length %d%s >>\nstream\n%s\nendstream"
+        % (len(stream), b" /Filter /FlateDecode" if flate else b"", stream),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        catalog=catalog,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_tiny_pdf_that_inflates_to_megabytes_is_refused_quickly() -> None:
+    # Night 4 H1: 12.8 KB, an 8 MB content stream; it took 27.6 s and 365 MB.
+    content = b"BT /F1 12 Tf 72 720 Td " + b"(A) Tj " * (8 * 1024 * 1024 // 7) + b"ET"
+    data = base64.b64encode(_one_page_pdf(content, flate=True)).decode()
+    assert len(data) < 18_000
+
+    started = asyncio.get_running_loop().time()
+    response, calls, _ = await _call_with_media(
+        "gemini-pdf", data, SHIM_DOCUMENTS="scan"
+    )
+
+    assert asyncio.get_running_loop().time() - started < 5
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "DOCUMENT_UNSCANNABLE"
+    assert "too_large" in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_slow_pdf_stops_at_its_deadline_without_holding_the_loop(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(isolation, "CALL_SECONDS", 0.3)
+    content = b"BT /F1 12 Tf 72 720 Td " + b"(A) Tj " * (3 * 1024 * 1024 // 7) + b"ET"
+    data = base64.b64encode(_one_page_pdf(content, flate=True)).decode()
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    started = asyncio.get_running_loop().time()
+    response, calls, _ = await _call_with_media(
+        "gemini-pdf", data, SHIM_DOCUMENTS="scan"
+    )
+    elapsed = asyncio.get_running_loop().time() - started
+    ticker.cancel()
+
+    assert response.status_code == 400 and calls == []
+    assert "too_slow" in response.text
+    assert elapsed < 3
+    # The loop kept running while the worker read the file.
+    assert ticks >= elapsed / 0.01 / 4
+
+
+_MEDIA_REQUESTS["gemini-docx"] = (
+    "/v1beta/models/gemini-3.5-flash:generateContent",
+    {"x-goog-api-key": _GATEWAY_KEY},
+    lambda data: {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "summarise"},
+                    {
+                        "inlineData": {
+                            "mimeType": "application/vnd.openxmlformats-"
+                            "officedocument.wordprocessingml.document",
+                            "data": data,
+                        }
+                    },
+                ],
+            }
+        ]
+    },
+    ("contents", 0, "parts", 1),
+)
+
+
+@pytest.mark.asyncio
+async def test_a_utf16_word_file_with_entities_is_refused_before_expanding() -> None:
+    # Night 4 H2: a DOCTYPE search on the raw bytes missed UTF-16, and expat expanded
+    # it; each reference stays under expat's amplification limit of 100.
+    xml = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        f'<!DOCTYPE w:document [<!ENTITY a "{"x" * 90}">]>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body><w:p><w:r><w:t>{'&a;' * 300_000}</w:t></w:r></w:p></w:body></w:document>"
+    ).encode("utf-16")
+    assert b"<!DOCTYPE" not in xml
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", xml)
+    data = base64.b64encode(buffer.getvalue()).decode()
+    assert len(data) < 40_000
+
+    response, calls, _ = await _call_with_media(
+        "gemini-docx", data, SHIM_DOCUMENTS="scan"
+    )
+
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "DOCUMENT_UNSCANNABLE"
+    assert "corrupt" in response.text
+
+
+def _form_pdf(**fields: str) -> str:
+    """A filled form: a label on the page, each value only in its AcroForm field."""
+    label = b"BT /F1 12 Tf 72 720 Td (Basvuru formu: kimlik numarasi ve e-posta) Tj ET"
+    widgets = [
+        b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (%s) /V (%s) "
+        b"/Rect [72 %d 400 %d] /P 3 0 R >>"
+        % (name.encode(), value.encode(), 600 - 40 * index, 620 - 40 * index)
+        for index, (name, value) in enumerate(fields.items())
+    ]
+    numbers = b" ".join(b"%d 0 R" % (6 + index) for index in range(len(widgets)))
+    return base64.b64encode(
+        _raw_pdf(
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Annots [%s] >>" % numbers,
+            b"<< /Length %d >>\nstream\n%s\nendstream" % (len(label), label),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            *widgets,
+            catalog=b"/AcroForm << /Fields [%s] >> " % numbers,
+        )
+    ).decode()
+
+
+@pytest.mark.asyncio
+async def test_a_value_in_a_pdf_form_field_is_scanned() -> None:
+    # Night 4 H3: page text only; the provider renders the field and reads the value.
+    data = _form_pdf(tckn="10000000146", email="ayse.yilmaz@example.com")
+
+    response, calls, _ = await _call_with_media(
+        "gemini-pdf", data, SHIM_DOCUMENTS="scan"
+    )
+
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "PII_BLOCKED"
+    assert "EMAIL_ADDRESS" in response.text
+    assert "10000000146" not in response.text and "ayse" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_tenant_that_masks_gets_a_clean_pdf_as_its_scanned_text() -> None:
+    masked, [sent], [line] = await _call_with_media(
+        "messages", _CLEAN_PDF, SHIM_DOCUMENTS="scan"
+    )
+    monitored, [native], _ = await _call_with_media(
+        "messages", _CLEAN_PDF, SHIM_DOCUMENTS="scan", PII_ENTITY_ACTIONS=_ALL_MONITOR
+    )
+
+    assert masked.status_code == monitored.status_code == 200
+    source = _media_sent("messages", sent)["source"]
+    assert source["type"] == "text" and "Rapor hazir" in source["data"]
+    assert line["documents"]["converted"] == 1
+    assert _media_sent("messages", native)["source"]["data"] == _CLEAN_PDF
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_with_a_lone_surrogate_in_its_text_is_sent_as_text() -> None:
+    # Night 4 M2: pypdf passed U+D800 through; encoding the provider body failed.
+    cmap = (
+        b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap "
+        b"1 begincodespacerange <00> <FF> endcodespacerange "
+        b"1 beginbfchar <41> <D800> endbfchar endcmap end end"
+    )
+    text = b"BT /F1 12 Tf 72 720 Td (Rapor hazir, ekip onayladi. A) Tj ET"
+    pdf = _raw_pdf(
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(text), text),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(cmap), cmap),
+    )
+
+    response, [call], _ = await _call_with_media(
+        "messages", base64.b64encode(pdf).decode(), SHIM_DOCUMENTS="scan"
+    )
+
+    assert response.status_code == 200
+    sent = _media_sent("messages", call)["source"]["data"]
+    assert "�" in sent and not any("\ud800" <= c <= "\udfff" for c in sent)
+
+
+def _palette_bomb() -> str:
+    from PIL import Image
+
+    image = Image.new("P", (8000, 8000))
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return base64.b64encode(output.getvalue()).decode()
+
+
+_MEDIA_REQUESTS["messages-images"] = (
+    "/v1/messages",
+    {"x-api-key": _GATEWAY_KEY},
+    lambda data: {
+        "model": "claude-haiku-4-5",
+        "max_tokens": 16,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    *(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": data,
+                            },
+                        }
+                        for _ in range(3)
+                    ),
+                    {"type": "text", "text": "describe"},
+                ],
+            }
+        ],
+    },
+    ("messages", 0, "content", 0),
+)
+
+
+@pytest.mark.asyncio
+async def test_tiny_images_with_huge_dimensions_spend_a_pixel_budget_in_order() -> None:
+    # Night 4 H4: 10 KB of base64 decodes to 64M pixels; each one cost 0.8 s and 200 MB.
+    pytest.importorskip("PIL")
+    bomb = _palette_bomb()
+    assert len(bomb) < 20_000
+
+    response, [call], [line] = await _call_with_media(
+        "messages-images",
+        bomb,
+        SHIM_MEDIA_INPUTS="allow",
+        SHIM_IMAGE_DOWNSCALE="on",
+    )
+
+    assert response.status_code == 200
+    [entry] = [
+        entry
+        for entry in line["transforms_applied"]
+        if entry["id"] == "image_downscale"
+    ]
+    assert entry["items"] == 2 and entry["skipped"] == {"too_large": 1}
+    content = json.loads(call.content)["messages"][0]["content"]
+    assert content[2]["source"]["data"] == bomb
+    assert content[0]["source"]["data"] != bomb
+
+
+@pytest.mark.asyncio
+async def test_an_image_decode_stops_at_its_deadline(monkeypatch) -> None:
+    pytest.importorskip("PIL")
+    monkeypatch.setattr(isolation, "CALL_SECONDS", 0.05)
+    slow = IMAGE_DOWNSCALE_TOTAL.labels(outcome="too_slow")
+
+    before = slow._value.get()
+    response, [call], [line] = await _call_with_media(
+        "messages-images",
+        _palette_bomb(),
+        SHIM_MEDIA_INPUTS="allow",
+        SHIM_IMAGE_DOWNSCALE="on",
+    )
+
+    assert response.status_code == 200
+    assert slow._value.get() == before + 2
+    assert not line.get("transforms_applied")
+    assert (
+        json.loads(call.content)["messages"][0]["content"][0]["source"]["data"]
+        == _palette_bomb()
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_document_is_reserved_by_its_text_too() -> None:
+    # Night 4 D2: a page is estimated at 3,000 tokens, its text can be far more.
+    async def failed_estimate(**settings: str) -> tuple[int, list[httpx.Request]]:
+        calls: list[httpx.Request] = []
+
+        def upstream(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return httpx.Response(500, json={"error": {"message": "down"}})
+
+        path, auth, build, _ = _MEDIA_REQUESTS["messages"]
+        events = io.StringIO()
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(upstream)
+        ) as outbound:
+            app = create_community_app(
+                CommunitySettings(
+                    _env_file=None, SHIM_API_KEY=_GATEWAY_KEY, **settings
+                ),
+                http_client=outbound,
+                event_stream=events,
+            )
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app), base_url="http://shim.test"
+                ) as inbound:
+                    await inbound.post(
+                        path,
+                        headers={**auth, "x-provider-key": "provider-secret"},
+                        json=build(_CLEAN_PDF),
+                    )
+        [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+        return line["prompt_tokens"], calls
+
+    unread, _ = await failed_estimate(SHIM_MEDIA_INPUTS="allow")
+    read, [call] = await failed_estimate(SHIM_DOCUMENTS="scan")
+
+    text = _media_sent("messages", call)["source"]["data"]
+    assert read - unread == len(text.encode()) > 0
 
 
 def test_without_pypdf_the_gateway_warns_at_start(monkeypatch, caplog) -> None:

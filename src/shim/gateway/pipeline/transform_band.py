@@ -7,13 +7,20 @@ import base64
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-import io
 import json
 import logging
 import re
 from typing import Any
 
-from shim.gateway.image_rules import IMAGE_RULES_VERSION, target_size
+from shim.core import isolation
+from shim.gateway.image_rules import (
+    IMAGE_RULES_VERSION,
+    MAX_IMAGE_PIXELS,
+    Unsupported,
+    image_detail,
+    resize,
+    target_size,
+)
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.kernel.stage import TraceValue
 from shim.gateway.media import MediaPart, classify_media, split_data_url, value_at
@@ -198,15 +205,9 @@ def _json_compaction(
 
 IMAGE_DOWNSCALE_VERSION = 1
 _MAX_IMAGE_BYTES = 32 * 1024 * 1024
-_MAX_IMAGE_PIXELS = 64_000_000
+# Decoded pixels one request may spend, in payload order: two images at the cap.
+MAX_REQUEST_PIXELS = 2 * MAX_IMAGE_PIXELS
 _RECORDED_IMAGES = 64
-_FORMATS = {"PNG": "png", "JPEG": "jpeg", "WEBP": "webp"}
-# Same format out as in; JPEG and WEBP lossy at quality 90, PNG lossless.
-_ENCODE: Mapping[str, Mapping[str, Any]] = {
-    "PNG": {"compress_level": 6, "optimize": False},
-    "JPEG": {"quality": 90, "subsampling": 2, "optimize": False, "progressive": False},
-    "WEBP": {"quality": 90, "method": 4, "lossless": False},
-}
 # Images whose coordinates or size the client relies on.
 _OPT_OUT_TYPES = frozenset(
     {"tool_result", "computer_call_output", "computer_screenshot"}
@@ -240,41 +241,6 @@ def _opted_out(payload: Mapping[str, Any], part: MediaPart) -> bool:
     )
 
 
-def _detail(protocol: str, image: Mapping[str, Any]) -> object:
-    if protocol == "chat":
-        url = image.get("image_url")
-        return url.get("detail") if isinstance(url, Mapping) else None
-    return image.get("detail") if protocol == "responses" else None
-
-
-def _resize(raw: bytes, target: tuple[int, int]) -> tuple[bytes, str]:
-    """The image re-encoded at `target` in its own format, and that format."""
-    from PIL import Image
-
-    with Image.open(io.BytesIO(raw)) as image:
-        if image.format not in _FORMATS or getattr(image, "is_animated", False):
-            raise _Untouched("unsupported")
-        # Rotating it would change what the model sees.
-        if image.getexif().get(0x0112, 1) != 1:
-            raise _Untouched("unsupported")
-        source_format, icc = image.format, image.info.get("icc_profile")
-        if image.mode == "P":
-            image = image.convert("RGBA" if "transparency" in image.info else "RGB")
-        elif image.mode not in {"L", "LA", "RGB", "RGBA"}:
-            raise _Untouched("unsupported")
-        if source_format == "JPEG":
-            image.draft(image.mode, target)
-        resized = image.resize(target, Image.Resampling.LANCZOS, reducing_gap=None)
-    output = io.BytesIO()
-    resized.save(
-        output,
-        format=source_format,
-        **_ENCODE[source_format],
-        **({"icc_profile": icc} if icc else {}),
-    )
-    return output.getvalue(), _FORMATS[source_format]
-
-
 def _image_downscale(
     prepared: PreparedInference, payload: dict[str, Any]
 ) -> TransformResult | None:
@@ -283,6 +249,8 @@ def _image_downscale(
     skipped: Counter[str] = Counter()
     images: list[dict[str, Any]] = []
     sizes = [0, 0, 0, 0]
+    pixels = MAX_REQUEST_PIXELS
+    deadline = isolation.request_deadline()
     for part in classify_media(payload):
         if part.kind != "image" or part.source != "inline" or part.data_path is None:
             continue
@@ -293,7 +261,7 @@ def _image_downscale(
             if part.dimensions is None:
                 raise _Untouched("unsupported")
             width, height = part.dimensions
-            detail = _detail(prepared.protocol, value_at(payload, part.path))
+            detail = image_detail(prepared.protocol, value_at(payload, part.path))
             target = target_size(
                 str(prepared.provider),
                 prepared.pricing_model,
@@ -306,14 +274,21 @@ def _image_downscale(
             if target[0] >= width and target[1] >= height:
                 raise _Untouched("below_threshold")
             if (part.decoded_bytes or 0) > _MAX_IMAGE_BYTES or (
-                width * height > _MAX_IMAGE_PIXELS
+                width * height > min(MAX_IMAGE_PIXELS, pixels)
             ):
                 raise _Untouched("too_large")
+            pixels -= width * height
             try:
                 raw = base64.b64decode(split_data_url(data)[1])
-                smaller, image_format = _resize(raw, target)
-            except _Untouched:
-                raise
+                smaller, image_format = isolation.run(
+                    resize, raw, target, deadline=deadline
+                )
+            except Unsupported:
+                raise _Untouched("unsupported") from None
+            except TimeoutError:
+                raise _Untouched("too_slow") from None
+            except MemoryError:
+                raise _Untouched("too_large") from None
             except Exception as error:
                 # A decoder error leaves the image alone; a transform never fails a request.
                 logger.info("Image left unchanged error_type=%s", type(error).__name__)
@@ -399,7 +374,8 @@ STEPS: tuple[
         "image_downscale",
         IMAGE_DOWNSCALE_VERSION,
         frozenset({"chat", "responses", "messages"}),
-        lambda prepared: prepared.band.image_downscale,
+        # Only requests with an image to shrink count, skipped or not.
+        lambda prepared: prepared.band.image_downscale and _inline_images(prepared),
         _image_downscale,
     ),
 )
