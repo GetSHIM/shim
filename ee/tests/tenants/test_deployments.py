@@ -2178,3 +2178,127 @@ async def test_a_destination_rule_still_refuses_a_routed_request(
     assert refused.json()["error"]["code"] == "RULE_BLOCKED"
     assert served.status_code == 200, served.text
     assert hosts == ["b.internal"]
+
+
+def _lane(state: str = "enforced", min_input_tokens: int = 256) -> dict:
+    return {
+        "id": "uzun_serit",
+        "name": "Long requests to replica 2",
+        "kind": "route",
+        "action": "route",
+        "state": state,
+        "match": {
+            "on": "size",
+            "from": "internal-a",
+            "to": "internal-b",
+            "min_input_tokens": min_input_tokens,
+        },
+    }
+
+
+def _measure(text: str) -> int:
+    from shim_enterprise.tenants.deployments import approximate_input_tokens
+
+    # The payload the resolver measures: the client's, with the upstream model.
+    return approximate_input_tokens(
+        {"model": "custom-model-v1", "messages": [{"role": "user", "content": text}]}
+    )
+
+
+async def _replicas(db, key):
+    rows = await _deployments(db, key)
+    rows[1].upstream_model = rows[0].upstream_model
+    await db.flush()
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_a_request_at_the_lane_threshold_goes_to_the_lane_and_one_below_stays(
+    db, test_api_key, origins
+):
+    await _replicas(db, test_api_key)
+    long = "ç" * 2_000
+    threshold = _measure(long)
+    short = "ç" * 1_995
+    assert _measure(short) == threshold - 3
+
+    hosts, decisions, _ = await _routed(
+        db, test_api_key, _rules(_lane(min_input_tokens=threshold)), long, short
+    )
+
+    assert hosts == ["b.internal", "a.internal"]
+    decision = decisions[0]
+    assert decision.pop("conversation_id")
+    assert decision == {
+        "rule_id": "uzun_serit",
+        "state": "enforced",
+        "from": "internal-a",
+        "to": "internal-b",
+        "reason": "long_request",
+        "input_tokens_approx": threshold,
+    }
+    assert decisions[1] is None
+
+
+@pytest.mark.asyncio
+async def test_a_monitor_lane_records_the_long_request_and_serves_it_from_the_alias(
+    db, test_api_key, origins
+):
+    await _replicas(db, test_api_key)
+
+    hosts, decisions, rows = await _routed(
+        db, test_api_key, _rules(_lane("monitor")), "x" * 2_000
+    )
+
+    assert hosts == ["a.internal"]
+    assert (decisions[0]["state"], decisions[0]["to"]) == ("monitor", "internal-b")
+    assert decisions[0]["input_tokens_approx"] >= 256
+    assert [
+        (match["rule_id"], match["state"])
+        for match in rows[0].lifecycle_metadata["rule_matches"]
+    ] == [("uzun_serit", "monitor")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "held", ["disabled", "unhealthy", "not_approved", "not_allowed_for_key"]
+)
+async def test_a_lane_that_cannot_serve_keeps_the_request_on_the_alias(
+    db, test_api_key, origins, held
+):
+    _, lane = await _replicas(db, test_api_key)
+    if held == "disabled":
+        lane.enabled = False
+    elif held == "unhealthy":
+        lane.health, lane.health_checked_at = "unhealthy", datetime.now(timezone.utc)
+    elif held == "not_approved":
+        lane.base_url = "https://c.internal/v1"
+    else:
+        test_api_key.allowed_models = ["internal-a"]
+    await db.flush()
+
+    hosts, decisions, _ = await _routed(db, test_api_key, _rules(_lane()), "x" * 2_000)
+
+    assert hosts == ["a.internal"]
+    assert (decisions[0]["to"], decisions[0]["held"]) == ("internal-a", held)
+
+
+@pytest.mark.asyncio
+async def test_an_alias_without_a_lane_is_never_serialized_by_the_resolver(
+    db, test_api_key, origins, monkeypatch
+):
+    import shim_enterprise.tenants.deployments as deployments
+
+    await _replicas(db, test_api_key)
+    dumps = []
+    monkeypatch.setattr(
+        deployments,
+        "json",
+        SimpleNamespace(dumps=lambda *args, **kwargs: dumps.append(1) or "{}"),
+    )
+    other = {**_lane(), "match": {**_lane()["match"], "from": "internal-b"}}
+    other["match"]["to"] = "internal-a"
+
+    hosts, decisions, _ = await _routed(db, test_api_key, _rules(other), "x" * 2_000)
+
+    assert (hosts, decisions, dumps) == (["a.internal"], [None], [])

@@ -412,7 +412,12 @@ writes the same key with `reason: "canary"`, `to` the alias that served (in `mon
 always `from`), no `outcome`, and two keys of its own: `canary_side` (`stable` or
 `candidate`: the side the conversation's bucket chose, the side it would have had in
 `monitor`) and, when an enforced candidate could not serve, `held` (`disabled`,
-`unhealthy`, `not_approved` or `not_allowed_for_key`) with `canary_side: "stable"`.
+`unhealthy`, `not_approved` or `not_allowed_for_key`) with `canary_side: "stable"`. A
+[long-request lane](MODEL_DEPLOYMENTS.md#long-request-lane) writes it with
+`reason: "long_request"`, no `outcome`, `input_tokens_approx` (the request's size in
+admission's TPM unit), `to` the lane (in `monitor`, the lane it would have used;
+enforced, the alias that served) and, when the lane could not serve, `held` with the
+same values.
 
 `shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
 to a candidate model: the primary request's id and the rule that chose it. The copy

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import ipaddress
+import json
 import logging
 import math
 import re
@@ -35,6 +36,7 @@ from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.observability.enterprise_metrics import ROUTE_DECISIONS_TOTAL
 from shim_enterprise.rules.route_triggers import (
+    SizeMatch,
     SplitMatch,
     UnavailableMatch,
     trigger_rules,
@@ -304,6 +306,32 @@ def _fallback_takes_over(
     return False
 
 
+async def moved_to(
+    session: AsyncSession, prepared: PreparedInference, alias: str
+) -> (
+    PreparedInference
+    | Literal["not_allowed_for_key", "disabled", "unhealthy", "not_approved"]
+):
+    """The request sent to `alias` as a direct request to it would be, or why not."""
+    found = await alias_target(session, prepared, alias)
+    if isinstance(found, str):
+        return "not_allowed_for_key" if found == "not_allowed" else found
+    target, kind = found
+    return replace(
+        prepared,
+        payload={**prepared.payload, "model": target.upstream_model},
+        deployment_kind=kind,
+        target=target,
+    )
+
+
+def approximate_input_tokens(payload: Mapping[str, object]) -> int:
+    """Admission's TPM unit: a quarter of the compact JSON's UTF-8 bytes, rounded up."""
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    # A lone surrogate is admission's 400 to give, not a resolver error.
+    return -(-max(1, len(serialized.encode("utf-8", "surrogatepass"))) // 4)
+
+
 def canary_bucket(tenant_id: str, rule_id: str, identity: str) -> int:
     """0 to 9,999: the same conversation always lands in the same bucket."""
     digest = hashlib.sha256(f"{tenant_id}|{rule_id}|{identity}".encode()).hexdigest()
@@ -335,6 +363,14 @@ class DeploymentResolver:
         # An alias under a split is served by its split alone.
         if split is not None and in_scope(split[0], resolved, _tags(resolved, headers)):
             return await self._split(resolved, *split, headers)
+        lane = next(
+            trigger_rules(resolved.rules, "size", SizeMatch, resolved.model), None
+        )
+        if lane is not None and in_scope(lane[0], resolved, _tags(resolved, headers)):
+            # A long request is served by its lane alone.
+            laned = await self._lane(resolved, *lane, headers)
+            if laned is not None:
+                return laned
         routes = [
             rule
             for rule in (prepared.rules.rules if prepared.rules is not None else ())
@@ -430,21 +466,49 @@ class DeploymentResolver:
         routed = prepared
         if candidate and rule.state == "enforced":
             async with self.session_factory() as session:
-                found = await alias_target(session, prepared, match.to)
-            if isinstance(found, str):
+                moved = await moved_to(session, prepared, match.to)
+            if isinstance(moved, str):
                 decision["canary_side"] = "stable"
-                decision["held"] = (
-                    "not_allowed_for_key" if found == "not_allowed" else found
-                )
+                decision["held"] = moved
             else:
-                target, kind = found
-                decision["to"] = match.to
-                routed = replace(
-                    prepared,
-                    payload={**prepared.payload, "model": target.upstream_model},
-                    deployment_kind=kind,
-                    target=target,
-                )
+                decision["to"], routed = match.to, moved
+        prepared.record_rule_match(rule, 1)
+        return replace(routed, route_decision=decision)
+
+    async def _lane(
+        self,
+        prepared: PreparedInference,
+        rule: Rule,
+        match: SizeMatch,
+        headers: Mapping[str, str],
+    ) -> PreparedInference | None:
+        """At or above the threshold the lane replica serves when it can, else the
+        request stays on `from` and says why; None below the threshold."""
+
+        tokens = approximate_input_tokens(prepared.payload)
+        if tokens < match.min_input_tokens:
+            return None
+        sent = headers.get("x-shim-conversation-id")
+        view = start_view(prepared.payload, prepared.protocol)
+        decision: dict[str, object] = {
+            "rule_id": rule.id,
+            "state": rule.state,
+            "from": match.from_,
+            "to": match.to if rule.state == "monitor" else match.from_,
+            "reason": "long_request",
+            "conversation_id": conversation_id(
+                sent, _conversation_key(), view[0] if view is not None else ""
+            ),
+            "input_tokens_approx": tokens,
+        }
+        routed = prepared
+        if rule.state == "enforced":
+            async with self.session_factory() as session:
+                moved = await moved_to(session, prepared, match.to)
+            if isinstance(moved, str):
+                decision["held"] = moved
+            else:
+                decision["to"], routed = match.to, moved
         prepared.record_rule_match(rule, 1)
         return replace(routed, route_decision=decision)
 

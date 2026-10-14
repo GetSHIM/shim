@@ -287,6 +287,29 @@ outcomes, failed rows (`provider_error`, `timeout`, `failed`), p50 and p95 of
 of that side is unpriced), and in `monitor` the would-move count. Rows are attributed by
 the side that served them. Recipe: [Roll out a new model to a share of conversations](COOKBOOK.md#roll-out-a-new-model-to-a-share-of-conversations).
 
+## Long-request lane
+
+A route rule with `match.on: "size"` sends an alias's long requests to a replica of the
+same model: `from` the alias, `to` the lane, `min_input_tokens` 256 to 10,000,000. The
+lane must have the provider, the upstream model and the kind (`internal` or `external`)
+of `from`: it is the same model on its own server, not another model or another
+residency (sending long requests to another model is a [route rule](#routing-rules)).
+One lane per alias.
+
+The measure is admission's TPM unit: the UTF-8 bytes of the compact JSON request,
+divided by four and rounded up, computed only for an alias that has a lane. At or above
+the threshold an enforced rule sends the request to the lane, checked as a direct
+request to it (enabled, not unhealthy, approved origin, in the key's allowlist); a lane
+that cannot serve leaves it on `from` with the reason in `held`. One provider call, one
+row, `route_decision` with `reason: "long_request"` and `input_tokens_approx`; a
+request below the threshold gets nothing, and a long request is served by its lane
+alone (request-start route rules do not run for it). In `monitor` every request is
+served by `from` and a long one records the lane it would have used. A conversation
+whose history grows past the threshold moves to the lane once and stays there while it
+keeps growing; a model server's prefix cache is per replica, so that one turn misses
+it. The 7-day preview cannot count past sizes, so it answers "start in monitor".
+Recipe: [Give long requests their own replica](COOKBOOK.md#give-long-requests-their-own-replica).
+
 ## The inventory
 
 `GET /api/v1/management/model-inventory?start=…&end=…` (owners, admins and

@@ -170,12 +170,77 @@ async def _check_split(
             raise _refused(f"{path}.to", "an internal alias splits only to internal")
 
 
+class SizeMatch(BaseModel):
+    """Requests of at least `min_input_tokens` go to the lane replica `to`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    on: Literal["size"]
+    from_: _Alias = Field(alias="from")
+    to: _Alias
+    min_input_tokens: int = Field(ge=256, le=10_000_000)
+
+    @model_validator(mode="after")
+    def another_alias(self) -> SizeMatch:
+        if self.to == self.from_:
+            raise ValueError("to is the from alias")
+        return self
+
+
+async def _check_size(
+    session: AsyncSession,
+    organization_id: UUID,
+    rules: list[tuple[int, SizeMatch]],
+) -> None:
+    """A lane is a replica: the same provider, upstream model and kind as `from`;
+    one lane per `from`."""
+
+    named = {alias for _, match in rules for alias in (match.from_, match.to)}
+    registered = {
+        alias: (provider, upstream_model, kind)
+        for alias, provider, upstream_model, kind in await session.execute(
+            select(
+                ModelDeployment.alias,
+                ModelDeployment.provider,
+                ModelDeployment.upstream_model,
+                ModelDeployment.deployment_kind,
+            ).where(
+                ModelDeployment.organization_id == organization_id,
+                ModelDeployment.alias.in_(named),
+            )
+        )
+    }
+    covered: set[str] = set()
+    for index, match in rules:
+        path = f"rules[{index}].match"
+        source, lane = registered.get(match.from_), registered.get(match.to)
+        if source is None:
+            raise _refused(
+                f"{path}.from",
+                "from names a model alias this organization has not registered",
+            )
+        if match.from_ in covered:
+            raise _refused(f"{path}.from", "another size rule covers this alias")
+        covered.add(match.from_)
+        if lane is None:
+            raise _refused(
+                f"{path}.to",
+                "to names a model alias this organization has not registered",
+            )
+        for position, field in enumerate(("provider", "upstream model", "kind")):
+            if lane[position] != source[position]:
+                raise _refused(
+                    f"{path}.to", f"a lane has the {field} of from: it is a replica"
+                )
+
+
 # One entry per `on` value: its match model and its registry check. E64 to E70 add theirs.
 ROUTE_TRIGGER_TABLE: dict[
     str, tuple[type[BaseModel], Callable[..., Awaitable[None]]]
 ] = {
     "unavailable": (UnavailableMatch, _check_unavailable),
     "split": (SplitMatch, _check_split),
+    "size": (SizeMatch, _check_size),
 }
 
 

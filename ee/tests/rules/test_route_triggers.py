@@ -113,15 +113,17 @@ async def test_two_sources_each_with_one_rule_are_kept(db, owner) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_preview_cannot_replay_health_and_says_start_in_monitor(
-    db, owner
+@pytest.mark.parametrize("on", ["unavailable", "size"])
+async def test_a_preview_cannot_replay_health_or_sizes_and_says_start_in_monitor(
+    db, owner, on
 ) -> None:
+    await _same_model(db, owner, "llama-a", "llama-b")
     previewed = await _call(
         db,
         owner,
         "POST",
         f"{MANAGEMENT}/rules/preview",
-        json={"rule": _fallback()},
+        json={"rule": _fallback() if on == "unavailable" else _size()},
     )
 
     assert previewed.status_code == 200, previewed.text
@@ -210,3 +212,85 @@ async def test_an_internal_alias_never_splits_to_an_external_one(db, owner) -> N
     assert refused.status_code == 422, refused.text
     assert refused.json()["detail"]["path"] == "rules[0].match.to"
     assert reversed_.status_code == 200, reversed_.text
+
+
+def _size(rule_id: str = "uzun_serit", **match) -> dict:
+    return {
+        "id": rule_id,
+        "name": "Long requests to replica 2",
+        "kind": "route",
+        "action": "route",
+        "state": "monitor",
+        "match": {
+            "on": "size",
+            "from": "llama-a",
+            "to": "llama-b",
+            "min_input_tokens": 8_000,
+            **match,
+        },
+    }
+
+
+async def _same_model(db, owner, *aliases: str) -> None:
+    await db.execute(
+        update(ModelDeployment)
+        .where(
+            ModelDeployment.organization_id == owner.organization_id,
+            ModelDeployment.alias.in_(aliases),
+        )
+        .values(upstream_model="llama-shared")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lane_on_a_replica_is_stored(db, owner) -> None:
+    await _same_model(db, owner, "llama-a", "llama-b")
+
+    stored = await _put(db, owner, [_size()])
+
+    assert stored.status_code == 200, stored.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rules", "path"),
+    [
+        ([_size(to="llama-c")], "rules[0].match.to"),
+        ([_size(to="sonnet")], "rules[0].match.to"),
+        ([_size(to="unregistered")], "rules[0].match.to"),
+        ([_size(min_input_tokens=255)], "rules[0].match.min_input_tokens"),
+        ([_size(min_input_tokens=10_000_001)], "rules[0].match.min_input_tokens"),
+        ([_size(to="llama-a")], "rules[0].match"),
+        ([_size(), _size("second")], "rules[1].match.from"),
+    ],
+)
+async def test_an_unusable_lane_is_refused_with_its_path(
+    db, owner, rules, path
+) -> None:
+    await _same_model(db, owner, "llama-a", "llama-b")
+
+    refused = await _put(db, owner, rules)
+
+    assert refused.status_code == 422, refused.text
+    assert (refused.json()["detail"]["code"], refused.json()["detail"]["path"]) == (
+        "RULE_MATCH_INVALID",
+        path,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lane_of_another_kind_is_refused(db, owner) -> None:
+    await _same_model(db, owner, "llama-a", "llama-b")
+    await db.execute(
+        update(ModelDeployment)
+        .where(
+            ModelDeployment.organization_id == owner.organization_id,
+            ModelDeployment.alias == "llama-b",
+        )
+        .values(deployment_kind="external")
+    )
+
+    refused = await _put(db, owner, [_size()])
+
+    assert refused.status_code == 422, refused.text
+    assert "kind" in refused.json()["detail"]["message"]

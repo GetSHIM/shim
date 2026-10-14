@@ -1086,6 +1086,23 @@ add a split rule in `monitor`:
    version it created. To undo the rollback, restore the version before it
    ([plan, apply and undo](#plan-apply-and-undo-a-change)).
 
+### Give long requests their own replica
+
+Register a second server of the same model (`kurum-llama-uzun`, the same upstream
+model and kind as `kurum-llama`), then add a lane in `monitor`:
+
+```json
+{"id": "uzun_serit", "name": "Long requests to replica 2", "kind": "route", "action": "route",
+ "state": "monitor", "scope": {},
+ "match": {"on": "size", "from": "kurum-llama", "to": "kurum-llama-uzun",
+           "min_input_tokens": 8000}}
+```
+
+Long requests now record `route_decision` with `input_tokens_approx`; when the count
+looks right, send the set again with `"state": "enforced"` and they are served by the
+lane while short questions stay on `kurum-llama`. A lane that is disabled or unhealthy
+leaves the request on the alias with `held` set.
+
 ## Register an Azure OpenAI deployment
 
 Route a gateway alias to your Azure OpenAI deployment, with an Azure key or an

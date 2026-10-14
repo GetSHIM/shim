@@ -637,6 +637,7 @@ enterprise = [
   "ee/tests/gateway/test_attempts.py",
   "ee/tests/gateway/test_canary.py",
   "ee/tests/gateway/test_fallback.py",
+  "ee/tests/gateway/test_long_lane.py",
   "ee/tests/mcp/test_mcp_api.py",
   "ee/tests/mcp/test_protocol.py",
   "ee/tests/mcp/test_tools_contract.py",
