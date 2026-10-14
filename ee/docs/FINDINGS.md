@@ -842,3 +842,25 @@ and LiteLLM's cost.
 exponential backoff and cap retries.
 
 **Resolves** after 7 days without an import that fires it.
+
+## gateway.semantic_review_match
+
+**Checks.** For each API key, the [semantic reviews](POLICY_DECISIONS.md#semantic-review-of-archived-requests)
+completed in the last 7 days whose status is `matched`: an archived request the
+tenant's review model said matches one of the tenant's semantic questions. It fires
+at one or more. Severity medium. Subject: the API key. Max mode `observe`, blast
+radius `key`, risk class `privacy`.
+
+**Why.** A deterministic rule already flagged the request (only such requests are
+archived); the review looks for meaning the rule cannot see, such as a project
+described without its name.
+
+**Evidence and impact.** `matched_requests`, `reviewed_requests` (every completed
+review of the key in the window), `questions_matched` (distinct question ids),
+`questions_revision` and up to 20 request ids of the matched requests, newest first;
+the archive item is found by its request id. Never a question, a request text or the
+model's answer. Impact is the matched requests.
+
+**Fix.** Open the listed requests from the archive and decide. A model's answer never
+blocks, masks or changes a rule; where the meaning is a real leak, write a
+deterministic rule for it.

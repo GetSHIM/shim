@@ -25,6 +25,7 @@ from shim_enterprise.observability.enterprise_metrics import (
     REQUEST_ARCHIVE_WRITES_TOTAL,
 )
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
+from shim_enterprise.semantic.call import REVIEW_TAG
 from shim_enterprise.tenants.gateway_settings import GatewaySettings
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,8 @@ def _retention_days(prepared: PreparedInference) -> int | None:
         not isinstance(gateway, GatewaySettings)
         or not gateway.request_archive.enabled
         or prepared.protocol == "count_tokens"
+        # A review call's text is a copy of an archived item.
+        or (prepared.admission is not None and REVIEW_TAG in prepared.admission.tags)
     ):
         return None
     return gateway.request_archive.retention_days

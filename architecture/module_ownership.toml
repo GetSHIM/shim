@@ -79,7 +79,7 @@ forbidden_noncloud_import_roots = [
 "shim.gateway.kernel.shadow" = ["ShadowCandidate", "ShadowObservation", "ShadowSelection"]
 "shim.gateway.pipeline.analysis" = ["AnalysisContext", "run_analyzers"]
 "shim.gateway.pipeline.anthropic_execution" = ["AnthropicExecution"]
-"shim.gateway.pipeline.authenticate" = ["GatewayRequestMetadata"]
+"shim.gateway.pipeline.authenticate" = ["GatewayInvocation", "GatewayRequestMetadata"]
 "shim.gateway.pipeline.google_execution" = ["GoogleExecution"]
 "shim.gateway.pipeline.openai_execution" = ["OpenAIExecution"]
 "shim.gateway.pipeline.privacy" = ["ScanPrivacyOutcome", "ScanPrivacyStage"]
@@ -92,7 +92,9 @@ forbidden_noncloud_import_roots = [
   "TaskCaps",
 ]
 "shim.gateway.streaming.finalization" = ["StreamFinalization"]
+"shim.gateway.streaming.meter" = ["answer_text"]
 "shim.gateway.usage" = ["UsageAuditPersistenceError", "UsageFailureReason", "UsageLimitExceeded", "system_prompt_hash"]
+"shim.jsonschema_subset" = ["check"]
 "shim.observability.logging" = [
   "configure_error_reporting",
   "configure_logging",
@@ -357,6 +359,7 @@ enterprise = [
   "ee/alembic/versions/b6102c005b0c_add_organization_rule_sets.py",
   "ee/alembic/versions/b93eaf9b1386_add_request_approvals.py",
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
+  "ee/alembic/versions/c6bf1ec40802_add_semantic_review.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
   "ee/alembic/versions/c9ed4e82b922_add_azure_openai_deployments.py",
   "ee/alembic/versions/d34c574e0cc8_add_embeddings_monitor_types.py",
@@ -557,6 +560,12 @@ enterprise = [
   "ee/src/shim_enterprise/secrets/references.py",
   "ee/src/shim_enterprise/secrets/store.py",
   "ee/src/shim_enterprise/secrets/vault.py",
+  "ee/src/shim_enterprise/semantic/__init__.py",
+  "ee/src/shim_enterprise/semantic/api.py",
+  "ee/src/shim_enterprise/semantic/call.py",
+  "ee/src/shim_enterprise/semantic/models.py",
+  "ee/src/shim_enterprise/semantic/questions.py",
+  "ee/src/shim_enterprise/semantic/review.py",
   "ee/src/shim_enterprise/services/__init__.py",
   "ee/src/shim_enterprise/services/gateway/__init__.py",
   "ee/src/shim_enterprise/services/gateway/enterprise.py",
@@ -685,6 +694,10 @@ enterprise = [
   "ee/tests/secrets/test_references.py",
   "ee/tests/secrets/test_store.py",
   "ee/tests/secrets/test_vault.py",
+  "ee/tests/semantic/test_call.py",
+  "ee/tests/semantic/test_questions.py",
+  "ee/tests/semantic/test_review.py",
+  "ee/tests/semantic/test_settings.py",
   "ee/tests/shared_results/test_api.py",
   "ee/tests/tenants/test_capacity_forecast.py",
   "ee/tests/tenants/test_deployments.py",

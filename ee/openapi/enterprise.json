@@ -7615,6 +7615,14 @@
             "title": "Restore Withheld",
             "type": "object"
           },
+          "semantic_review": {
+            "$ref": "#/components/schemas/SemanticReviewSettings",
+            "default": {
+              "enabled": false,
+              "max_cost_usd_per_day": "5",
+              "max_items_per_hour": 60
+            }
+          },
           "task_caps": {
             "$ref": "#/components/schemas/TaskCaps-Output",
             "default": {
@@ -7852,6 +7860,16 @@
               }
             ],
             "title": "Restore Withheld"
+          },
+          "semantic_review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SemanticReviewPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "task_caps": {
             "anyOf": [
@@ -14135,6 +14153,51 @@
         "title": "ProviderSecretView",
         "type": "object"
       },
+      "QuestionSetPut": {
+        "additionalProperties": false,
+        "properties": {
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticQuestion"
+            },
+            "maxItems": 20,
+            "title": "Questions",
+            "type": "array"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "questions"
+        ],
+        "title": "QuestionSetPut",
+        "type": "object"
+      },
+      "QuestionSetView": {
+        "properties": {
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticQuestion"
+            },
+            "title": "Questions",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "questions"
+        ],
+        "title": "QuestionSetView",
+        "type": "object"
+      },
       "RagRetrievalConfig": {
         "additionalProperties": false,
         "description": "Specifies the context retrieval config.\n\nThis data type is not supported in Gemini API.",
@@ -17240,6 +17303,276 @@
           }
         },
         "title": "SearchTypes",
+        "type": "object"
+      },
+      "SemanticQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "examples": {
+            "default": [],
+            "items": {
+              "maxLength": 300,
+              "minLength": 5,
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Examples",
+            "type": "array"
+          },
+          "id": {
+            "pattern": "^[a-z][a-z0-9_]{0,47}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 500,
+            "minLength": 10,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "SemanticQuestion",
+        "type": "object"
+      },
+      "SemanticReviewPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticReviewView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "SemanticReviewPage",
+        "type": "object"
+      },
+      "SemanticReviewPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "max_cost_usd_per_day": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd Per Day"
+          },
+          "max_items_per_hour": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Items Per Hour"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "title": "SemanticReviewPatch",
+        "type": "object"
+      },
+      "SemanticReviewSettings": {
+        "additionalProperties": false,
+        "description": "Archived requests read against the tenant's questions by the tenant's model.",
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_cost_usd_per_day": {
+            "default": "5",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Max Cost Usd Per Day",
+            "type": "string"
+          },
+          "max_items_per_hour": {
+            "default": 60,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Max Items Per Hour",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "title": "SemanticReviewSettings",
+        "type": "object"
+      },
+      "SemanticReviewView": {
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "matched_question_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Matched Question Ids",
+            "type": "array"
+          },
+          "questions_revision": {
+            "title": "Questions Revision",
+            "type": "integer"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "review_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Request Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "api_key_id",
+          "status",
+          "matched_question_ids",
+          "questions_revision",
+          "review_request_id",
+          "cost_usd",
+          "completed_at"
+        ],
+        "title": "SemanticReviewView",
         "type": "object"
       },
       "ServerLoad": {
@@ -30226,6 +30559,214 @@
         "summary": "Propose Rules",
         "tags": [
           "rules"
+        ]
+      }
+    },
+    "/api/v1/management/semantic-questions": {
+      "get": {
+        "operationId": "get_semantic_questions_api_v1_management_semantic_questions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Semantic Questions",
+        "tags": [
+          "rules"
+        ]
+      },
+      "put": {
+        "operationId": "replace_semantic_questions_api_v1_management_semantic_questions_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionSetPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace Semantic Questions",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/management/semantic-reviews": {
+      "get": {
+        "operationId": "list_semantic_reviews_api_v1_management_semantic_reviews_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "matched",
+                    "clear",
+                    "invalid_answer",
+                    "failed",
+                    "skipped_guard",
+                    "skipped_empty"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "request_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Request Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SemanticReviewPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Semantic Reviews",
+        "tags": [
+          "findings"
         ]
       }
     },

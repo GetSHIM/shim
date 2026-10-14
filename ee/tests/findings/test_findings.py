@@ -664,6 +664,9 @@ _SUBJECTS = {
     service.ANSWER_QUALITY: {"model": "gpt-5-mini"},
     service.UNREGISTERED_MODEL: {"provider": "openai", "model": "gpt-5-mini"},
     service.BYOK_USAGE: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.SEMANTIC_REVIEW_MATCH: {
+        "api_key_id": "11111111-1111-1111-1111-111111111111"
+    },
     service.TRUNCATION_RATE: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.REFUSAL_RATE: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.LANGUAGE_DRIFT: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
@@ -687,6 +690,14 @@ _SUBJECTS = {
     service.LITELLM_RETRY_BURST: {"litellm_key": "litellm:ce77089fa9483163"},
 }
 _EVIDENCE = {
+    service.SEMANTIC_REVIEW_MATCH: {
+        "window_days": 7,
+        "matched_requests": 2,
+        "reviewed_requests": 9,
+        "questions_matched": 1,
+        "questions_revision": 3,
+        "request_ids": ["req_a", "req_b"],
+    },
     service.IDLE_INFERENCE_CAPACITY: {
         "window_days": 7,
         "samples": 1000,

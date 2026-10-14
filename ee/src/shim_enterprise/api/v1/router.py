@@ -23,6 +23,8 @@ from shim_enterprise.rules.proposals import router as proposals_router
 from shim_enterprise.rules.api import router as rules_router
 from shim_enterprise.rules.canaries import router as canaries_router
 from shim_enterprise.rules.change_tests import router as change_tests_router
+from shim_enterprise.semantic.api import router as semantic_router
+from shim_enterprise.semantic.questions import router as semantic_questions_router
 from shim_enterprise.shared_results.api import authenticated_router, public_router
 
 from shim_enterprise.tenants.oidc import router as identity_router
@@ -52,6 +54,8 @@ management_router.include_router(rules_router)
 management_router.include_router(canaries_router)
 management_router.include_router(change_tests_router)
 management_router.include_router(model_evidence_router)
+management_router.include_router(semantic_questions_router)
+management_router.include_router(semantic_router)
 management_router.include_router(proposals_router)
 management_router.include_router(approvals_router)
 management_router.include_router(findings_router)

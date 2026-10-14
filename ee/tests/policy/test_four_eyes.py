@@ -249,6 +249,13 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 "openai_reasoning_context": "off",
             },
             "transforms": {"json_compaction": "off"},
+            "semantic_review": {
+                "enabled": False,
+                "model": None,
+                "api_key_id": None,
+                "max_items_per_hour": 60,
+                "max_cost_usd_per_day": "5",
+            },
         }
     }
     assert (version.source, version.risk) == ("api", "tightening")
@@ -294,6 +301,13 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                     "openai_reasoning_context": "off",
                 },
                 "transforms": {"json_compaction": "off"},
+                "semantic_review": {
+                    "enabled": False,
+                    "model": None,
+                    "api_key_id": None,
+                    "max_items_per_hour": 60,
+                    "max_cost_usd_per_day": "5",
+                },
             }
         }
     }

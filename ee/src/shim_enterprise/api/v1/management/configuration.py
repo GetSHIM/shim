@@ -47,6 +47,7 @@ from shim_enterprise.tenants.gateway_settings import (
     SETTING_AVAILABILITY,
     GatewaySettings,
     GatewaySettingsPatch,
+    SemanticReviewSettings,
     classify_change,
     restore_relaxed,
     patched,
@@ -665,6 +666,43 @@ class _PrivacyResource:
             )
 
 
+async def _check_semantic_review(
+    session: AsyncSession, tenant_id: UUID, review: SemanticReviewSettings
+) -> None:
+    """The review alias is a registered, enabled deployment and its key an active key
+    of this organization that may call it."""
+    alias = await session.scalar(
+        select(ModelDeployment.alias).where(
+            ModelDeployment.organization_id == tenant_id,
+            ModelDeployment.alias == review.model,
+            ModelDeployment.enabled.is_(True),
+        )
+    )
+    if alias is None:
+        raise HTTPException(
+            422,
+            detail="semantic_review.model is not an enabled deployment of this "
+            "organization",
+        )
+    key = await session.scalar(
+        select(ApiKey).where(
+            ApiKey.organization_id == tenant_id,
+            ApiKey.id == review.api_key_id,
+            ApiKey.is_active.is_(True),
+        )
+    )
+    if key is None:
+        raise HTTPException(
+            422,
+            detail="semantic_review.api_key_id is not an active key of this "
+            "organization",
+        )
+    if key.allowed_models is not None and alias not in key.allowed_models:
+        raise HTTPException(
+            422, detail="semantic_review.api_key_id may not call semantic_review.model"
+        )
+
+
 class _GatewaySettingsResource:
     name = "gateway_settings"
     permission: Permission = "settings.write"
@@ -786,6 +824,9 @@ class _GatewaySettingsResource:
                     422,
                     detail="Bedrock deployments cannot use automatic cache placement yet",
                 )
+        review = after.semantic_review
+        if review.enabled and "semantic_review" in changes:
+            await _check_semantic_review(session, tenant_id, review)
         if "inference_metrics" in changes:
             internal = set(
                 await session.scalars(

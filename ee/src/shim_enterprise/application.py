@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 import logging
 
 import httpx
@@ -18,6 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shim_enterprise.gateway.attempts import TenantAttemptPolicy
 from shim_enterprise.gateway.change_test import ChangeTestSender
+from shim_enterprise.semantic.review import run_review_loop
 from shim_enterprise.gateway.fallback import CanaryFallback, UnavailableFallback
 from shim_enterprise.api.v1.router import gateway_router, management_router
 from shim.api.v1.gemini import router as gemini_router
@@ -166,9 +168,21 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         ScanExecutionPipeline(scrubber=pii_scrubber),
     )
     await _connect_cache(cache)
+    # Only where tenants may keep archived requests: never in the hosted cloud.
+    review = (
+        asyncio.create_task(
+            run_review_loop(application.state.gateway_service.kernel, AsyncSessionLocal)
+        )
+        if settings.REQUEST_ARCHIVE_ENABLED
+        else None
+    )
     try:
         yield
     finally:
+        if review is not None:
+            review.cancel()
+            with suppress(asyncio.CancelledError):
+                await review
         await application.state.gateway_service.kernel.postprocessor.drain()
         await http_client.aclose()
         google_sync_client.close()

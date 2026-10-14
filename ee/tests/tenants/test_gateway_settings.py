@@ -150,6 +150,13 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
                 "unassigned_value": "unassigned",
             },
             "inference_metrics": [],
+            "semantic_review": {
+                "enabled": False,
+                "model": None,
+                "api_key_id": None,
+                "max_items_per_hour": 60,
+                "max_cost_usd_per_day": "5",
+            },
         },
         "revision": 0,
         "updated_at": None,
@@ -159,6 +166,8 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "bedrock_attribution": "off, needs AWS_GATEWAY_IDENTITY in this "
             "installation",
             "request_archive": "off, needs REQUEST_ARCHIVE_ENABLED in this "
+            "installation (self-hosted only)",
+            "semantic_review": "off, needs REQUEST_ARCHIVE_ENABLED in this "
             "installation (self-hosted only)",
         },
         "request_archive_state": "off",

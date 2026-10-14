@@ -367,6 +367,44 @@ the installation does not allow it, the reason under `unavailable`.
 - Turning the archive on or keeping content longer is a loosening change for
   [four eyes](#four-eyes); turning it off or shortening is tightening.
 
+## Semantic review of archived requests
+
+Where the operator runs shim with `REQUEST_ARCHIVE_ENABLED` (self-hosted only; never
+in the hosted cloud), a tenant can have its [archived requests](#request-archive) read
+against its own questions by its own model. The questions are one versioned set
+(`GET` and `PUT /api/v1/management/semantic-questions`, `rules.read` and `rules.write`,
+at most 20, each with an id, a meaning of 10 to 500 characters and up to five
+examples), a managed policy resource: removing or rewriting a question relaxes, adding
+one tightens, so four eyes and one-step restore apply. The questions are confidential
+like rule terms: never in Redis, a log, a metric or an audit event, which carries ids
+only. The switch is the `semantic_review` gateway setting: the review model (an
+enabled alias of the tenant), the gateway key the calls are made with and billed to,
+and caps per hour (1 to 1,000 items) and per day (0.01 to 1,000 USD, which one call
+may pass). Turning it on or changing the model is relaxing.
+
+The gateway process reviews every `SEMANTIC_REVIEW_INTERVAL_SECONDS` (default 60, 5 to
+3,600), at most `SEMANTIC_REVIEW_BATCH` items a pass (default 20, 1 to 200), newest
+first, each archived item once per question revision, never an item the review key
+made. Each claim batch writes an audit intent `tenant.request_content_scanned` with the
+request ids, so the [openings read](#request-archive) shows that a member's request was
+read by `system:semantic_review`. The review decrypts the masked payload only, never
+the values it replaced, and never sees the answer. An item that went to an internal
+deployment is never sent to a review model that is not internal (`skipped_guard`).
+Each call is an ordinary request of the review key, tagged `shim:semantic_review`:
+its limits, privacy, rules, budgets and ledger apply, it has its own cost, and it is
+never archived itself. A tenant rule that blocks a word used in a question makes the
+call fail with `RULE_BLOCKED`; scope such a rule to `deployment_kinds: ["external"]`
+with an internal review model, or reword the question.
+
+The model answers only with JSON naming each question and whether the request matches
+it; an answer that is not that exact shape is `invalid_answer`. No explanation is asked
+for or kept. `GET /api/v1/management/semantic-reviews` (`findings.read`, at most 31
+days) lists reviews by status (`matched`, `clear`, `invalid_answer`, `failed`,
+`skipped_guard`, `skipped_empty`, `pending`) with the matched question ids, the review
+request and its cost. Matches only warn: they feed the finding
+[`gateway.semantic_review_match`](FINDINGS.md#gatewaysemantic_review_match) and never
+block, mask, change a rule or decide anything about a request.
+
 ## Imported gateway logs
 
 A tenant can [import a LiteLLM spend log](COOKBOOK.md#import-litellm-spend-logs)

@@ -869,6 +869,26 @@
   "service_recommender": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/semantic-questions": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: rules.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "service_recommender": "200",
+  "team_admin": "403 Permission required: rules.read"
+ },
+ "GET /api/v1/management/semantic-reviews": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: findings.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "service_recommender": "200",
+  "team_admin": "403 Permission required: findings.read"
+ },
  "GET /api/v1/management/service-accounts": {
   "admin": "403 Organization owner required",
   "auditor": "403 Organization owner required",
@@ -1748,6 +1768,16 @@
   "service_auditor": "403 Auditor access is read-only",
   "service_recommender": "403 Organization admin required",
   "team_admin": "403 Organization admin required"
+ },
+ "PUT /api/v1/management/semantic-questions": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: rules.write",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Permission required: rules.write",
+  "team_admin": "403 Permission required: rules.write"
  },
  "PUT /api/v1/management/settings/pii": {
   "admin": "200",

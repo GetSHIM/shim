@@ -30,6 +30,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
 - [Export and verify the audit trail](#export-and-verify-the-audit-trail)
 - [Archive audit evidence to a write-once bucket](#archive-audit-evidence-to-a-write-once-bucket)
+- [Ask the archive your own questions](#ask-the-archive-your-own-questions)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Register an Azure OpenAI deployment](#register-an-azure-openai-deployment)
@@ -955,6 +956,30 @@ answers. The CSV ends with `source` and `count`: connector findings have
 and action. Filter on `source` if a spreadsheet expects connector rows only.
 More than 10,000 findings answers 422. Details are in
 [decision evidence](POLICY_DECISIONS.md#kvkk-exposure-report).
+
+## Ask the archive your own questions
+
+With the [request archive](#keep-matched-requests-and-open-one) on in a self-hosted
+installation:
+
+1. Write the questions:
+
+```bash
+curl -X PUT http://localhost:8000/api/v1/management/semantic-questions \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"revision": 0, "questions": [{"id": "atlas",
+       "text": "The request discusses Project Atlas, the unannounced acquisition, even without naming it.",
+       "examples": ["the company we are buying next quarter"]}]}'
+```
+
+2. Create a gateway key for the reviews (a service account's key is best) and turn the
+   review on with an internal model: `PATCH /api/v1/management/gateway-settings` with
+   `{"semantic_review": {"enabled": true, "model": "denetci", "api_key_id": "<key id>",
+   "max_items_per_hour": 60, "max_cost_usd_per_day": "5"}}`.
+3. Read `GET /api/v1/management/semantic-reviews?status=matched` and the
+   `gateway.semantic_review_match` finding; open a listed request from the archive to
+   decide. The review calls appear in the request list under the review key, tagged
+   `shim:semantic_review`, with their cost.
 
 ## Register a private model deployment
 

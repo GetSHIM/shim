@@ -23,6 +23,7 @@ from shim_enterprise.compliance.api import FORWARD_TARGETS
 from shim_enterprise.config_file.models import CONFIG_MODE
 from shim_enterprise.policy.plans import Impact, Risk, State
 from shim_enterprise.rules.resource import RULES
+from shim_enterprise.semantic.questions import SEMANTIC_QUESTIONS
 from shim_enterprise.tenants.models import User
 from shim_enterprise.tenants.permissions import Permission
 
@@ -96,5 +97,6 @@ REGISTRY: Mapping[str, ManagedResource] = {
         FORWARD_TARGETS,
         RECORD_SETS,
         CONFIG_MODE,
+        SEMANTIC_QUESTIONS,
     )
 }
