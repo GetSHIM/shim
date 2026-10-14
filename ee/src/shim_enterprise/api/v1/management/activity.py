@@ -366,6 +366,14 @@ class RequestActivityView(BaseModel):
             "null when no analyzer ran or the pass has not finished."
         ),
     )
+    shadow_comparison: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "On a change-test copy: both answers compared (outcome, schema validity, "
+            "language, length, latency, cost), never their text; null otherwise or "
+            "until the comparison finished."
+        ),
+    )
 
 
 class RequestActivityStatusCountsView(BaseModel):
@@ -511,8 +519,15 @@ async def list_requests(
                 content_archived=(row.details or {}).get("request_archive") == "stored",
                 response_entities=response_entities,
                 response_analysis=response_analysis,
+                shadow_comparison=shadow_comparison,
             )
-            for row, cost_usd, response_entities, response_analysis in rows
+            for (
+                row,
+                cost_usd,
+                response_entities,
+                response_analysis,
+                shadow_comparison,
+            ) in rows
         ],
         total=summary.requests,
         limit=limit,
@@ -917,10 +932,11 @@ async def export_requests(
                 "restore_withheld",
                 "approval_id",
                 "content_archived",
+                "shadow_comparison",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
-        for row, cost_usd, response_entities, response_analysis in rows:
+        for row, cost_usd, response_entities, response_analysis, comparison in rows:
             details = row.details or {}
             output.seek(0)
             output.truncate(0)
@@ -978,6 +994,7 @@ async def export_requests(
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),
                     details.get("request_archive") == "stored",
+                    _json(comparison),
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -1287,6 +1304,10 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
             ),
             RequestLifecycle.lifecycle_metadata["response_analysis"].label(
                 "response_analysis"
+            ),
+            # Written by the change test after the copy settled.
+            RequestLifecycle.lifecycle_metadata["shadow_comparison"].label(
+                "shadow_comparison"
             ),
         )
         .outerjoin(

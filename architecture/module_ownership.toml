@@ -76,6 +76,8 @@ forbidden_noncloud_import_roots = [
 ]
 "shim.gateway.kernel.gateway_kernel" = ["GatewayKernel"]
 "shim.gateway.kernel.result" = ["AdmissionState", "PreparedInference", "ProviderTarget", "ResponseWarning", "UNSPECIFIED_PROVIDER_MODEL"]
+"shim.gateway.kernel.shadow" = ["ShadowCandidate", "ShadowObservation", "ShadowSelection"]
+"shim.gateway.pipeline.analysis" = ["AnalysisContext", "run_analyzers"]
 "shim.gateway.pipeline.anthropic_execution" = ["AnthropicExecution"]
 "shim.gateway.pipeline.authenticate" = ["GatewayRequestMetadata"]
 "shim.gateway.pipeline.google_execution" = ["GoogleExecution"]
@@ -480,6 +482,7 @@ enterprise = [
   "ee/src/shim_enterprise/gateway/api/__init__.py",
   "ee/src/shim_enterprise/gateway/api/enterprise_errors.py",
   "ee/src/shim_enterprise/gateway/attempts.py",
+  "ee/src/shim_enterprise/gateway/change_test.py",
   "ee/src/shim_enterprise/gateway/contracts/__init__.py",
   "ee/src/shim_enterprise/gateway/contracts/audit.py",
   "ee/src/shim_enterprise/gateway/contracts/enterprise_errors.py",
@@ -534,6 +537,7 @@ enterprise = [
   "ee/src/shim_enterprise/rules/aiuc.py",
   "ee/src/shim_enterprise/rules/api.py",
   "ee/src/shim_enterprise/rules/canaries.py",
+  "ee/src/shim_enterprise/rules/change_tests.py",
   "ee/src/shim_enterprise/rules/changes.py",
   "ee/src/shim_enterprise/rules/estimators.py",
   "ee/src/shim_enterprise/rules/models.py",
@@ -620,6 +624,7 @@ enterprise = [
   "ee/tests/findings/test_findings.py",
   "ee/tests/findings/test_quality_signals.py",
   "ee/tests/findings/test_waste_signals.py",
+  "ee/tests/gateway/api/test_change_tests.py",
   "ee/tests/gateway/api/test_deps.py",
   "ee/tests/gateway/api/test_enterprise_errors.py",
   "ee/tests/gateway/api/test_management.py",
@@ -636,6 +641,7 @@ enterprise = [
   "ee/tests/gateway/privacy/test_chain_store.py",
   "ee/tests/gateway/test_attempts.py",
   "ee/tests/gateway/test_canary.py",
+  "ee/tests/gateway/test_change_test.py",
   "ee/tests/gateway/test_fallback.py",
   "ee/tests/gateway/test_long_lane.py",
   "ee/tests/mcp/test_mcp_api.py",

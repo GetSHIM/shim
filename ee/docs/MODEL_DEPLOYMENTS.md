@@ -310,6 +310,55 @@ keeps growing; a model server's prefix cache is per replica, so that one turn mi
 it. The 7-day preview cannot count past sizes, so it answers "start in monitor".
 Recipe: [Give long requests their own replica](COOKBOOK.md#give-long-requests-their-own-replica).
 
+## Test a model change on live traffic
+
+A route rule with `match.on: "shadow"` copies a share of an alias's requests to a
+candidate alias after the caller's answer is complete, and compares the two answers
+in memory. The caller always gets the answer of the model it asked for; nothing is
+moved (that is a [split](#roll-out-a-new-model-gradually)) and nothing is replayed:
+shim keeps no prompts to replay, and live copies need none.
+
+```json
+{"id": "llama4_degisiklik", "name": "Llama 4 change test", "kind": "route", "action": "route",
+ "state": "monitor", "scope": {"tags": ["mobil"]},
+ "match": {"on": "shadow", "from": "kurum-llama", "to": "kurum-llama-4", "share_percent": 10,
+           "starts_at": "2026-11-02T00:00:00Z", "ends_at": "2026-11-09T00:00:00Z",
+           "max_requests": 1000, "max_cost_usd": "50"}}
+```
+
+`from` and `to` are registered aliases of one provider (an `internal` alias is never
+copied to an `external` one), `share_percent` 0.1 to 100 with one decimal, a window of
+at most 31 days that ends in the future when the test is new or changed, `max_requests`
+1 to 100,000 and `max_cost_usd` 0.01 to 100,000. One test per alias, ten per set. A
+test is its rule id and `starts_at`: a new `starts_at` starts a new test with fresh
+counters. In `monitor` nothing is copied and `GET /api/v1/management/change-tests` shows
+a 7-day estimate of the copies and their extra cost at the candidate's price (the
+rule's preview counts the same); enforcing is relaxing for four eyes, since masked
+request data goes to one more deployment and the tenant pays for it.
+
+Enforced, a request to `from` in scope and in the window is copied when the hash of the
+rule id and request id falls in the share (one copy per request at most). The copy
+follows the core shadow guards: never a token count, a Responses continuation or a
+stored Responses request, only after a completed answer, the masked payload with the
+bands re-run for the candidate, the key's model allowlist applied, no copy when a rule
+scoped to the candidate's model exists (it never saw the payload). The copy is its own
+row (`shadow_of`), with its own cost, which is the tenant's; it uses no request unit.
+Caps are counted in Redis, seeded from the ledger, so a test may overshoot
+`max_requests` or `max_cost_usd` by the copies already in flight
+(`SHADOW_MAX_IN_FLIGHT` per gateway process); without Redis no copy is made. Each
+skipped copy counts in `shim_change_test_skips_total{reason}`.
+
+The comparison writes `shadow_comparison` on the copy's row: per side the outcome,
+schema validity (always checked), language and soft refusal (when the tenant's
+analyzers are on), answer length, tokens, latency and cost; never text, and after a
+request with personal data no answer is analysed. `GET
+/api/v1/management/change-tests/{rule_id}` (`usage.read`, a window of at most 31 days,
+the test's by default) reads the outcome mix, schema rates, length ratios, latency and
+cost per side with fixed caveats; `POST /api/v1/management/change-tests/{rule_id}/stop`
+(`rules.write`) moves the rule to `monitor` in one tightening policy version, undone by
+restoring the version before it. Recipe:
+[Test a model change before switching](COOKBOOK.md#test-a-model-change-before-switching).
+
 ## The inventory
 
 `GET /api/v1/management/model-inventory?start=…&end=…` (owners, admins and

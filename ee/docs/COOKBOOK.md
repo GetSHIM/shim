@@ -1103,6 +1103,24 @@ looks right, send the set again with `"state": "enforced"` and they are served b
 lane while short questions stay on `kurum-llama`. A lane that is disabled or unhealthy
 leaves the request on the alias with `held` set.
 
+### Test a model change before switching
+
+Register the candidate (`kurum-llama-4`), then add a change test in `monitor` with
+the window and caps you accept to pay for (see
+[model deployments](MODEL_DEPLOYMENTS.md#test-a-model-change-on-live-traffic) for the
+fields):
+
+1. `GET /api/v1/management/change-tests` shows the test in `monitor` with its 7-day
+   estimate of copies and extra cost.
+2. Send the set again with `"state": "enforced"` (with four eyes on, a second admin
+   approves it). Callers keep getting the stable model's answers; copies appear in the
+   request list with `shadow_of`.
+3. Read `GET /api/v1/management/change-tests/llama4_degisiklik`: outcome mix, schema
+   validity, answer length, latency and cost of both sides. The list says `ended` with
+   the reason when the window, `max_requests` or `max_cost_usd` is reached.
+4. Stop early with `POST /api/v1/management/change-tests/llama4_degisiklik/stop`; undo
+   the stop by restoring the version before it.
+
 ## Register an Azure OpenAI deployment
 
 Route a gateway alias to your Azure OpenAI deployment, with an Azure key or an

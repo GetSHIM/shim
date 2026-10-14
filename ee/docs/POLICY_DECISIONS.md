@@ -217,7 +217,9 @@ value is refused with 422, and so is a value whose feature this release does not
 have yet (`RULE_MATCH_INVALID` at `match.on`): nothing would evaluate it. Enforcing a route rule, or changing an enforced one, is a relaxing change for
 [four eyes](#four-eyes); moving it back to monitor or deleting it tightens. Changing
 only the `share_percent` of a `split` rule is neutral: its checks already keep both
-aliases on one provider and an internal alias inside.
+aliases on one provider and an internal alias inside. For a `shadow` rule (a change
+test), a match change that only lowers `share_percent`, `max_requests` or
+`max_cost_usd`, or moves `ends_at` earlier, tightens; any other match change relaxes.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:

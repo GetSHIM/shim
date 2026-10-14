@@ -449,6 +449,26 @@
   "service_recommender": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/change-tests": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: usage.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "service_recommender": "200",
+  "team_admin": "403 Permission required: usage.read"
+ },
+ "GET /api/v1/management/change-tests/{rule_id}": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Permission required: usage.read",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "service_recommender": "404",
+  "team_admin": "403 Permission required: usage.read"
+ },
  "GET /api/v1/management/config/export": {
   "admin": "200",
   "auditor": "200",
@@ -1250,6 +1270,16 @@
   "team_admin": "403 Organization admin required"
  },
  "POST /api/v1/management/canaries/{rule_id}/rollback": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: rules.write",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Permission required: rules.write",
+  "team_admin": "403 Permission required: rules.write"
+ },
+ "POST /api/v1/management/change-tests/{rule_id}/stop": {
   "admin": "404",
   "auditor": "403 Auditor access is read-only",
   "member": "403 Permission required: rules.write",

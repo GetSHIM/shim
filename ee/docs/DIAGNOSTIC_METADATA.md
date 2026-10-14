@@ -427,6 +427,19 @@ only, never the caller's key or team quota, task cost cap, or a team or tag cost
 budget. The request list and its CSV carry `shadow_of`;
 both keys are absent on every other row.
 
+`shadow_comparison` is on the row of a [change-test](MODEL_DEPLOYMENTS.md#test-a-model-change-on-live-traffic)
+copy, written in a short transaction of its own after the copy settled (so it is not in
+the finalization's analytics event): `rule_id`, `starts_at`, `version` (1),
+`schema_expected` (`json_schema`, `json_object`, `tool_args`, `none`, or null when no
+answer was analysed) and, for `primary` and `candidate`, `status`, `outcome` (the
+completion outcome, `failed` for a copy that ended without an answer),
+`schema_valid`, `language`, `soft_refusal` (null when not computed), `answer_chars`,
+`prompt_tokens`, `completion_tokens`, `provider_latency_ms`, `ttft_ms`, `cost_usd`,
+`error_code` and, when the answer hit the analysis bound, `answer_truncated: true`.
+After a request that carried personal data no answer is analysed: the three analyzer
+fields and `schema_expected` stay null. No answer text, value or tool argument is
+stored. The request list and its CSV carry it.
+
 `queue_wait_ms` is the milliseconds a request waited for room on its target under a
 concurrency limiter (0 when admitted at once), written at reservation; absent when no
 limiter is configured.

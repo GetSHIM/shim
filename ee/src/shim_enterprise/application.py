@@ -17,6 +17,7 @@ from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shim_enterprise.gateway.attempts import TenantAttemptPolicy
+from shim_enterprise.gateway.change_test import ChangeTestSender
 from shim_enterprise.gateway.fallback import CanaryFallback, UnavailableFallback
 from shim_enterprise.api.v1.router import gateway_router, management_router
 from shim.api.v1.gemini import router as gemini_router
@@ -257,6 +258,7 @@ def _create_gateway_kernel(
                 CanaryFallback(),
             ),
         ),
+        shadow_sender=ChangeTestSender(AsyncSessionLocal, cache),
         shadow_max_in_flight=settings.SHADOW_MAX_IN_FLIGHT,
         rate_limiter=BurstRateLimiter(cache),
         loop_detector=LoopDetectionService(cache),
