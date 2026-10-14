@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -62,7 +63,7 @@ class RollbackView(BaseModel):
     policy_version: int
 
 
-def _sides(organization_id, rule_id: str, start: datetime):
+def _sides(organization_id, rule_id: str, start: datetime, end: datetime):
     metadata = RequestLifecycle.lifecycle_metadata
     decision = metadata["route_decision"]
     # Monitor serves every request from the stable alias.
@@ -124,6 +125,7 @@ def _sides(organization_id, rule_id: str, start: datetime):
         .where(
             RequestLifecycle.organization_id == organization_id,
             RequestLifecycle.started_at >= start,
+            RequestLifecycle.started_at < end,
             decision["rule_id"].as_string() == rule_id,
         )
         .group_by(side)
@@ -157,6 +159,25 @@ def _side(row: Any | None) -> dict[str, Any]:
     }
 
 
+async def canary_sides(
+    session: AsyncSession,
+    organization_id: UUID,
+    rule_id: str,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    """Both sides of a split rule over a window, by the side that served each row."""
+    rows = {
+        row.side: row
+        for row in await session.execute(_sides(organization_id, rule_id, start, end))
+    }
+    return {
+        "stable": _side(rows.get("stable")),
+        "candidate": _side(rows.get("candidate")),
+        "would_move": sum(row.would_move for row in rows.values()),
+    }
+
+
 @router.get("", response_model=list[CanaryView])
 async def list_canaries(
     hours: int = Query(default=24, ge=1, le=744),
@@ -170,16 +191,11 @@ async def list_canaries(
         for rule in (stored.rules if stored is not None else ())
         if rule.kind == "route" and rule.match.get("on") == "split"
     ][:MAX_SPLIT_RULES]
-    start = datetime.now(timezone.utc) - timedelta(hours=hours)
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=hours)
     views = []
     async with bounded_read(session):
         for rule in splits:
-            rows = {
-                row.side: row
-                for row in await session.execute(
-                    _sides(organization_id, rule.id, start)
-                )
-            }
             views.append(
                 {
                     "rule_id": rule.id,
@@ -187,9 +203,7 @@ async def list_canaries(
                     "to_alias": rule.match["to"],
                     "share_percent": rule.match["share_percent"],
                     "state": rule.state,
-                    "stable": _side(rows.get("stable")),
-                    "candidate": _side(rows.get("candidate")),
-                    "would_move": sum(row.would_move for row in rows.values()),
+                    **await canary_sides(session, organization_id, rule.id, start, end),
                 }
             )
     return views

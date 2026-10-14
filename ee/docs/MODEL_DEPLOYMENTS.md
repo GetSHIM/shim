@@ -359,6 +359,9 @@ cost per side with fixed caveats; `POST /api/v1/management/change-tests/{rule_id
 restoring the version before it. Recipe:
 [Test a model change before switching](COOKBOOK.md#test-a-model-change-before-switching).
 
+Change tests, canaries and route rules can be written up as a
+[model evidence document](POLICY_DECISIONS.md#model-evidence-documents).
+
 ## The inventory
 
 `GET /api/v1/management/model-inventory?start=…&end=…` (owners, admins and

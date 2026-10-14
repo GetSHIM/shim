@@ -33,7 +33,7 @@ forbidden_noncloud_import_roots = [
 "shim.api.v1.responses" = ["router"]
 "shim.billing.attribution" = ["CostAttribution", "UNTAGGED", "normalize_attribution"]
 "shim.billing.lifecycle" = ["load_lifecycle"]
-"shim.billing.pricing" = ["DATE_SUFFIX", "DEFAULT_PRICE_BOOK", "compute_cost_usd"]
+"shim.billing.pricing" = ["DATE_SUFFIX", "DEFAULT_PRICE_BOOK", "ModelPrice", "compute_cost_usd"]
 "shim.core.circuit_breaker" = ["validate_circuit_limits"]
 "shim.core.community_config" = ["AZURE_DEPLOYMENT_NAME", "CommunitySettings"]
 "shim.core.http" = ["install_http_middleware"]
@@ -348,6 +348,7 @@ enterprise = [
   "ee/alembic/versions/73669c9be04c_add_record_sets.py",
   "ee/alembic/versions/79a194bca40f_add_request_archive.py",
   "ee/alembic/versions/7e3fb2338f03_add_readiness_declarations.py",
+  "ee/alembic/versions/9d8bdbc80b0e_add_model_evidence_files.py",
   "ee/alembic/versions/a0b7b834770b_add_hardware_cost_and_capacity.py",
   "ee/alembic/versions/a61706150d6c_add_incidents.py",
   "ee/alembic/versions/a7d3e5f1c2b4_add_bedrock_regions_and_cost_tags.py",
@@ -452,6 +453,7 @@ enterprise = [
   "ee/src/shim_enterprise/compliance/api.py",
   "ee/src/shim_enterprise/compliance/classification.py",
   "ee/src/shim_enterprise/compliance/health.py",
+  "ee/src/shim_enterprise/compliance/model_evidence_api.py",
   "ee/src/shim_enterprise/compliance/models.py",
   "ee/src/shim_enterprise/compliance/normalized.py",
   "ee/src/shim_enterprise/compliance/ratelimit.py",
@@ -460,6 +462,7 @@ enterprise = [
   "ee/src/shim_enterprise/compliance/services/__init__.py",
   "ee/src/shim_enterprise/compliance/services/forwarder.py",
   "ee/src/shim_enterprise/compliance/services/ingest.py",
+  "ee/src/shim_enterprise/compliance/services/model_evidence.py",
   "ee/src/shim_enterprise/compliance/services/monthly_evidence.py",
   "ee/src/shim_enterprise/compliance/services/report.py",
   "ee/src/shim_enterprise/compliance/services/scan.py",
@@ -606,6 +609,7 @@ enterprise = [
   "ee/tests/cache/test_redis_index.py",
   "ee/tests/compliance/test_compliance_scan.py",
   "ee/tests/compliance/test_incidents.py",
+  "ee/tests/compliance/test_model_evidence.py",
   "ee/tests/compliance/test_monthly_evidence.py",
   "ee/tests/compliance/test_openai_adapter.py",
   "ee/tests/compliance/test_report.py",

@@ -1121,6 +1121,28 @@ fields):
 4. Stop early with `POST /api/v1/management/change-tests/llama4_degisiklik/stop`; undo
    the stop by restoring the version before it.
 
+### Document a model decision
+
+After a change test or a canary, keep the evidence:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/management/model-evidence \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"kind": "model_selection", "title": "Llama 4 replaces Llama 3.3",
+       "start": "2026-11-02T00:00:00Z", "end": "2026-11-09T00:00:00Z",
+       "current": "kurum-llama", "candidates": ["kurum-llama-4"],
+       "change_tests": ["llama4_degisiklik"]}'
+```
+
+The answer has the document's `sha256` and `audit_event_id`; hand the PDF to the auditor
+with the [verification steps](POLICY_DECISIONS.md#model-evidence-documents).
+
+### Report on routing rules
+
+The same route with `"kind": "routing"` and `"route_rules": ["cheap_start"]` reports where
+the rule's requests went, what they cost and would have cost at `from`, and how their
+outcomes compare with the requests the rule left alone.
+
 ## Register an Azure OpenAI deployment
 
 Route a gateway alias to your Azure OpenAI deployment, with an Azure key or an

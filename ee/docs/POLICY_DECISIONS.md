@@ -991,6 +991,38 @@ the current month as `monthly_partial` (so a test never takes the closed
 month's place), a future month is refused, and so is a period that already has
 a file of that kind.
 
+## Model evidence documents
+
+`POST /api/v1/management/model-evidence` (`compliance.manage`) builds one document over a
+window of at most 31 days that has ended: `model_selection` ("why this model": the
+current model and one to three candidates, with their prices, the listed change tests
+and canaries, the live traffic of their provider models and the measured tokens per
+character by language) or `routing` ("where did requests go and what did it save": per
+route rule its definition, decisions by state, reason and outcome, the routed rows'
+settled tokens priced at both sides, the potential savings of `would_route` rows,
+outcome and analyzer rates of routed rows beside the rest of `from`, and the matching
+change tests). Every value is an id, label, count, sum, ratio or percentile read from
+`request_lifecycle`, `usage_ledger` and `request_logs`; `title` and `note` are the
+admin's own words. Savings reuse the tokens the serving model billed, priced at each
+side's deployment price, else its upstream model's catalog price, else `unpriced`;
+an output-token adjustment by tokens per character applies when both models have at
+least 30 eligible answers in the language.
+
+The PDF is stored with its facts object, the file's SHA-256 and the facts' SHA-256
+(`json.dumps(facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`). In
+the same transaction an audit intent `tenant.model_evidence_generated` records both
+digests; the PDF names that entry's id. To verify a document without shim code:
+download it (`GET .../model-evidence/{id}`, audited `tenant.model_evidence_downloaded`),
+compute its SHA-256, export the audit bundle for a window holding `generated_at`, find
+the row whose `request_id` is the document's `audit_event_id`, compare `extra.sha256`,
+and verify the chain with `shim-audit-verify`. `GET .../model-evidence` (`audit.read`)
+lists documents with `anchored` once the chained row exists, and
+`GET .../model-evidence/{id}/facts` returns the facts with `X-Content-SHA256`. Rows are
+never updated or deleted. Every document ends with what it does not prove: no answer
+was reviewed, routed and unrouted requests differ, copies ran later under other load,
+counterfactual tokens are estimates, prices are those in force, the numbers describe
+this window only, and candidates saw masked input.
+
 ## Incidents
 
 An [incident](INCIDENTS.md) is opened by a person. shim does not open one from

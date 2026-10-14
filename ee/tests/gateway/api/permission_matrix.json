@@ -629,6 +629,36 @@
   "service_recommender": "404",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/model-evidence": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: audit.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "service_recommender": "403 Permission required: audit.read",
+  "team_admin": "403 Permission required: audit.read"
+ },
+ "GET /api/v1/management/model-evidence/{document_id}": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Permission required: audit.read",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "service_recommender": "403 Permission required: audit.read",
+  "team_admin": "403 Permission required: audit.read"
+ },
+ "GET /api/v1/management/model-evidence/{document_id}/facts": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Permission required: audit.read",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "service_recommender": "403 Permission required: audit.read",
+  "team_admin": "403 Permission required: audit.read"
+ },
  "GET /api/v1/management/model-inventory": {
   "admin": "200",
   "auditor": "200",
@@ -1368,6 +1398,16 @@
   "service_auditor": "403 Auditor access is read-only",
   "service_recommender": "403 Organization admin required",
   "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/management/model-evidence": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: compliance.manage",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Permission required: compliance.manage",
+  "team_admin": "403 Permission required: compliance.manage"
  },
  "POST /api/v1/management/policy/plans": {
   "admin": "422",

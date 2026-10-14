@@ -364,3 +364,63 @@ class MonthlyEvidenceFile(Base):
         DateTime(timezone=True), nullable=False
     )
     generator_version: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ModelEvidenceFile(Base):
+    """A model evidence PDF and the facts it was built from; never updated."""
+
+    __tablename__ = "model_evidence_files"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('model_selection', 'routing')",
+            name="ck_model_evidence_files_kind",
+        ),
+        CheckConstraint(
+            "window_start < window_end", name="ck_model_evidence_files_window"
+        ),
+        Index(
+            "ix_model_evidence_files_org_generated_at",
+            "organization_id",
+            "generated_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey(
+            "organizations.id",
+            name="fk_model_evidence_files_organization_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    window_end: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    sources: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    facts_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    generated_by: Mapped[UUID | None] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_model_evidence_files_generated_by",
+            ondelete="SET NULL",
+        ),
+    )
+    generator_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    audit_event_id: Mapped[str] = mapped_column(String(64), nullable=False)

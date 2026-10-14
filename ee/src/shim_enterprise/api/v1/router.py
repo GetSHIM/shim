@@ -10,6 +10,9 @@ from shim_enterprise.api.v1 import management, scan
 from shim_enterprise.approvals.api import router as approvals_router
 from shim_enterprise.aws.attribution import router as aws_router
 from shim_enterprise.compliance.api import router as compliance_router
+from shim_enterprise.compliance.model_evidence_api import (
+    router as model_evidence_router,
+)
 from shim_enterprise.findings.api import router as findings_router
 from shim_enterprise.incidents.api import router as incidents_router
 from shim_enterprise.config_file.api import router as config_router
@@ -48,6 +51,7 @@ management_router.include_router(mcp_router)
 management_router.include_router(rules_router)
 management_router.include_router(canaries_router)
 management_router.include_router(change_tests_router)
+management_router.include_router(model_evidence_router)
 management_router.include_router(proposals_router)
 management_router.include_router(approvals_router)
 management_router.include_router(findings_router)
