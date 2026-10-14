@@ -2316,3 +2316,25 @@ def test_a_batch_of_a_thousand_texts_is_one_analyzer_pass(monkeypatch) -> None:
     # Work, not time: the analyzer's fixed cost per pass is what batching saves. One
     # pass reads the thousand texts and one the field name, against a pass for each.
     assert (analyzer_passes(texts), analyzer_passes([])) == (2, 1_001)
+
+
+def test_lone_surrogates_are_stripped_before_analysis_reaches_spacy() -> None:
+    # Lone surrogates are valid in Python str but cannot be encoded as UTF-8.
+    # spaCy's hash_string calls string.encode("utf8") and would raise
+    # UnicodeEncodeError if a lone surrogate reaches it through the PII pipeline.
+    # Regression test for: UnicodeEncodeError in /v1/chat/completions.
+    scrubber = PIIScrubberService()
+
+    # Text with a lone high surrogate mixed into otherwise-normal content.
+    # Must not raise UnicodeEncodeError; the surrogate is stripped before spaCy sees it.
+    result, _ = scrubber.scrub("hello \ud800 world", DEFAULT_ACTIONS)
+    assert result is not None
+
+    # Text with a lone low surrogate — same guarantee.
+    result2, _ = scrubber.scrub("data \udfff end", DEFAULT_ACTIONS)
+    assert result2 is not None
+
+    # scrub_payload must also survive a surrogate embedded in a payload field.
+    payload = {"messages": [{"role": "user", "content": "test \ud83d\ud800 ok"}]}
+    safe, _ = scrub_payload(payload, DEFAULT_ACTIONS, scrubber)
+    assert safe["messages"][0]["content"] is not None
