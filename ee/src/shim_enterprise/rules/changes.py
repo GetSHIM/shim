@@ -25,6 +25,15 @@ _LABELS = frozenset({"id", "name"})
 _CHECKED = frozenset({"state", "action", "scope", "match"})
 
 
+def _without_share(rule: Rule) -> dict[str, Any]:
+    # A split's share moves conversations between two aliases its checks already
+    # allowed (same provider, never internal to external); it changes no protection.
+    match = rule.match
+    if match.get("on") == "split":
+        match = {key: value for key, value in match.items() if key != "share_percent"}
+    return {**rule.model_dump(exclude={"name", "match"}), "match": match}
+
+
 def _relaxes(before: Rule | None, after: Rule | None) -> bool:
     if {rule.kind for rule in (before, after) if rule is not None} == {"route"}:
         # A route rule moves requests to another model: enforcing one, or changing
@@ -32,11 +41,7 @@ def _relaxes(before: Rule | None, after: Rule | None) -> bool:
         return (
             after is not None
             and after.state == "enforced"
-            and (
-                before is None
-                or before.model_dump(exclude={"name"})
-                != after.model_dump(exclude={"name"})
-            )
+            and (before is None or _without_share(before) != _without_share(after))
         )
     if before is None or before.state != "enforced":
         return False

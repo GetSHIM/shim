@@ -215,7 +215,9 @@ another feature and is skipped here with no verdict; `on` is one of `unavailable
 `capacity`, `format_invalid`, `split`, `degrade`, `size` or `shadow`, any other
 value is refused with 422, and so is a value whose feature this release does not
 have yet (`RULE_MATCH_INVALID` at `match.on`): nothing would evaluate it. Enforcing a route rule, or changing an enforced one, is a relaxing change for
-[four eyes](#four-eyes); moving it back to monitor or deleting it tightens.
+[four eyes](#four-eyes); moving it back to monitor or deleting it tightens. Changing
+only the `share_percent` of a `split` rule is neutral: its checks already keep both
+aliases on one provider and an internal alias inside.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:

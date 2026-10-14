@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import update
 
 from ee.tests.rules.test_rules_resource import (
     MANAGEMENT,
@@ -11,6 +12,7 @@ from ee.tests.rules.test_rules_resource import (
     _put,
     _stored,
 )
+from shim_enterprise.tenants.models import ModelDeployment
 
 
 def _fallback(rule_id: str = "llama_a_yedek", **match) -> dict:
@@ -130,3 +132,81 @@ async def test_a_preview_cannot_replay_health_and_says_start_in_monitor(
         False,
     )
     assert answer["note"].endswith("start in monitor")
+
+
+def _split(rule_id: str = "llama4_kanarya", **match) -> dict:
+    return {
+        "id": rule_id,
+        "name": "Llama 4 to 5 percent",
+        "kind": "route",
+        "action": "route",
+        "state": "monitor",
+        "match": {
+            "on": "split",
+            "from": "llama-a",
+            "to": "llama-b",
+            "share_percent": 5,
+            "fallback_to_stable": False,
+            **match,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_split_rule_is_stored_with_its_share(db, owner) -> None:
+    stored = await _put(db, owner, [_split(share_percent=12.5)])
+
+    assert stored.status_code == 200, stored.text
+    assert (await _stored(db, owner.organization_id))[0]["match"][
+        "share_percent"
+    ] == 12.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rules", "path"),
+    [
+        ([_split(**{"from": "unregistered"})], "rules[0].match.from"),
+        ([_split(to="unregistered")], "rules[0].match.to"),
+        ([_split(to="sonnet")], "rules[0].match.to"),
+        ([_split(to="llama-a")], "rules[0].match"),
+        ([_split(share_percent=-1)], "rules[0].match.share_percent"),
+        ([_split(share_percent=100.5)], "rules[0].match.share_percent"),
+        ([_split(share_percent=5.55)], "rules[0].match"),
+        ([_split(), _split("second", to="llama-c")], "rules[1].match.from"),
+        # No chains: llama-b is the first split's candidate.
+        (
+            [_split(), _split("chain", **{"from": "llama-b"}, to="llama-c")],
+            "rules[1].match.from",
+        ),
+    ],
+)
+async def test_an_unusable_split_rule_is_refused_with_its_path(
+    db, owner, rules, path
+) -> None:
+    refused = await _put(db, owner, rules)
+
+    assert refused.status_code == 422, refused.text
+    assert (refused.json()["detail"]["code"], refused.json()["detail"]["path"]) == (
+        "RULE_MATCH_INVALID",
+        path,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_internal_alias_never_splits_to_an_external_one(db, owner) -> None:
+    await db.execute(
+        update(ModelDeployment)
+        .where(
+            ModelDeployment.organization_id == owner.organization_id,
+            ModelDeployment.alias == "llama-b",
+        )
+        .values(deployment_kind="external")
+    )
+
+    refused = await _put(db, owner, [_split()])
+    reversed_ = await _put(db, owner, [_split(**{"from": "llama-b"}, to="llama-a")])
+
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["path"] == "rules[0].match.to"
+    assert reversed_.status_code == 200, reversed_.text

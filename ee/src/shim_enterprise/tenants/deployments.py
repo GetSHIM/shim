@@ -34,7 +34,11 @@ from shim.rules.route import conversation_id, owned, route_reason, start_view
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.observability.enterprise_metrics import ROUTE_DECISIONS_TOTAL
-from shim_enterprise.rules.route_triggers import unavailable_rules
+from shim_enterprise.rules.route_triggers import (
+    SplitMatch,
+    UnavailableMatch,
+    trigger_rules,
+)
 from shim_enterprise.secrets.references import format_reference
 from shim_enterprise.tenants.gateway_settings import GatewaySettings
 from shim_enterprise.tenants.models import (
@@ -210,14 +214,14 @@ def deployment_target(
     )
 
 
+TargetRefusal = Literal["not_allowed", "disabled", "unhealthy", "not_approved"]
+
+
 async def alias_target(
     session: AsyncSession, prepared: PreparedInference, alias: str
-) -> (
-    tuple[ProviderTarget, Literal["internal", "external"]]
-    | Literal["not_allowed", "unavailable"]
-):
+) -> tuple[ProviderTarget, Literal["internal", "external"]] | TargetRefusal:
     """The registry deployment `alias` names, checked as the resolver checks one:
-    the key's allowlist, then disabled, another provider, unhealthy, origin.
+    the key's allowlist, then disabled or another provider, unhealthy, origin.
     A Bedrock deployment is never a move target: its region lock runs in the
     resolver only."""
 
@@ -232,20 +236,20 @@ async def alias_target(
             ModelDeployment.alias == alias,
         )
     )
-    base_url = None
     if (
-        deployment is not None
-        and deployment.enabled
-        and deployment.upstream != "aws_bedrock"
-        and deployment.provider == str(prepared.provider)
-        and not unhealthy_seconds_left(deployment)
+        deployment is None
+        or not deployment.enabled
+        or deployment.provider != str(prepared.provider)
     ):
-        try:
-            base_url = validate_deployment_url(deployment.base_url)
-        except ValueError:
-            pass
-    if deployment is None or base_url is None:
-        return "unavailable"
+        return "disabled"
+    if unhealthy_seconds_left(deployment):
+        return "unhealthy"
+    try:
+        if deployment.upstream == "aws_bedrock":
+            raise ValueError("a Bedrock deployment is never a move target")
+        base_url = validate_deployment_url(deployment.base_url)
+    except ValueError:
+        return "not_approved"
     kind: Literal["internal", "external"] = (
         "internal"
         if deployment.deployment_kind == "internal"
@@ -271,7 +275,9 @@ def _fallback_takes_over(
     """An enforced `health_flag` fallback rule covers this request; a monitor one
     records where it would have gone."""
 
-    covering = list(unavailable_rules(prepared.rules, prepared.model))
+    covering = list(
+        trigger_rules(prepared.rules, "unavailable", UnavailableMatch, prepared.model)
+    )
     if not covering:
         return False
     # Scope is read at the deployment the request reaches, as everywhere else.
@@ -298,6 +304,12 @@ def _fallback_takes_over(
     return False
 
 
+def canary_bucket(tenant_id: str, rule_id: str, identity: str) -> int:
+    """0 to 9,999: the same conversation always lands in the same bucket."""
+    digest = hashlib.sha256(f"{tenant_id}|{rule_id}|{identity}".encode()).hexdigest()
+    return int(digest[:8], 16) % 10_000
+
+
 def _conversation_key() -> bytes:
     base = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
     return hmac.new(base, b"shim-route-conversation-v1", hashlib.sha256).digest()
@@ -317,6 +329,12 @@ class DeploymentResolver:
         self, prepared: PreparedInference, headers: Mapping[str, str]
     ) -> PreparedInference:
         resolved = await self._registered(prepared, headers)
+        split = next(
+            trigger_rules(resolved.rules, "split", SplitMatch, resolved.model), None
+        )
+        # An alias under a split is served by its split alone.
+        if split is not None and in_scope(split[0], resolved, _tags(resolved, headers)):
+            return await self._split(resolved, *split, headers)
         routes = [
             rule
             for rule in (prepared.rules.rules if prepared.rules is not None else ())
@@ -365,7 +383,7 @@ class DeploymentResolver:
                 found = await alias_target(session, prepared, rule.match["to"])
             if found == "not_allowed":
                 decision["outcome"] = "not_allowed_for_key"
-            elif found == "unavailable":
+            elif isinstance(found, str):
                 decision["outcome"] = "target_unavailable"
             else:
                 target, kind = found
@@ -380,6 +398,54 @@ class DeploymentResolver:
         ROUTE_DECISIONS_TOTAL.labels(
             state=rule.state, outcome=decision["outcome"]
         ).inc()
+        return replace(routed, route_decision=decision)
+
+    async def _split(
+        self,
+        prepared: PreparedInference,
+        rule: Rule,
+        match: SplitMatch,
+        headers: Mapping[str, str],
+    ) -> PreparedInference:
+        """The conversation's bucket picks the side; enforced, the candidate serves
+        when it can, else the request stays on `from` and says why."""
+
+        sent = headers.get("x-shim-conversation-id")
+        identity = sent if sent and len(sent) <= 128 else f"key:{prepared.api_key_id}"
+        candidate = canary_bucket(str(prepared.tenant_id), rule.id, identity) < round(
+            match.share_percent * 100
+        )
+        view = start_view(prepared.payload, prepared.protocol)
+        decision: dict[str, object] = {
+            "rule_id": rule.id,
+            "state": rule.state,
+            "from": match.from_,
+            "to": match.from_,
+            "reason": "canary",
+            "conversation_id": conversation_id(
+                sent, _conversation_key(), view[0] if view is not None else ""
+            ),
+            "canary_side": "candidate" if candidate else "stable",
+        }
+        routed = prepared
+        if candidate and rule.state == "enforced":
+            async with self.session_factory() as session:
+                found = await alias_target(session, prepared, match.to)
+            if isinstance(found, str):
+                decision["canary_side"] = "stable"
+                decision["held"] = (
+                    "not_allowed_for_key" if found == "not_allowed" else found
+                )
+            else:
+                target, kind = found
+                decision["to"] = match.to
+                routed = replace(
+                    prepared,
+                    payload={**prepared.payload, "model": target.upstream_model},
+                    deployment_kind=kind,
+                    target=target,
+                )
+        prepared.record_rule_match(rule, 1)
         return replace(routed, route_decision=decision)
 
     async def _registered(

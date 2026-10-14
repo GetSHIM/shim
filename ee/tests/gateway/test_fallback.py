@@ -28,7 +28,7 @@ from shim_enterprise.billing.models import (
 )
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.attempts import TenantAttemptPolicy
-from shim_enterprise.gateway.fallback import UnavailableFallback
+from shim_enterprise.gateway.fallback import CanaryFallback, UnavailableFallback
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.tenants.models import ModelDeployment, ProviderSecret
 
@@ -155,7 +155,7 @@ async def _fallback_gateway(db, key, handler, rules, *, actions=None, cache=None
             circuit_for = {"openai": tenant_target_circuit("openai", cache)}
             kernel.executions["openai"].circuit_for = circuit_for["openai"]
         kernel.attempt_policy = TenantAttemptPolicy(
-            session, (UnavailableFallback(session, circuit_for),)
+            session, (UnavailableFallback(session, circuit_for), CanaryFallback())
         )
         if actions is not None:
             resolve = kernel.policy_resolver.resolve

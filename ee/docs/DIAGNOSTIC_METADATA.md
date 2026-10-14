@@ -407,7 +407,12 @@ update fills it in only when privacy found no personal data (null otherwise, als
 under `previous`, as it clears `repeat_digest`), so a request refused before privacy
 finished never keeps it. The
 request list filters on it with `route_outcome=<outcome>`; prompt text and keywords are
-never recorded.
+never recorded. A [split rule](MODEL_DEPLOYMENTS.md#roll-out-a-new-model-gradually)
+writes the same key with `reason: "canary"`, `to` the alias that served (in `monitor`,
+always `from`), no `outcome`, and two keys of its own: `canary_side` (`stable` or
+`candidate`: the side the conversation's bucket chose, the side it would have had in
+`monitor`) and, when an enforced candidate could not serve, `held` (`disabled`,
+`unhealthy`, `not_approved` or `not_allowed_for_key`) with `canary_side: "stable"`.
 
 `shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
 to a candidate model: the primary request's id and the rule that chose it. The copy

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterator
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeVar
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -26,6 +26,7 @@ from shim_enterprise.tenants.models import ModelDeployment
 logger = logging.getLogger(__name__)
 
 _Alias = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+M = TypeVar("M", bound=BaseModel)
 Trigger = Literal["health_flag", "circuit_open", "provider_error", "rate_limited"]
 
 
@@ -100,10 +101,82 @@ async def _check_unavailable(
                 )
 
 
+class SplitMatch(BaseModel):
+    """A share of `from`'s conversations goes to `to`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    on: Literal["split"]
+    from_: _Alias = Field(alias="from")
+    to: _Alias
+    share_percent: float = Field(ge=0, le=100)
+    fallback_to_stable: bool = False
+
+    @model_validator(mode="after")
+    def one_decimal(self) -> SplitMatch:
+        if self.to == self.from_:
+            raise ValueError("to is the from alias")
+        if abs(self.share_percent * 10 - round(self.share_percent * 10)) > 1e-9:
+            raise ValueError("share_percent has at most one decimal")
+        return self
+
+
+async def _check_split(
+    session: AsyncSession,
+    organization_id: UUID,
+    rules: list[tuple[int, SplitMatch]],
+) -> None:
+    """Both aliases registered with one provider, never internal to external, one
+    split per `from`, and no `from` that is another split's `to`."""
+
+    named = {alias for _, match in rules for alias in (match.from_, match.to)}
+    registered = {
+        alias: (provider, kind)
+        for alias, provider, kind in await session.execute(
+            select(
+                ModelDeployment.alias,
+                ModelDeployment.provider,
+                ModelDeployment.deployment_kind,
+            ).where(
+                ModelDeployment.organization_id == organization_id,
+                ModelDeployment.alias.in_(named),
+            )
+        )
+    }
+    targets = {match.to for _, match in rules}
+    covered: set[str] = set()
+    for index, match in rules:
+        path = f"rules[{index}].match"
+        source, target = registered.get(match.from_), registered.get(match.to)
+        if source is None:
+            raise _refused(
+                f"{path}.from",
+                "from names a model alias this organization has not registered",
+            )
+        if match.from_ in covered:
+            raise _refused(f"{path}.from", "another split rule covers this alias")
+        if match.from_ in targets:
+            raise _refused(f"{path}.from", "from is the to of another split rule")
+        covered.add(match.from_)
+        if target is None:
+            raise _refused(
+                f"{path}.to",
+                "to names a model alias this organization has not registered",
+            )
+        if target[0] != source[0]:
+            raise _refused(f"{path}.to", "to is an alias of another provider than from")
+        # A split sends every kind of request, personal data included.
+        if source[1] == "internal" and target[1] != "internal":
+            raise _refused(f"{path}.to", "an internal alias splits only to internal")
+
+
 # One entry per `on` value: its match model and its registry check. E64 to E70 add theirs.
 ROUTE_TRIGGER_TABLE: dict[
     str, tuple[type[BaseModel], Callable[..., Awaitable[None]]]
-] = {"unavailable": (UnavailableMatch, _check_unavailable)}
+] = {
+    "unavailable": (UnavailableMatch, _check_unavailable),
+    "split": (SplitMatch, _check_split),
+}
 
 
 async def check_route_triggers(
@@ -136,20 +209,20 @@ async def check_route_triggers(
         await ROUTE_TRIGGER_TABLE[on][1](session, organization_id, rules)
 
 
-def unavailable_rules(
-    rule_set: RuleSet | None, alias: str
-) -> Iterator[tuple[Rule, UnavailableMatch]]:
-    """The `unavailable` rules whose `from` is `alias`. One stored before this check
-    existed and that fails it is skipped: a fallback never protects anything."""
+def trigger_rules(
+    rule_set: RuleSet | None, on: str, model: type[M], alias: str
+) -> Iterator[tuple[Rule, M]]:
+    """The `on` rules whose `from` is `alias`. One stored before its check existed and
+    that fails it is skipped: a fallback or a split never protects anything."""
 
     for rule in rule_set.rules if rule_set is not None else ():
         if (
             rule.kind != "route"
-            or rule.match.get("on") != "unavailable"
+            or rule.match.get("on") != on
             or rule.match.get("from") != alias
         ):
             continue
         try:
-            yield rule, UnavailableMatch.model_validate(rule.match)
+            yield rule, model.model_validate(rule.match)
         except ValidationError:
-            logger.warning("Fallback rule skipped reason=invalid_match")
+            logger.warning("Route trigger rule skipped on=%s reason=invalid_match", on)

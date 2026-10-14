@@ -14,9 +14,10 @@ from shim.rules.evaluate import record_rule_verdicts
 from shim_enterprise.cache.circuit_breaker import RedisCircuitBreaker
 from shim_enterprise.gateway.attempts import AttemptCandidate, resolve_alias_target
 from shim_enterprise.rules.route_triggers import (
+    SplitMatch,
     Trigger,
     UnavailableMatch,
-    unavailable_rules,
+    trigger_rules,
 )
 from shim_enterprise.tenants.deployments import (
     unhealthy_refusal,
@@ -35,11 +36,13 @@ REASONS: dict[Trigger, str] = {
 
 def _unhealthy_taken_over(prepared: PreparedInference) -> bool:
     """The resolver let an unhealthy primary through for an enforced rule, and no
-    request-start route moved the request off it since."""
-    return (
-        prepared.route_decision is None
-        or prepared.route_decision.get("outcome") != "routed"
-    ) and any(
+    route rule or split moved the request off it since."""
+    decision = prepared.route_decision or {}
+    moved = decision.get("outcome") == "routed" or (
+        decision.get("reason") == "canary"
+        and decision.get("to") != decision.get("from")
+    )
+    return not moved and any(
         verdict.rule_id == "deployment.registry"
         and verdict.outcome == "skip"
         and verdict.reason_code == "DEPLOYMENT_UNHEALTHY"
@@ -69,7 +72,9 @@ class UnavailableFallback:
         return next(
             (
                 (rule, match)
-                for rule, match in unavailable_rules(prepared.rules, prepared.model)
+                for rule, match in trigger_rules(
+                    prepared.rules, "unavailable", UnavailableMatch, prepared.model
+                )
                 if in_scope(rule, prepared, tags)
             ),
             None,
@@ -195,3 +200,36 @@ class UnavailableFallback:
                 return AttemptCandidate(alias, "fallback", rule.id, target)
         record_rule_verdicts(prepared, {rule.id: ("skip", "FALLBACK_NO_CANDIDATE")})
         return None
+
+
+class CanaryFallback:
+    """A `split` rule with `fallback_to_stable`: a candidate call that failed before
+    its first byte gets one more attempt on the stable alias."""
+
+    name = "canary"
+
+    async def after_privacy(
+        self, prepared: PreparedInference
+    ) -> AttemptCandidate | None:
+        return None
+
+    async def after_outcome(self, outcome: AttemptOutcome) -> AttemptCandidate | None:
+        error, decision = outcome.error, outcome.prepared.route_decision or {}
+        if (
+            error is None
+            or not outcome.provider_started
+            or error.status_code not in PROVIDER_ERROR_STATUSES
+            or decision.get("reason") != "canary"
+            or decision.get("state") != "enforced"
+            or decision.get("canary_side") != "candidate"
+        ):
+            return None
+        split = next(
+            trigger_rules(
+                outcome.prepared.rules, "split", SplitMatch, str(decision["from"])
+            ),
+            None,
+        )
+        if split is None or not split[1].fallback_to_stable:
+            return None
+        return AttemptCandidate(split[1].from_, "canary_fallback", split[0].id)

@@ -1062,6 +1062,30 @@ deployment for an `external` fallback. To undo, restore the previous
 [policy version](#plan-apply-and-undo-a-change). The contract is in
 [model deployments](MODEL_DEPLOYMENTS.md#fallback-rule).
 
+### Roll out a new model to a share of conversations
+
+Register the candidate (`kurum-llama-4`) beside the model in use (`kurum-llama`), then
+add a split rule in `monitor`:
+
+```json
+{"id": "llama4_kanarya", "name": "Llama 4 to 5 percent", "kind": "route", "action": "route",
+ "state": "monitor", "scope": {},
+ "match": {"on": "split", "from": "kurum-llama", "to": "kurum-llama-4",
+           "share_percent": 5, "fallback_to_stable": false}}
+```
+
+1. Watch `GET /api/v1/management/canaries`: in `monitor` it counts the conversations
+   that would move. Send `X-Shim-Conversation-Id` on every turn, or each key's traffic
+   moves as one.
+2. Send the set again with `"state": "enforced"`. The chosen share is answered by
+   `kurum-llama-4`; the same read shows both sides' outcomes, failures, latency and cost.
+   Raise `share_percent` as confidence grows; set `fallback_to_stable: true` to answer a
+   failed candidate call from the stable model.
+3. Something looks wrong: `POST /api/v1/management/canaries/llama4_kanarya/rollback`
+   sends every conversation back to `kurum-llama` in one step and returns the policy
+   version it created. To undo the rollback, restore the version before it
+   ([plan, apply and undo](#plan-apply-and-undo-a-change)).
+
 ## Register an Azure OpenAI deployment
 
 Route a gateway alias to your Azure OpenAI deployment, with an Azure key or an

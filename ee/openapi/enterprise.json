@@ -3559,6 +3559,156 @@
         "title": "ByScopeView",
         "type": "object"
       },
+      "CanarySide": {
+        "properties": {
+          "completion_outcomes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Completion Outcomes",
+            "type": "object"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "cost_usd_per_request": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd Per Request"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "shim_latency_ms_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shim Latency Ms P50"
+          },
+          "shim_latency_ms_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shim Latency Ms P95"
+          },
+          "ttft_ms_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms P50"
+          },
+          "ttft_ms_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms P95"
+          }
+        },
+        "required": [
+          "requests",
+          "completion_outcomes",
+          "failed",
+          "shim_latency_ms_p50",
+          "shim_latency_ms_p95",
+          "ttft_ms_p50",
+          "ttft_ms_p95",
+          "cost_usd",
+          "cost_usd_per_request"
+        ],
+        "title": "CanarySide",
+        "type": "object"
+      },
+      "CanaryView": {
+        "properties": {
+          "candidate": {
+            "$ref": "#/components/schemas/CanarySide"
+          },
+          "from_alias": {
+            "title": "From Alias",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "share_percent": {
+            "title": "Share Percent",
+            "type": "number"
+          },
+          "stable": {
+            "$ref": "#/components/schemas/CanarySide"
+          },
+          "state": {
+            "enum": [
+              "monitor",
+              "enforced"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "to_alias": {
+            "title": "To Alias",
+            "type": "string"
+          },
+          "would_move": {
+            "title": "Would Move",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule_id",
+          "from_alias",
+          "to_alias",
+          "share_percent",
+          "state",
+          "stable",
+          "candidate",
+          "would_move"
+        ],
+        "title": "CanaryView",
+        "type": "object"
+      },
       "CapacityForecast": {
         "properties": {
           "deployments": {
@@ -15897,6 +16047,29 @@
         "title": "RetrievalConfig",
         "type": "object"
       },
+      "RollbackView": {
+        "properties": {
+          "plan_id": {
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "plan_id",
+          "policy_version"
+        ],
+        "title": "RollbackView",
+        "type": "object"
+      },
       "Rule": {
         "additionalProperties": false,
         "properties": {
@@ -24348,6 +24521,107 @@
         "summary": "Billing Usage",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/canaries": {
+      "get": {
+        "operationId": "list_canaries_api_v1_management_canaries_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "maximum": 744,
+              "minimum": 1,
+              "title": "Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CanaryView"
+                  },
+                  "title": "Response List Canaries Api V1 Management Canaries Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Canaries",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/management/canaries/{rule_id}/rollback": {
+      "post": {
+        "operationId": "rollback_canary_api_v1_management_canaries__rule_id__rollback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollbackView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rollback Canary",
+        "tags": [
+          "rules"
         ]
       }
     },

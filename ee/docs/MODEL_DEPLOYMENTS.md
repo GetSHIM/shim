@@ -248,6 +248,45 @@ enforced rule covers with `circuit_open`; without a rule nothing is read. Eviden
 [the record](POLICY_DECISIONS.md#fallback-rules). Recipe:
 [Add a fallback rule](COOKBOOK.md#add-a-fallback-rule).
 
+## Roll out a new model gradually
+
+A route rule with `match.on: "split"` sends a share of one alias's conversations to
+another alias of the same provider: `from` the stable alias, `to` the candidate,
+`share_percent` 0 to 100 (one decimal), `fallback_to_stable` false by default. An
+`internal` alias never splits to an `external` one, since a split moves every kind of
+request; an alias has at most one split, and a split's `to` is never another split's
+`from`. While an alias is under a split, its request-start route rules do not run.
+
+Each request's bucket is `sha256("<tenant id>|<rule id>|<identity>")`, its first eight
+hex digits as a number, modulo 10,000; the request goes to `to` when the bucket is below
+`share_percent × 100`. The identity is the `X-Shim-Conversation-Id` header (at most 128
+characters), else `key:<gateway key id>`, so without the header every conversation of
+one key lands on one side; send the header, on every turn, for a finer split. Nothing
+is stored: the same conversation always lands on the same side, raising the share keeps
+every conversation already on `to` there, and lowering it moves only the top buckets
+back. A Responses chain stays on its side only while its turns carry the same identity.
+
+Enforced, the candidate is checked as a direct request to it would be (enabled, not
+unhealthy, approved origin, in the key's allowlist); one that cannot serve leaves the
+request on `from` with the reason in `held`. Still one provider call; with
+`fallback_to_stable`, a candidate call that fails before its first byte with 500, 502,
+503, 504, a timeout or a connection error gets one more attempt on `from`
+(`attempt_reason: "canary_fallback"`, `X-Shim-Attempts: 2`). In `monitor` every request
+is served by `from` and the row says which side it would have had.
+
+`POST /api/v1/management/canaries/{rule_id}/rollback` (`rules.write`) sets the share to
+0 in one applied policy plan, reason "canary rollback", and returns the new policy
+version; changing only a split's share is neutral, so [four eyes](POLICY_DECISIONS.md#four-eyes)
+never holds it. 404 for an unknown rule, 409 for a rule that is not a split. Undo it by
+restoring the version before it. A Responses chain that started on `to` gets the
+provider's "not found" for its next turn after a rollback. `GET
+/api/v1/management/canaries?hours=24` (`usage.read`, 1 to 744 hours) shows each split
+rule (at most 50) with, per side, the requests of the window, their completion
+outcomes, failed rows (`provider_error`, `timeout`, `failed`), p50 and p95 of
+`shim_latency_ms` and `ttft_ms`, the settled cost and cost per request (null when a row
+of that side is unpriced), and in `monitor` the would-move count. Rows are attributed by
+the side that served them. Recipe: [Roll out a new model to a share of conversations](COOKBOOK.md#roll-out-a-new-model-to-a-share-of-conversations).
+
 ## The inventory
 
 `GET /api/v1/management/model-inventory?start=…&end=…` (owners, admins and

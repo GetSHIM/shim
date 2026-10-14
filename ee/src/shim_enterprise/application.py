@@ -17,7 +17,7 @@ from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shim_enterprise.gateway.attempts import TenantAttemptPolicy
-from shim_enterprise.gateway.fallback import UnavailableFallback
+from shim_enterprise.gateway.fallback import CanaryFallback, UnavailableFallback
 from shim_enterprise.api.v1.router import gateway_router, management_router
 from shim.api.v1.gemini import router as gemini_router
 from shim.billing.lifecycle import load_lifecycle
@@ -252,7 +252,10 @@ def _create_gateway_kernel(
         ).resolve,
         attempt_policy=TenantAttemptPolicy(
             AsyncSessionLocal,
-            strategies=(UnavailableFallback(AsyncSessionLocal, circuit_for),),
+            strategies=(
+                UnavailableFallback(AsyncSessionLocal, circuit_for),
+                CanaryFallback(),
+            ),
         ),
         shadow_max_in_flight=settings.SHADOW_MAX_IN_FLIGHT,
         rate_limiter=BurstRateLimiter(cache),

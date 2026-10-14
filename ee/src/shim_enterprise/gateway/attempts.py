@@ -50,7 +50,7 @@ async def resolve_alias_target(
 
     assert candidate.alias is not None
     found = await alias_target(session, prepared, candidate.alias)
-    if found == "not_allowed" or found == "unavailable":
+    if isinstance(found, str):
         skip_attempt(
             prepared,
             candidate.reason,
