@@ -38,6 +38,7 @@ from shim.gateway.concurrency import InMemoryConcurrencyLimiter
 from shim.gateway.request_policy import (
     AgentLoop,
     BandSettings,
+    ImageDetailSettings,
     LocalRequestPolicyResolver,
     TaskCaps,
 )
@@ -219,6 +220,11 @@ def create_community_app(
                         anthropic_keep_thinking_turns=configured.SHIM_ANTHROPIC_KEEP_THINKING_TURNS,
                         openai_reasoning_context=configured.SHIM_OPENAI_REASONING_CONTEXT,
                         json_compaction=configured.SHIM_JSON_COMPACTION == "on",
+                        image_detail=ImageDetailSettings(
+                            openai=configured.SHIM_IMAGE_DETAIL_OPENAI,
+                            gemini=configured.SHIM_IMAGE_DETAIL_GEMINI,
+                            models=tuple(configured.SHIM_IMAGE_DETAIL_MODELS),
+                        ),
                     ),
                 ),
                 concurrency_limiter=None

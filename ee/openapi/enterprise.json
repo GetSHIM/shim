@@ -7185,6 +7185,14 @@
             "title": "Four Eyes",
             "type": "string"
           },
+          "image_detail": {
+            "$ref": "#/components/schemas/ImageDetailSettings",
+            "default": {
+              "gemini": "off",
+              "models": [],
+              "openai": "off"
+            }
+          },
           "inference_metrics": {
             "default": [],
             "items": {
@@ -7408,6 +7416,16 @@
               }
             ],
             "title": "Four Eyes"
+          },
+          "image_detail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageDetailSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "inference_metrics": {
             "anyOf": [
@@ -8602,6 +8620,45 @@
           "requests"
         ],
         "title": "IdCount",
+        "type": "object"
+      },
+      "ImageDetailSettings": {
+        "additionalProperties": false,
+        "description": "Image detail levels the settings band fills in where the client chose none.",
+        "properties": {
+          "gemini": {
+            "default": "off",
+            "enum": [
+              "off",
+              "low",
+              "medium"
+            ],
+            "title": "Gemini",
+            "type": "string"
+          },
+          "models": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Models",
+            "type": "array"
+          },
+          "openai": {
+            "default": "off",
+            "enum": [
+              "off",
+              "low",
+              "high"
+            ],
+            "title": "Openai",
+            "type": "string"
+          }
+        },
+        "title": "ImageDetailSettings",
         "type": "object"
       },
       "ImageResponseFormat": {

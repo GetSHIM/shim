@@ -23,6 +23,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Load tools on demand](#load-tools-on-demand)
 - [Stop paying for old thinking](#stop-paying-for-old-thinking)
 - [Shrink JSON tool results](#shrink-json-tool-results)
+- [Read images at a cheaper detail level](#read-images-at-a-cheaper-detail-level)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
@@ -954,6 +955,45 @@ the same way. Claude Code users get the same
 compaction at the source from shim-cli. Tool results over 65,536 characters in total
 are compacted off the event loop. `shim_transforms_total{transform, result}` counts
 the step per request.
+
+## Read images at a cheaper detail level
+
+Let OpenAI and Gemini 3 read images at a level that costs fewer image tokens, where your
+app did not choose one. It needs images to pass (`SHIM_MEDIA_INPUTS=allow`, or a
+gateway that masks nothing; see [choose what happens to each data type](#choose-what-happens-to-each-data-type)).
+
+1. Set `SHIM_IMAGE_DETAIL_OPENAI` to `low` or `high` and `SHIM_IMAGE_DETAIL_GEMINI` to
+   `low` or `medium` (both `off` by default).
+2. Optionally name the models it applies to in `SHIM_IMAGE_DETAIL_MODELS`
+   (comma-separated, at most 100, as your app sends them; empty is every model).
+
+A chat `image_url` part without `detail` (or with `"auto"`) gets `detail` set, and so does
+a Responses `input_image`; a Gemini 3 image part gets `"mediaResolution": {"level":
+"MEDIA_RESOLUTION_LOW"}` (or `_MEDIUM`). A level is set only where the provider's own
+table says it lowers the model's default image budget (read 2026-10-08):
+
+| Model family | Default | Levels that lower it |
+| --- | --- | --- |
+| `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-5.1` | 512 px tiles | `low` |
+| `gpt-4.1-mini`, `gpt-5.2` | the same patches at every level | none |
+| `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano` | as `high`; `low` allows more patches | none |
+| `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-astra` | as `original` | `low`, `high` |
+| Gemini 3 (`gemini-3*-`) | 1,120 tokens an image | `low` (280), `medium` (560) |
+
+A dated snapshot counts as its family (`gpt-4o-2024-08-06`); any other model is left
+alone with a `settings.image_detail` verdict `SETTING_MODEL_UNSUPPORTED`. `gpt-5.4` is
+never changed because its `low` can cost more than `high`. Anthropic has no detail
+parameter, so its images are never changed. Never changed either: a level your app
+set (`SETTING_CLIENT_OWNED`; a Gemini request-wide `generationConfig.mediaResolution`
+counts), computer-use screenshots, PDFs and other files, and a Responses request
+replaying encrypted reasoning (`SETTING_THINKING_BOUND`). The usage event's
+`settings_applied` lists `image_detail` when a part changed.
+
+Notes: a lower level reads the image at lower resolution, which can cost answer
+quality for small text in images; try one model first with
+`SHIM_IMAGE_DETAIL_MODELS`. The same image gets the same level on every turn, so the
+provider's prompt cache holds; changing the setting changes the cached prefix once.
+Leave it off when `OPENAI_BASE_URL` points at another server.
 
 ## Stream long generations and read usage
 

@@ -382,7 +382,8 @@ quota reservation's `prompt_tokens`, `media_parts`, `warnings` and
 the request, as `{"id", "version"}`: a [parameter pin](COOKBOOK.md#pin-a-parameter)
 is `parameter_pin.<rule id>` with the rule set's revision; the provider-cache steps
 are `anthropic_auto_cache` and `openai_prompt_cache_key`, and the tool and thinking
-steps `tool_search`, `anthropic_clear_thinking` and `openai_reasoning_context`, all
+steps `tool_search`, `anthropic_clear_thinking` and `openai_reasoning_context`, and
+the image step `image_detail` (an image part's `detail` or `mediaResolution`), all
 version 1. It is written with the
 privacy facts, `[]` when the band ran and set nothing (a pin in monitor state, a
 `warn` pin, a provider-cache step with nothing to do, a refused request), and absent

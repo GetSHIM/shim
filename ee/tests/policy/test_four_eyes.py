@@ -252,6 +252,7 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 "openai_reasoning_context": "off",
             },
             "transforms": {"json_compaction": "off"},
+            "image_detail": {"openai": "off", "gemini": "off", "models": []},
         }
     }
     assert (version.source, version.risk) == ("api", "tightening")
@@ -300,6 +301,7 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                     "openai_reasoning_context": "off",
                 },
                 "transforms": {"json_compaction": "off"},
+                "image_detail": {"openai": "off", "gemini": "off", "models": []},
             }
         }
     }

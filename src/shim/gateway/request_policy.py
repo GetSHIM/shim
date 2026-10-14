@@ -43,6 +43,17 @@ class AgentLoop(FrozenContractModel):
     repeats: int = Field(default=5, ge=3, le=100)
 
 
+class ImageDetailSettings(FrozenContractModel):
+    """Image detail levels the settings band fills in where the client chose none."""
+
+    openai: Literal["off", "low", "high"] = "off"
+    gemini: Literal["off", "low", "medium"] = "off"
+    # Model names as clients send them; empty is every model.
+    models: tuple[
+        Annotated[str, StringConstraints(min_length=1, max_length=128)], ...
+    ] = Field(default=(), max_length=100)
+
+
 class BandSettings(FrozenContractModel):
     """The tenant's settings band switches, each off by default."""
 
@@ -59,6 +70,7 @@ class BandSettings(FrozenContractModel):
     tool_search_api_key_ids: tuple[str, ...] = Field(default=(), max_length=100)
     anthropic_keep_thinking_turns: int = Field(default=0, ge=0, le=8)
     openai_reasoning_context: Literal["off", "current_turn"] = "off"
+    image_detail: ImageDetailSettings = ImageDetailSettings()
     # The transform band's switch; it never starts the settings band.
     json_compaction: bool = False
 
@@ -71,6 +83,8 @@ class BandSettings(FrozenContractModel):
             or self.tool_search != "off"
             or self.anthropic_keep_thinking_turns > 0
             or self.openai_reasoning_context != "off"
+            or self.image_detail.openai != "off"
+            or self.image_detail.gemini != "off"
         )
 
 

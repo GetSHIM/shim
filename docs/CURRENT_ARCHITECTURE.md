@@ -366,8 +366,10 @@ each off by default: `anthropic_auto_cache` (a top-level Anthropic breakpoint) a
 `openai_prompt_cache_key` (an OpenAI routing key derived from the prompt prefix),
 `tool_search` (`defer_loading` and the provider's search tool),
 `anthropic_clear_thinking` (`context_management`, with its beta flag in
-`provider_betas`, which moves the Anthropic execution to the beta client) and
-`openai_reasoning_context`, for catalog routes and the registry aliases the tenant
+`provider_betas`, which moves the Anthropic execution to the beta client),
+`openai_reasoning_context` and `image_detail` (a cheaper `detail` or Gemini 3
+`mediaResolution` on image parts the client left unset, where the version-pinned
+table in `src/shim/gateway/image_rules.py` says it lowers the budget), for catalog routes and the registry aliases the tenant
 lists. A step that declines a request it was on for records a `settings.<step>`
 `skip` verdict. The transform band (`src/shim/gateway/pipeline/transform_band.py`)
 follows it, only when a transform is on, and changes content under four conditions:

@@ -397,7 +397,12 @@ async def test_the_resolver_hands_on_the_gateway_settings_object_without_more_io
         policy_module, "load_api_key_for_principal", AsyncMock(return_value=api_key)
     )
     cache = _PolicyCache(
-        _SWITCHES, gateway={"response_analysis": ["shape"], "media_inputs": "allow"}
+        _SWITCHES,
+        gateway={
+            "response_analysis": ["shape"],
+            "media_inputs": "allow",
+            "image_detail": {"openai": "low"},
+        },
     )
     service = policy_module.TenantPolicyService(cache)
     settings = []
@@ -418,6 +423,7 @@ async def test_the_resolver_hands_on_the_gateway_settings_object_without_more_io
     assert resolved.tenant_gateway_settings is settings[0].gateway_settings
     assert resolved.response_analysis == ("shape",)
     assert resolved.media_inputs == "allow"
+    assert resolved.band.image_detail.openai == "low"
     assert cache.gets == 2
 
 

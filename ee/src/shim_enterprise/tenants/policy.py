@@ -457,6 +457,7 @@ class TenantRequestPolicyResolver:
                     anthropic_keep_thinking_turns=thinking.anthropic_keep_turns,
                     openai_reasoning_context=thinking.openai_reasoning_context,
                     json_compaction=gateway.transforms.json_compaction == "on",
+                    image_detail=gateway.image_detail,
                 ),
                 restore_withheld=frozenset(
                     kind

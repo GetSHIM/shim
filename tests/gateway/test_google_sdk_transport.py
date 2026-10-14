@@ -962,3 +962,78 @@ async def test_a_scanned_pdf_part_reaches_gemini_through_the_sdk() -> None:
     assert base64.urlsafe_b64decode(blob["data"]) == pdf
     [line] = [json.loads(item) for item in events.getvalue().splitlines()]
     assert line["documents"]["native"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_media_resolution_survives_the_genai_sdk(stream) -> None:
+    from io import StringIO
+
+    from shim.application import create_community_app
+
+    seen: list[dict] = []
+    answer = {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": [{"text": "ok"}]},
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+    }
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if stream:
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(answer)}\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=answer)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                SHIM_MEDIA_INPUTS="allow",
+                SHIM_IMAGE_DETAIL_GEMINI="low",
+            ),
+            http_client=outbound,
+            event_stream=StringIO(),
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                method = (
+                    "streamGenerateContent?alt=sse" if stream else "generateContent"
+                )
+                response = await inbound.post(
+                    f"/v1beta/models/gemini-3.5-flash:{method}",
+                    headers={"x-goog-api-key": _GATEWAY_KEY, "x-provider-key": "up"},
+                    json={
+                        "contents": [
+                            {
+                                "role": "user",
+                                "parts": [
+                                    {
+                                        "inlineData": {
+                                            "mimeType": "image/png",
+                                            "data": "iVBORw0KGgo=",
+                                        }
+                                    },
+                                    {"text": "describe"},
+                                ],
+                            }
+                        ]
+                    },
+                )
+                await response.aread()
+
+    assert response.status_code == 200
+    [sent] = seen
+    assert sent["contents"][0]["parts"][0]["mediaResolution"] == {
+        "level": "MEDIA_RESOLUTION_LOW"
+    }

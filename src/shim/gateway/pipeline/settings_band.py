@@ -9,8 +9,10 @@ import json
 import re
 from typing import Any
 
+from shim.gateway.image_rules import DETAIL_LOWERS_V1, gemini3, openai_family
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.kernel.stage import TraceValue
+from shim.gateway.media import classify_media, value_at
 from shim.gateway.pipeline.postprocess import has_cache_control
 from shim.rules.evaluate import in_scope, settle_pins
 from shim.rules.model import Rule
@@ -383,6 +385,81 @@ def _openai_reasoning_context(
     return _write(payload, ("reasoning", "context"), "current_turn")
 
 
+_GEMINI_LEVELS = {"low": "MEDIA_RESOLUTION_LOW", "medium": "MEDIA_RESOLUTION_MEDIUM"}
+
+
+def _image_detail(
+    prepared: PreparedInference, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    setting = prepared.band.image_detail
+    google = prepared.protocol == "generate_content"
+    level = setting.gemini if google else setting.openai
+    if (
+        level == "off"
+        or not prepared.media
+        or not _provider_target(prepared)
+        or (setting.models and prepared.model not in setting.models)
+    ):
+        return None
+    # Field paths, relative to each image part, that carry the level.
+    images: list[tuple[tuple[str | int, ...], object]] = []
+    for part in classify_media(payload):
+        node = value_at(payload, part.path)
+        if part.kind != "image":
+            continue
+        if google:
+            images.append(
+                ((*part.path, "mediaResolution"), node.get("mediaResolution"))
+            )
+        elif node.get("type") == "image_url" and isinstance(
+            node.get("image_url"), Mapping
+        ):
+            detail = node["image_url"].get("detail")
+            images.append(((*part.path, "image_url", "detail"), detail))
+        elif node.get("type") == "input_image" and not _computer_use(
+            payload, part.path
+        ):
+            images.append(((*part.path, "detail"), node.get("detail")))
+    if not images:
+        return None
+    if not (
+        gemini3(prepared.pricing_model)
+        if google
+        else level
+        in DETAIL_LOWERS_V1.get(openai_family(prepared.pricing_model) or "", ())
+    ):
+        _skip(prepared, "image_detail", "SETTING_MODEL_UNSUPPORTED")
+        return None
+    config = payload.get("generationConfig")
+    unset = [
+        path
+        for path, current in images
+        if (current is None if google else current in {None, "auto"})
+    ]
+    if not unset or (
+        google and isinstance(config, Mapping) and "mediaResolution" in config
+    ):
+        _skip(prepared, "image_detail", "SETTING_CLIENT_OWNED")
+        return None
+    # Changing an earlier turn invalidates the encrypted reasoning replayed with it.
+    if any(
+        isinstance(item, Mapping) and item.get("type") == "reasoning"
+        for item in _list(payload.get("input"))
+    ):
+        _skip(prepared, "image_detail", "SETTING_THINKING_BOUND")
+        return None
+    value = {"level": _GEMINI_LEVELS[level]} if google else level
+    for path in unset:
+        payload = _write_at(payload, path, value)
+    return payload
+
+
+def _computer_use(payload: Mapping[str, Any], path: tuple[str | int, ...]) -> bool:
+    # Computer use needs its screenshots in the original frame.
+    item = value_at(payload, path[:2]) if path[0] == "input" and len(path) > 1 else None
+    return isinstance(item, Mapping) and item.get("type") == "computer_call_output"
+
+
 # (id, version, protocols, apply, Anthropic beta flags), in order after the pins. A
 # step adds, changes or removes provider parameters and structural markers only,
 # never a content string.
@@ -419,6 +496,13 @@ STEPS: tuple[
         _openai_reasoning_context,
         (),
     ),
+    (
+        "image_detail",
+        1,
+        frozenset({"chat", "responses", "generate_content"}),
+        _image_detail,
+        (),
+    ),
 )
 
 
@@ -431,6 +515,14 @@ def _read(payload: Mapping[str, Any], path: tuple[str, ...]) -> object:
     for key in path:
         value = value.get(key, _ABSENT) if isinstance(value, Mapping) else _ABSENT
     return value
+
+
+def _write_at(payload: Any, path: tuple[str | int, ...], value: object) -> Any:
+    """`_write` through lists too: copies only the containers on the path."""
+    head, *rest = path
+    copied: Any = list(payload) if isinstance(payload, list) else dict(payload)
+    copied[head] = _write_at(payload[head], tuple(rest), value) if rest else value
+    return copied
 
 
 # Copies only the objects on the path: the masked payload may be shared.

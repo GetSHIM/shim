@@ -18,7 +18,7 @@ from pydantic import (
 )
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
-from shim.gateway.request_policy import AgentLoop, TaskCaps
+from shim.gateway.request_policy import AgentLoop, ImageDetailSettings, TaskCaps
 from shim.privacy.documents import pdf_reader_version
 from shim.privacy.policies import effective_entity_actions
 from shim_enterprise.core.config import settings
@@ -302,6 +302,8 @@ class GatewaySettings(BaseModel):
     tool_search: ToolSearchSettings = ToolSearchSettings()
     thinking_history: ThinkingHistorySettings = ThinkingHistorySettings()
     transforms: TransformSettings = TransformSettings()
+    # Image detail levels filled in where the client chose none (S63).
+    image_detail: ImageDetailSettings = ImageDetailSettings()
     # Stops new automatic and agent applies; automatic undo keeps running.
     auto_remediation_paused: bool = False
     bedrock_region_lock: BedrockRegionLock = BedrockRegionLock()
@@ -346,6 +348,7 @@ class GatewaySettingsPatch(BaseModel):
     tool_search: ToolSearchPatch | None = None
     thinking_history: ThinkingHistoryPatch | None = None
     transforms: TransformPatch | None = None
+    image_detail: ImageDetailSettings | None = None
     auto_remediation_paused: bool | None = None
     bedrock_region_lock: BedrockRegionLockPatch | None = None
     bedrock_attribution: BedrockAttributionPatch | None = None
@@ -581,6 +584,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "thinking_history": neutral,
     # Lossless: the model reads the same values in fewer characters.
     "transforms": neutral,
+    # What the provider bills and reads an image at, not what the request may carry.
+    "image_detail": neutral,
     # Pausing stops unattended changes; resuming lets them run again.
     "auto_remediation_paused": toward(False),
     "bedrock_region_lock": _region_lock_direction,

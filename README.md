@@ -115,8 +115,9 @@ request it:
   content only under published, switchable rules; a report band only shows. shim
   writes a parameter such as `temperature` only when an enterprise tenant pins it,
   and asks for the providers' own prompt-cache discount (an Anthropic breakpoint,
-  an OpenAI `prompt_cache_key`), tool search and the clearing of old thinking only
-  when the operator turns them on. The one transform today, also off by default,
+  an OpenAI `prompt_cache_key`), tool search, the clearing of old thinking and a
+  cheaper image detail level for OpenAI and Gemini 3 only when the operator turns
+  them on. The one transform today, also off by default,
   removes the whitespace from JSON tool results without changing their value.
 
 It does not translate payloads. When a provider ships a new field, a new model,

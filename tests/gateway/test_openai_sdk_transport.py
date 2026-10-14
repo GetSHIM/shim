@@ -2581,3 +2581,106 @@ async def test_a_scanned_pdf_file_reaches_openai_through_the_sdk() -> None:
     assert sent["messages"][0]["content"][0] == file
     [line] = [json.loads(item) for item in events.getvalue().splitlines()]
     assert line["documents"]["native"] == 1
+
+
+_IMAGE_URL = "data:image/png;base64,iVBORw0KGgo="
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("protocol", ["chat", "responses"])
+async def test_image_detail_reaches_openai_through_the_sdk(protocol, stream) -> None:
+    seen: list[dict] = []
+    chat = protocol == "chat"
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if not stream:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "gpt-4o",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+                if chat
+                else _response("resp_image"),
+            )
+        events = (
+            'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"gpt-4o",'
+            '"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+            'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"gpt-4o",'
+            '"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n'
+            "data: [DONE]\n\n"
+            if chat
+            else "event: response.completed\ndata: "
+            + json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": _response("resp_image"),
+                    "sequence_number": 0,
+                }
+            )
+            + "\n\n"
+        )
+        return httpx.Response(
+            200, text=events, headers={"content-type": "text/event-stream"}
+        )
+
+    part = (
+        {"type": "image_url", "image_url": {"url": _IMAGE_URL}}
+        if chat
+        else {"type": "input_image", "image_url": _IMAGE_URL, "detail": "auto"}
+    )
+    body = (
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": [part]}]}
+        if chat
+        else {"model": "gpt-4o", "input": [{"role": "user", "content": [part]}]}
+    )
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_community_app(
+        CommunitySettings(
+            _env_file=None,
+            SHIM_API_KEY=_EMBEDDING_KEY,
+            SHIM_MEDIA_INPUTS="allow",
+            SHIM_IMAGE_DETAIL_OPENAI="low",
+        ),
+        http_client=outbound,
+        event_stream=StringIO(),
+    )
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            response = await inbound.post(
+                "/v1/chat/completions" if chat else "/v1/responses",
+                headers={
+                    "authorization": f"Bearer {_EMBEDDING_KEY}",
+                    "x-provider-key": "sk-up",
+                },
+                json={**body, "stream": stream},
+            )
+            await response.aread()
+
+    assert response.status_code == 200
+    [sent] = seen
+    if chat:
+        assert sent["messages"][0]["content"][0]["image_url"] == {
+            "url": _IMAGE_URL,
+            "detail": "low",
+        }
+    else:
+        assert sent["input"][0]["content"][0]["detail"] == "low"

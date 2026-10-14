@@ -84,6 +84,7 @@ forbidden_noncloud_import_roots = [
 "shim.gateway.request_policy" = [
   "AgentLoop",
   "BandSettings",
+  "ImageDetailSettings",
   "RequestPolicyContext",
   "ResolvedRequestPolicy",
   "TaskCaps",
@@ -197,6 +198,7 @@ public = [
   "src/shim/gateway/contracts/ids.py",
   "src/shim/gateway/contracts/inference.py",
   "src/shim/gateway/contracts/principal.py",
+  "src/shim/gateway/image_rules.py",
   "src/shim/gateway/kernel/__init__.py",
   "src/shim/gateway/kernel/attempts.py",
   "src/shim/gateway/kernel/gateway_kernel.py",
@@ -307,6 +309,7 @@ public = [
   "tests/gateway/test_anthropic_sdk_transport.py",
   "tests/gateway/test_concurrency.py",
   "tests/gateway/test_google_sdk_transport.py",
+  "tests/gateway/test_image_rules.py",
   "tests/gateway/test_media.py",
   "tests/gateway/test_openai_sdk_transport.py",
   "tests/gateway/test_provider_error_fidelity.py",

@@ -535,3 +535,27 @@ def test_azure_is_off_by_default_and_an_empty_value_is_unset(monkeypatch) -> Non
 def test_an_incoherent_azure_setting_stops_the_gateway_by_name(values, named) -> None:
     with pytest.raises(ValidationError, match=named):
         CommunitySettings(_env_file=None, **values)
+
+
+def test_image_detail_settings_are_off_bounded_and_listed() -> None:
+    settings = CommunitySettings(_env_file=None)
+    assert (settings.SHIM_IMAGE_DETAIL_OPENAI, settings.SHIM_IMAGE_DETAIL_GEMINI) == (
+        "off",
+        "off",
+    )
+    assert settings.SHIM_IMAGE_DETAIL_MODELS == []
+    chosen = CommunitySettings(
+        _env_file=None,
+        SHIM_IMAGE_DETAIL_OPENAI="high",
+        SHIM_IMAGE_DETAIL_GEMINI="medium",
+        SHIM_IMAGE_DETAIL_MODELS="gpt-4o, gemini-3.5-flash",
+    )
+    assert chosen.SHIM_IMAGE_DETAIL_MODELS == ["gpt-4o", "gemini-3.5-flash"]
+    for values in (
+        {"SHIM_IMAGE_DETAIL_OPENAI": "original"},
+        {"SHIM_IMAGE_DETAIL_GEMINI": "high"},
+        {"SHIM_IMAGE_DETAIL_MODELS": ",".join(f"m{index}" for index in range(101))},
+        {"SHIM_IMAGE_DETAIL_MODELS": "x" * 129},
+    ):
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, **values)

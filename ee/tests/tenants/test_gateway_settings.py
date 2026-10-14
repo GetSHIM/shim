@@ -145,6 +145,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
                 "openai_reasoning_context": "off",
             },
             "transforms": {"json_compaction": "off"},
+            "image_detail": {"openai": "off", "gemini": "off", "models": []},
             "auto_remediation_paused": False,
             "bedrock_region_lock": {"mode": "off", "scopes": [], "regions": []},
             "bedrock_attribution": {
@@ -1247,3 +1248,43 @@ async def test_without_pypdf_the_settings_say_pdf_is_off(
     view = await management.configuration.get_gateway_settings(test_user_with_org, db)
 
     assert view.unavailable["documents"] == "PDF off, needs pypdf"
+
+
+@pytest.mark.asyncio
+async def test_image_detail_round_trips_merges_and_is_neutral(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    first = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"image_detail": {"openai": "low", "models": ["gpt-4o"]}}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    second = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"image_detail": {"gemini": "medium"}}),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert first.settings.image_detail.model_dump() == {
+        "openai": "low",
+        "gemini": "off",
+        "models": ("gpt-4o",),
+    }
+    assert second.settings.image_detail.model_dump() == {
+        "openai": "low",
+        "gemini": "medium",
+        "models": ("gpt-4o",),
+    }
+    assert classify_change(GatewaySettings(), second.settings) == ("neutral", [])
+    assert not any(
+        event["endpoint"].endswith("_protection_relaxed")
+        for event in await audit_events(test_org.id)
+    )
+    for value in ({"openai": "original"}, {"gemini": "high"}, {"anthropic": "low"}):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate({"image_detail": value})
