@@ -440,6 +440,16 @@ After a request that carried personal data no answer is analysed: the three anal
 fields and `schema_expected` stay null. No answer text, value or tool argument is
 stored. The request list and its CSV carry it.
 
+`semantic_check` is on a request inside a tenant's
+[marked scope](POLICY_DECISIONS.md#live-semantic-check-on-a-marked-endpoint), written in a
+short transaction of its own after privacy and before the provider call: `outcome`
+(`matched`, `clear`, `invalid_answer`, `failed`, `timeout`, `skipped_guard`, `skipped_cap`,
+`skipped_empty`), `latency_ms`, `prompt_version`, and when known `questions_revision`,
+`matched` (question ids, at most 20) and `check_request_id` (the check call's own row). No
+request text, question text or model answer is stored. The request list and its CSV carry
+it, and `GET /api/v1/management/requests?semantic_outcome=<outcome>` and the export filter
+on one outcome.
+
 `queue_wait_ms` is the milliseconds a request waited for room on its target under a
 concurrency limiter (0 when admitted at once), written at reservation; absent when no
 limiter is configured.
@@ -570,7 +580,7 @@ source has them. A deprecated model stays in the catalog with
 
 `warnings` lists the `X-Shim-Warnings` codes a request carried
 (`MODEL_DEPRECATED`, `CONTEXT_MAY_EXCEED`, `LARGE_CONTEXT_PRICE`,
-`CACHE_NOT_APPLIED`, `RULE_WARN`, `INJECTION_MARKERS`, `PRICE_TIER_CROSSED`,
+`CACHE_NOT_APPLIED`, `RULE_WARN`, `SEMANTIC_WARN`, `INJECTION_MARKERS`, `PRICE_TIER_CROSSED`,
 `MODEL_RETIRING`, `MODEL_RETIRED`), `[]` when none. The two retirement codes are
 always recorded and reach the header only while `model_retiring_warning` is
 `header`. `PRICE_TIER_CROSSED` is raised before the provider call from the request's

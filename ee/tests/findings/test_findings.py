@@ -667,6 +667,9 @@ _SUBJECTS = {
     service.SEMANTIC_REVIEW_MATCH: {
         "api_key_id": "11111111-1111-1111-1111-111111111111"
     },
+    service.SEMANTIC_CHECK_MATCH: {
+        "api_key_id": "11111111-1111-1111-1111-111111111111"
+    },
     service.TRUNCATION_RATE: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.REFUSAL_RATE: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.LANGUAGE_DRIFT: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
@@ -690,6 +693,13 @@ _SUBJECTS = {
     service.LITELLM_RETRY_BURST: {"litellm_key": "litellm:ce77089fa9483163"},
 }
 _EVIDENCE = {
+    service.SEMANTIC_CHECK_MATCH: {
+        "window_hours": 24,
+        "matched_requests": 2,
+        "checked_requests": 7,
+        "questions_matched": 1,
+        "request_ids": ["req_c", "req_d"],
+    },
     service.SEMANTIC_REVIEW_MATCH: {
         "window_days": 7,
         "matched_requests": 2,

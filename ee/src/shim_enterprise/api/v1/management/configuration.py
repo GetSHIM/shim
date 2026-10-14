@@ -47,6 +47,7 @@ from shim_enterprise.tenants.gateway_settings import (
     SETTING_AVAILABILITY,
     GatewaySettings,
     GatewaySettingsPatch,
+    SemanticCheckSettings,
     SemanticReviewSettings,
     classify_change,
     restore_relaxed,
@@ -55,6 +56,7 @@ from shim_enterprise.tenants.gateway_settings import (
     stored_settings,
     toward,
 )
+from shim_enterprise.semantic.models import OrganizationSemanticQuestions
 from shim_enterprise.tenants.models import (
     ApiKey,
     ModelDeployment,
@@ -703,6 +705,45 @@ async def _check_semantic_review(
         )
 
 
+async def _check_semantic_check(
+    session: AsyncSession, tenant_id: UUID, check: SemanticCheckSettings
+) -> None:
+    """The check model and key as for the review; scoped keys and questions exist."""
+    await _check_semantic_review(
+        session,
+        tenant_id,
+        SemanticReviewSettings(
+            enabled=True, model=check.model, api_key_id=check.api_key_id
+        ),
+    )
+    if check.scope.api_key_ids:
+        known = set(
+            await session.scalars(
+                select(ApiKey.id).where(
+                    ApiKey.organization_id == tenant_id,
+                    ApiKey.id.in_(check.scope.api_key_ids),
+                )
+            )
+        )
+        if set(check.scope.api_key_ids) - known:
+            raise HTTPException(
+                422,
+                detail="semantic_check.scope names api_key_ids this organization lacks",
+            )
+    if check.question_ids:
+        questions = await session.scalar(
+            select(OrganizationSemanticQuestions.questions).where(
+                OrganizationSemanticQuestions.organization_id == tenant_id
+            )
+        )
+        current = {question["id"] for question in questions or ()}
+        if set(check.question_ids) - current:
+            raise HTTPException(
+                422,
+                detail="semantic_check.question_ids names a question that is not set",
+            )
+
+
 class _GatewaySettingsResource:
     name = "gateway_settings"
     permission: Permission = "settings.write"
@@ -827,6 +868,9 @@ class _GatewaySettingsResource:
         review = after.semantic_review
         if review.enabled and "semantic_review" in changes:
             await _check_semantic_review(session, tenant_id, review)
+        check = after.semantic_check
+        if check.enabled and "semantic_check" in changes:
+            await _check_semantic_check(session, tenant_id, check)
         if "inference_metrics" in changes:
             internal = set(
                 await session.scalars(

@@ -28,7 +28,12 @@ from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.core.config import settings
 from shim_enterprise.observability.enterprise_metrics import SEMANTIC_REVIEWS_TOTAL
 from shim_enterprise.outbox.publisher import OutboxWriter
-from shim_enterprise.semantic.call import REVIEW_TAG, request_text, run_semantic_call
+from shim_enterprise.semantic.call import (
+    REVIEW_TAG,
+    request_text,
+    run_semantic_call,
+    semantic_target,
+)
 from shim_enterprise.semantic.models import (
     OrganizationSemanticQuestions,
     SemanticReview,
@@ -37,7 +42,7 @@ from shim_enterprise.tenants.gateway_settings import (
     SemanticReviewSettings,
     stored_settings,
 )
-from shim_enterprise.tenants.models import ModelDeployment, OrganizationGatewaySettings
+from shim_enterprise.tenants.models import OrganizationGatewaySettings
 
 logger = logging.getLogger(__name__)
 STALE_CLAIM = timedelta(minutes=10)
@@ -109,7 +114,7 @@ async def _claim(
     organization_id: UUID,
     review: SemanticReviewSettings,
     now: datetime,
-) -> tuple[list[Any], list[dict[str, Any]], tuple[str, str] | None]:
+) -> tuple[list[Any], list[dict[str, Any]], tuple[str, bool] | None]:
     """The reviews this pass makes, claimed under the hourly and daily caps."""
     row = await session.get(OrganizationSemanticQuestions, organization_id)
     if row is None or row.revision < 1 or not row.questions:
@@ -132,14 +137,7 @@ async def _claim(
     if left <= 0 or Decimal(spent or 0) >= review.max_cost_usd_per_day:
         return [], [], None
     allowance = min(left, settings.SEMANTIC_REVIEW_BATCH)
-    target = (
-        await session.execute(
-            select(ModelDeployment.provider, ModelDeployment.deployment_kind).where(
-                ModelDeployment.organization_id == organization_id,
-                ModelDeployment.alias == review.model,
-            )
-        )
-    ).one_or_none()
+    target = await semantic_target(session, organization_id, review.model)
     stale = (
         select(SemanticReview.id)
         .where(
@@ -215,7 +213,7 @@ async def _claim(
             row.revision,
             review,
         )
-    return claims, list(row.questions), None if target is None else tuple(target)
+    return claims, list(row.questions), target
 
 
 async def _audit_scan(
@@ -266,7 +264,7 @@ async def _review_item(
     organization_id: UUID,
     review: SemanticReviewSettings,
     questions: list[dict[str, Any]],
-    target: tuple[str, str] | None,
+    target: tuple[str, bool] | None,
     claim: Any,
 ) -> str:
     values: dict[str, Any] = {"completed_at": datetime.now(timezone.utc)}
@@ -283,7 +281,7 @@ async def _review_item(
             )
         if archive is None or target is None:
             values |= {"status": "failed", "error_code": "TARGET_UNAVAILABLE"}
-        elif kind == "internal" and target[1] != "internal":
+        elif kind == "internal" and not target[1]:
             # Every archived item had a detection or a rule match: it stays inside.
             values["status"] = "skipped_guard"
         else:

@@ -236,6 +236,7 @@ _DIAGNOSTIC_FIELDS = (
     "shadow_of",
     "approval_id",
     "request_archive",
+    "semantic_check",
 )
 
 

@@ -11,6 +11,8 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.pipeline.authenticate import (
@@ -21,10 +23,13 @@ from shim.gateway.pipeline.provider_execution import ProviderCallError
 from shim.gateway.streaming.meter import answer_text
 from shim.gateway.usage import UsageLimitExceeded
 from shim.jsonschema_subset import check
+from shim_enterprise.tenants.deployments import internal_origin_approved
+from shim_enterprise.tenants.models import ModelDeployment
 
 PROMPT_VERSION = "semantic-v1"
 # The cost tag of every review call; such a request is never archived itself.
 REVIEW_TAG = "shim:semantic_review"
+CHECK_TAG = "shim:semantic_check"
 MAX_TEXT_CHARACTERS = 20_000
 SYSTEM_TEXT = (
     "You check one request that was sent to an AI model against an organization's "
@@ -253,3 +258,30 @@ async def run_semantic_call(
         return SemanticResult("invalid_answer", (), request_id, None)
     outcome, matched = _verdict(body, question_ids)
     return SemanticResult(outcome, matched, request_id, None)
+
+
+async def semantic_target(
+    session: AsyncSession, organization_id: Any, alias: str | None
+) -> tuple[str, bool] | None:
+    """The semantic model's provider, and whether a request to it would stay internal."""
+    row = (
+        await session.execute(
+            select(
+                ModelDeployment.provider,
+                ModelDeployment.deployment_kind,
+                ModelDeployment.base_url,
+            ).where(
+                ModelDeployment.organization_id == organization_id,
+                ModelDeployment.alias == alias,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    # As the resolver sees it: an internal label outside the internal origins is external.
+    internal = (
+        row.deployment_kind == "internal"
+        and row.base_url is not None
+        and internal_origin_approved(row.base_url)
+    )
+    return row.provider, internal

@@ -7615,6 +7615,27 @@
             "title": "Restore Withheld",
             "type": "object"
           },
+          "semantic_check": {
+            "$ref": "#/components/schemas/SemanticCheckSettings",
+            "default": {
+              "enabled": false,
+              "endpoints": [
+                "chat",
+                "responses",
+                "messages",
+                "generate_content"
+              ],
+              "max_checks_per_day": 1000,
+              "question_ids": [],
+              "scope": {
+                "api_key_ids": [],
+                "models": [],
+                "tags": []
+              },
+              "timeout_ms": 3000,
+              "warn_header": false
+            }
+          },
           "semantic_review": {
             "$ref": "#/components/schemas/SemanticReviewSettings",
             "default": {
@@ -7860,6 +7881,16 @@
               }
             ],
             "title": "Restore Withheld"
+          },
+          "semantic_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SemanticCheckPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "semantic_review": {
             "anyOf": [
@@ -15711,6 +15742,19 @@
             ],
             "title": "Rule Matches Truncated"
           },
+          "semantic_check": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a request in a marked semantic check's scope: the outcome, the matched question ids, the check request and its latency; never text.",
+            "title": "Semantic Check"
+          },
           "settings_applied": {
             "anyOf": [
               {
@@ -17303,6 +17347,270 @@
           }
         },
         "title": "SearchTypes",
+        "type": "object"
+      },
+      "SemanticCheckPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "endpoints": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "chat",
+                    "responses",
+                    "messages",
+                    "generate_content"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 4,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoints"
+          },
+          "max_checks_per_day": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Checks Per Day"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "question_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z][a-z0-9_]{0,47}$",
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Ids"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SemanticCheckScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timeout_ms": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 500.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Ms"
+          },
+          "warn_header": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warn Header"
+          }
+        },
+        "title": "SemanticCheckPatch",
+        "type": "object"
+      },
+      "SemanticCheckScope": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "models": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Models",
+            "type": "array"
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[a-z0-9_.:-]+$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "title": "SemanticCheckScope",
+        "type": "object"
+      },
+      "SemanticCheckSettings": {
+        "additionalProperties": false,
+        "description": "A live check of requests on a narrow, tenant-marked scope; it only warns.",
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "endpoints": {
+            "default": [
+              "chat",
+              "responses",
+              "messages",
+              "generate_content"
+            ],
+            "items": {
+              "enum": [
+                "chat",
+                "responses",
+                "messages",
+                "generate_content"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "Endpoints",
+            "type": "array"
+          },
+          "max_checks_per_day": {
+            "default": 1000,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Max Checks Per Day",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "question_ids": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,47}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Question Ids",
+            "type": "array"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/SemanticCheckScope",
+            "default": {
+              "api_key_ids": [],
+              "models": [],
+              "tags": []
+            }
+          },
+          "timeout_ms": {
+            "default": 3000,
+            "maximum": 10000.0,
+            "minimum": 500.0,
+            "title": "Timeout Ms",
+            "type": "integer"
+          },
+          "warn_header": {
+            "default": false,
+            "title": "Warn Header",
+            "type": "boolean"
+          }
+        },
+        "title": "SemanticCheckSettings",
         "type": "object"
       },
       "SemanticQuestion": {
@@ -29618,6 +29926,34 @@
             }
           },
           {
+            "description": "What the live semantic check on a marked endpoint found.",
+            "in": "query",
+            "name": "semantic_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "matched",
+                    "clear",
+                    "invalid_answer",
+                    "failed",
+                    "timeout",
+                    "skipped_guard",
+                    "skipped_cap",
+                    "skipped_empty"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the live semantic check on a marked endpoint found.",
+              "title": "Semantic Outcome"
+            }
+          },
+          {
             "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
             "in": "query",
             "name": "soft_refusal",
@@ -30040,6 +30376,34 @@
               ],
               "description": "What a route rule decided at the conversation start.",
               "title": "Route Outcome"
+            }
+          },
+          {
+            "description": "What the live semantic check on a marked endpoint found.",
+            "in": "query",
+            "name": "semantic_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "matched",
+                    "clear",
+                    "invalid_answer",
+                    "failed",
+                    "timeout",
+                    "skipped_guard",
+                    "skipped_cap",
+                    "skipped_empty"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the live semantic check on a marked endpoint found.",
+              "title": "Semantic Outcome"
             }
           },
           {
@@ -30559,6 +30923,59 @@
         "summary": "Propose Rules",
         "tags": [
           "rules"
+        ]
+      }
+    },
+    "/api/v1/management/semantic-check": {
+      "get": {
+        "description": "The marked check: its scope, today's count, and outcomes, latency and cost.",
+        "operationId": "read_semantic_check_api_v1_management_semantic_check_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "maximum": 168,
+              "minimum": 1,
+              "title": "Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Semantic Check Api V1 Management Semantic Check Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Semantic Check",
+        "tags": [
+          "findings"
         ]
       }
     },

@@ -113,3 +113,9 @@ SEMANTIC_REVIEWS_TOTAL = Counter(
     "invalid_answer, failed, skipped_guard, skipped_empty.",
     ("status",),
 )
+SEMANTIC_CHECKS_TOTAL = Counter(
+    "shim_semantic_checks_total",
+    "Live semantic checks on marked endpoints by outcome: matched, clear, "
+    "invalid_answer, failed, timeout, skipped_guard, skipped_cap, skipped_empty.",
+    ("outcome",),
+)

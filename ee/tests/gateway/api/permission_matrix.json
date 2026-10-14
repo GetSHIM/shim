@@ -869,6 +869,16 @@
   "service_recommender": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/semantic-check": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: usage.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "service_recommender": "200",
+  "team_admin": "403 Permission required: usage.read"
+ },
  "GET /api/v1/management/semantic-questions": {
   "admin": "200",
   "auditor": "200",

@@ -98,6 +98,7 @@ LITELLM_ERROR_RATE = "litellm.error_rate"
 LITELLM_SLOW_FIRST_TOKEN = "litellm.slow_first_token"
 LITELLM_RETRY_BURST = "litellm.retry_burst"
 SEMANTIC_REVIEW_MATCH = "gateway.semantic_review_match"
+SEMANTIC_CHECK_MATCH = "gateway.semantic_check_match"
 RULE_VERSION = 1
 RULE_VERSIONS = {RETRY_STORM: 2, REPEAT_SPEND: 2, UNUSED_DEPLOYMENT: 2}
 
@@ -194,6 +195,7 @@ EVIDENCE_MODELS = 10
 EVIDENCE_MODELS_PER_KEY = 5
 EVIDENCE_REQUEST_IDS = 20
 SEMANTIC_REVIEW_WINDOW_DAYS = 7
+SEMANTIC_CHECK_WINDOW_HOURS = 24
 # Two request ids a pair, beside the 20 request ids, within Finding v1's 50 evidence items.
 EVIDENCE_PAIRS = 10
 PROVIDERS = ("openai", "anthropic", "google")
@@ -543,6 +545,31 @@ RULES: dict[str, RuleSpec] = {
         BLAST_RADIUS="key",
         RISK_CLASS="privacy",
         PLAYBOOK=_playbook(SEMANTIC_REVIEW_MATCH),
+    ),
+    SEMANTIC_CHECK_MATCH: RuleSpec(
+        TITLE="Live semantic check matched on a marked endpoint",
+        SEVERITY_ID=3,
+        SUMMARY={
+            "en": "{matched_requests} of {checked_requests} requests of this API key "
+            "checked live in {window_hours} hours matched {questions_matched} of your "
+            "semantic questions.",
+            "tr": "Bu API anahtarının son {window_hours} saatte canlı denetlenen "
+            "{checked_requests} isteğinden {matched_requests} tanesi anlamsal "
+            "sorularınızdan {questions_matched} tanesiyle eşleşti.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Review what the app sends on the marked endpoint; a model's answer "
+            "only warns. Where the meaning is a real leak, write a deterministic rule "
+            "for it.",
+            "tr": "İşaretli uçta uygulamanın ne gönderdiğini gözden geçirin; bir "
+            "modelin yanıtı yalnızca uyarır. Anlam gerçek bir sızıntıysa onun için "
+            "belirlenimci bir kural yazın.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="privacy",
+        PLAYBOOK=_playbook(SEMANTIC_CHECK_MATCH),
     ),
     SOFT_REFUSALS: RuleSpec(
         TITLE="Answers to an API key often refuse in words",
@@ -1671,6 +1698,57 @@ async def _semantic_review_matches(
                     "reviewed_requests": row.reviewed,
                     "questions_matched": len(question_ids),
                     "questions_revision": row.revision,
+                    "request_ids": list(row.request_ids or [])[:EVIDENCE_REQUEST_IDS],
+                },
+                impact={"requests": row.matched},
+            )
+        )
+    return detections
+
+
+async def _semantic_check_matches(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    """Per key, the requests the live check on a marked endpoint matched."""
+    check = RequestLifecycle.lifecycle_metadata["semantic_check"]
+    outcome = check["outcome"].as_string()
+    matched = outcome == "matched"
+    rows = await session.execute(
+        select(
+            RequestLifecycle.api_key_id,
+            func.count().filter(matched).label("matched"),
+            func.count()
+            .filter(outcome.notin_(("skipped_guard", "skipped_cap", "skipped_empty")))
+            .label("checked"),
+            _request_ids(matched).label("request_ids"),
+            func.array_agg(check["matched"]).filter(matched).label("questions"),
+        )
+        .where(
+            RequestLifecycle.organization_id == tenant_id,
+            RequestLifecycle.started_at
+            >= now - timedelta(hours=SEMANTIC_CHECK_WINDOW_HOURS),
+            RequestLifecycle.started_at <= now,
+            RequestLifecycle.api_key_id.is_not(None),
+            check.is_not(None),
+        )
+        .group_by(RequestLifecycle.api_key_id)
+        .order_by(RequestLifecycle.api_key_id)
+    )
+    detections = []
+    for row in rows:
+        if not row.matched:
+            continue
+        question_ids = {item for ids in row.questions or () for item in ids or ()}
+        detections.append(
+            Detection(
+                rule_id=SEMANTIC_CHECK_MATCH,
+                subject_key=f"api_key:{row.api_key_id}",
+                subject={"api_key_id": str(row.api_key_id)},
+                evidence={
+                    "window_hours": SEMANTIC_CHECK_WINDOW_HOURS,
+                    "matched_requests": row.matched,
+                    "checked_requests": row.checked,
+                    "questions_matched": len(question_ids),
                     "request_ids": list(row.request_ids or [])[:EVIDENCE_REQUEST_IDS],
                 },
                 impact={"requests": row.matched},
@@ -3098,6 +3176,7 @@ async def evaluate_organization(
         (_answer_quality, (ANSWER_QUALITY,)),
         (_outcome_rates, (TRUNCATION_RATE, REFUSAL_RATE)),
         (_semantic_review_matches, (SEMANTIC_REVIEW_MATCH,)),
+        (_semantic_check_matches, (SEMANTIC_CHECK_MATCH,)),
     )
     settings = await _tenant_settings(session, tenant_id)
     analysed = set(settings.response_analysis)

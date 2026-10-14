@@ -141,6 +141,85 @@ class SemanticReviewPatch(BaseModel):
     )
 
 
+_Tag = Annotated[
+    str, StringConstraints(min_length=1, max_length=200, pattern=r"^[a-z0-9_.:-]+$")
+]
+CheckEndpoint = Literal["chat", "responses", "messages", "generate_content"]
+CHECK_ENDPOINTS: tuple[CheckEndpoint, ...] = (
+    "chat",
+    "responses",
+    "messages",
+    "generate_content",
+)
+
+
+class SemanticCheckScope(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    api_key_ids: list[UUID] = Field(default=[], max_length=20)
+    tags: list[_Tag] = Field(default=[], max_length=20)
+    models: list[Annotated[str, StringConstraints(min_length=1, max_length=200)]] = (
+        Field(default=[], max_length=20)
+    )
+
+
+class SemanticCheckSettings(BaseModel):
+    """A live check of requests on a narrow, tenant-marked scope; it only warns."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    scope: SemanticCheckScope = SemanticCheckScope()
+    endpoints: list[CheckEndpoint] = Field(
+        default=list(CHECK_ENDPOINTS), min_length=1, max_length=4
+    )
+    question_ids: list[
+        Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,47}$")]
+    ] = Field(default=[], max_length=20)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key_id: UUID | None = None
+    warn_header: bool = False
+    timeout_ms: int = Field(default=3_000, ge=500, le=10_000)
+    max_checks_per_day: int = Field(default=1_000, ge=1, le=100_000)
+
+    @model_validator(mode="after")
+    def narrow_when_on(self) -> SemanticCheckSettings:
+        if not self.enabled:
+            return self
+        for field in ("model", "api_key_id"):
+            if getattr(self, field) is None:
+                raise ValueError(f"semantic_check.{field} is required when enabled")
+        if not any(
+            getattr(self.scope, field) for field in SemanticCheckScope.model_fields
+        ):
+            raise ValueError(
+                "a semantic check needs a narrow scope; it never runs on all traffic"
+            )
+        if self.api_key_id in self.scope.api_key_ids:
+            raise ValueError("the check key cannot be in the check's own scope")
+        return self
+
+
+class SemanticCheckPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    # Replaced whole when sent.
+    scope: SemanticCheckScope | None = None
+    endpoints: list[CheckEndpoint] | None = Field(
+        default=None, min_length=1, max_length=4
+    )
+    question_ids: (
+        list[Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,47}$")]]
+        | None
+    ) = Field(default=None, max_length=20)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key_id: UUID | None = None
+    warn_header: bool | None = None
+    timeout_ms: int | None = Field(default=None, ge=500, le=10_000)
+    max_checks_per_day: int | None = Field(default=None, ge=1, le=100_000)
+
+
 class ProviderCacheSettings(BaseModel):
     """The providers' own prompt-cache discount: two settings band steps (S54)."""
 
@@ -338,6 +417,7 @@ class GatewaySettings(BaseModel):
     bedrock_attribution: BedrockAttribution = BedrockAttribution()
     inference_metrics: list[InferenceMetricsSource] = Field(default=[], max_length=64)
     semantic_review: SemanticReviewSettings = SemanticReviewSettings()
+    semantic_check: SemanticCheckSettings = SemanticCheckSettings()
 
     @field_validator("inference_metrics")
     @classmethod
@@ -382,6 +462,7 @@ class GatewaySettingsPatch(BaseModel):
         default=None, max_length=64
     )
     semantic_review: SemanticReviewPatch | None = None
+    semantic_check: SemanticCheckPatch | None = None
 
     @field_validator("inference_metrics")
     @classmethod
@@ -518,6 +599,31 @@ def _semantic_review(
     return "neutral"
 
 
+def _widens(before: list[Any], after: list[Any]) -> bool:
+    # An empty list means any value: emptying a list, or adding to a listed one,
+    # lets more requests in.
+    return bool(before) and (not after or not set(after) <= set(before))
+
+
+def _semantic_check(
+    before: SemanticCheckSettings, after: SemanticCheckSettings
+) -> Direction:
+    # Live request text reaching one more model, or more of it, is relaxing.
+    if after.enabled and (
+        not before.enabled
+        or after.model != before.model
+        or any(
+            _widens(getattr(before.scope, field), getattr(after.scope, field))
+            for field in SemanticCheckScope.model_fields
+        )
+        or not set(after.endpoints) <= set(before.endpoints)
+    ):
+        return "relaxing"
+    if before.enabled and not after.enabled:
+        return "tightening"
+    return "neutral"
+
+
 def _marker_direction(before: str, after: str) -> Direction:
     return (
         "relaxing"
@@ -625,6 +731,7 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Reads the tenant's own server; changes no request.
     "inference_metrics": neutral,
     "semantic_review": _semantic_review,
+    "semantic_check": _semantic_check,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

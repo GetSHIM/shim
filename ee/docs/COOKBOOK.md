@@ -981,6 +981,22 @@ curl -X PUT http://localhost:8000/api/v1/management/semantic-questions \
    decide. The review calls appear in the request list under the review key, tagged
    `shim:semantic_review`, with their cost.
 
+## Mark an endpoint for a live semantic check
+
+With [questions written](#ask-the-archive-your-own-questions) (no archive needed):
+
+1. Create a gateway key for the checks and register a separate internal deployment
+   for them, so the checks never share the marked endpoint's capacity.
+2. Mark one narrow scope, monitor-first: `PATCH /api/v1/management/gateway-settings` with
+   `{"semantic_check": {"enabled": true, "scope": {"tags": ["hukuk"]}, "model": "kontrol",
+   "api_key_id": "<key id>", "timeout_ms": 1500, "max_checks_per_day": 500}}`.
+3. Watch `GET /api/v1/management/semantic-check`, the `semantic_check` column of
+   `GET /api/v1/management/requests?semantic_outcome=matched` and the
+   `gateway.semantic_check_match` finding. Each marked request waits for its check, at
+   most `timeout_ms`.
+4. Once the matches look right, send `{"semantic_check": {"warn_header": true}}`:
+   matched requests then carry `SEMANTIC_WARN` in `X-Shim-Warnings`.
+
 ## Register a private model deployment
 
 Route a gateway alias to your own OpenAI- or Anthropic-compatible model server.

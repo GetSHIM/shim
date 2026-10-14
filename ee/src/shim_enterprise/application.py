@@ -19,6 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shim_enterprise.gateway.attempts import TenantAttemptPolicy
 from shim_enterprise.gateway.change_test import ChangeTestSender
+from shim_enterprise.semantic.live import SemanticPreCheck
 from shim_enterprise.semantic.review import run_review_loop
 from shim_enterprise.gateway.fallback import CanaryFallback, UnavailableFallback
 from shim_enterprise.api.v1.router import gateway_router, management_router
@@ -222,7 +223,8 @@ def _create_gateway_kernel(
         provider: tenant_target_circuit(provider, cache)
         for provider in ("openai", "anthropic", "google")
     }
-    return GatewayKernel(
+    semantic_check = SemanticPreCheck(AsyncSessionLocal, cache)
+    kernel = GatewayKernel(
         {
             "openai": OpenAIExecution(
                 credential_resolver=ManagedProviderCredentialResolver(
@@ -267,7 +269,9 @@ def _create_gateway_kernel(
         ).resolve,
         attempt_policy=TenantAttemptPolicy(
             AsyncSessionLocal,
+            # First: it runs whatever a later strategy chooses, and chooses nothing.
             strategies=(
+                semantic_check,
                 UnavailableFallback(AsyncSessionLocal, circuit_for),
                 CanaryFallback(),
             ),
@@ -291,6 +295,8 @@ def _create_gateway_kernel(
         task_counter=RedisTaskCounter(cache),
         model_lifecycle=load_lifecycle(settings.SHIM_MODEL_LIFECYCLE_FILE),
     )
+    semantic_check.kernel = kernel
+    return kernel
 
 
 async def _connect_cache(

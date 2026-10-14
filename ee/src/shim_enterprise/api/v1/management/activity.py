@@ -201,6 +201,20 @@ _RouteOutcomeFilter = Annotated[
     | None,
     Query(description="What a route rule decided at the conversation start."),
 ]
+_SemanticOutcomeFilter = Annotated[
+    Literal[
+        "matched",
+        "clear",
+        "invalid_answer",
+        "failed",
+        "timeout",
+        "skipped_guard",
+        "skipped_cap",
+        "skipped_empty",
+    ]
+    | None,
+    Query(description="What the live semantic check on a marked endpoint found."),
+]
 _SoftRefusalFilter = Annotated[
     bool | None,
     Query(
@@ -366,6 +380,13 @@ class RequestActivityView(BaseModel):
             "null when no analyzer ran or the pass has not finished."
         ),
     )
+    semantic_check: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "On a request in a marked semantic check's scope: the outcome, the "
+            "matched question ids, the check request and its latency; never text."
+        ),
+    )
     shadow_comparison: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -451,6 +472,7 @@ async def list_requests(
     attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
     route_outcome: _RouteOutcomeFilter = None,
+    semantic_outcome: _SemanticOutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
     task_id: _TaskIdFilter = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -479,6 +501,7 @@ async def list_requests(
         attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
         route_outcome=route_outcome,
+        semantic_outcome=semantic_outcome,
         soft_refusal=soft_refusal,
         task_id=task_id,
     )
@@ -818,6 +841,7 @@ async def export_requests(
     attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
     route_outcome: _RouteOutcomeFilter = None,
+    semantic_outcome: _SemanticOutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
     task_id: _TaskIdFilter = None,
     user: User = Depends(get_current_user),
@@ -844,6 +868,7 @@ async def export_requests(
         attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
         route_outcome=route_outcome,
+        semantic_outcome=semantic_outcome,
         soft_refusal=soft_refusal,
         task_id=task_id,
     )
@@ -933,6 +958,7 @@ async def export_requests(
                 "approval_id",
                 "content_archived",
                 "shadow_comparison",
+                "semantic_check",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -995,6 +1021,7 @@ async def export_requests(
                     details.get("approval_id"),
                     details.get("request_archive") == "stored",
                     _json(comparison),
+                    _json(details.get("semantic_check")),
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -1026,6 +1053,7 @@ async def _request_filters(
     attempt_group_id: str | None = None,
     completion_outcome: CompletionOutcomeFilter | None = None,
     route_outcome: str | None = None,
+    semantic_outcome: str | None = None,
     soft_refusal: bool | None = None,
     task_id: str | None = None,
 ) -> list[Any]:
@@ -1128,6 +1156,12 @@ async def _request_filters(
     if route_outcome is not None:
         filters.append(
             RequestLog.details.contains({"route_decision": {"outcome": route_outcome}})
+        )
+    if semantic_outcome is not None:
+        filters.append(
+            RequestLog.details.contains(
+                {"semantic_check": {"outcome": semantic_outcome}}
+            )
         )
     if task_id is not None:
         filters.append(RequestLog.details["task_id"].as_string() == task_id)

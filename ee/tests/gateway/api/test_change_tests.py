@@ -312,5 +312,5 @@ async def test_the_request_list_and_csv_carry_the_comparison(db) -> None:
     assert item["shadow_comparison"]["candidate"]["schema_valid"] is False
     assert exported.status_code == 200, exported.text
     header, row = exported.text.lstrip("﻿").splitlines()[:2]
-    assert header.split(",")[-1] == "shadow_comparison"
+    assert "shadow_comparison" in header.split(",")
     assert '""schema_valid"": false' in row

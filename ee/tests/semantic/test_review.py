@@ -22,7 +22,7 @@ from shim_enterprise.archive import service as archive_service
 from shim_enterprise.archive.models import RequestArchive
 from shim_enterprise.core.config import settings
 from shim_enterprise.outbox.models import OutboxEvent
-from shim_enterprise.semantic.call import REVIEW_TAG
+from shim_enterprise.semantic.call import CHECK_TAG, REVIEW_TAG
 from shim_enterprise.semantic.models import (
     OrganizationSemanticQuestions,
     SemanticReview,
@@ -82,10 +82,17 @@ def _factory(db):
 
 
 async def _setup(
-    db, *, items: int = 1, alias_kind: str = "internal", item_kind="internal"
+    db,
+    *,
+    items: int = 1,
+    alias_kind: str = "internal",
+    alias_url: str = "https://a.internal/v1",
+    item_kind="internal",
 ):
     user, key, review_key = await _tenant(db)
-    await _deployment(db, key, "denetci", deployment_kind=alias_kind)
+    await _deployment(
+        db, key, "denetci", deployment_kind=alias_kind, base_url=alias_url
+    )
     db.add(
         OrganizationSemanticQuestions(
             organization_id=user.organization_id, revision=1, questions=[QUESTION]
@@ -249,8 +256,18 @@ async def test_the_hourly_and_daily_caps_stop_new_claims(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_internal_item_is_never_sent_to_an_external_review_model(db) -> None:
-    user, _, _, review, _ = await _setup(db, alias_kind="external")
+@pytest.mark.parametrize(
+    ("alias_kind", "alias_url"),
+    [
+        ("external", "https://a.internal/v1"),
+        # Labelled internal, but outside the operator's internal origins.
+        ("internal", "https://b.internal/v1"),
+    ],
+)
+async def test_an_internal_item_is_never_sent_to_an_external_review_model(
+    db, alias_kind, alias_url
+) -> None:
+    user, _, _, review, _ = await _setup(db, alias_kind=alias_kind, alias_url=alias_url)
     kernel = _Kernel()
 
     await review_tenant(kernel, _factory(db), user.organization_id, review, NOW)
@@ -314,7 +331,7 @@ async def test_the_pass_reads_only_tenants_that_turned_the_review_on(db) -> None
     assert len(kernel.texts) == 1
 
 
-def test_a_review_call_is_never_archived(monkeypatch) -> None:
+def test_a_review_or_check_call_is_never_archived(monkeypatch) -> None:
     monkeypatch.setattr(settings, "REQUEST_ARCHIVE_ENABLED", True)
     gateway = GatewaySettings.model_validate({"request_archive": {"enabled": True}})
 
@@ -327,6 +344,7 @@ def test_a_review_call_is_never_archived(monkeypatch) -> None:
 
     assert archive_service._retention_days(prepared(("mobil",))) == 90
     assert archive_service._retention_days(prepared((REVIEW_TAG,))) is None
+    assert archive_service._retention_days(prepared((CHECK_TAG,))) is None
 
 
 @pytest.mark.asyncio

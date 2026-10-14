@@ -389,7 +389,8 @@ made. Each claim batch writes an audit intent `tenant.request_content_scanned` w
 request ids, so the [openings read](#request-archive) shows that a member's request was
 read by `system:semantic_review`. The review decrypts the masked payload only, never
 the values it replaced, and never sees the answer. An item that went to an internal
-deployment is never sent to a review model that is not internal (`skipped_guard`).
+deployment is never sent to a review model that is not internal (`skipped_guard`); one
+labelled internal outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` counts as external.
 Each call is an ordinary request of the review key, tagged `shim:semantic_review`:
 its limits, privacy, rules, budgets and ledger apply, it has its own cost, and it is
 never archived itself. A tenant rule that blocks a word used in a question makes the
@@ -404,6 +405,42 @@ days) lists reviews by status (`matched`, `clear`, `invalid_answer`, `failed`,
 request and its cost. Matches only warn: they feed the finding
 [`gateway.semantic_review_match`](FINDINGS.md#gatewaysemantic_review_match) and never
 block, mask, change a rule or decide anything about a request.
+
+## Live semantic check on a marked endpoint
+
+A tenant can have requests on one narrow scope read against its
+[semantic questions](#semantic-review-of-archived-requests) while they happen, before
+the provider call. The switch is the `semantic_check` gateway setting: a scope of gateway
+key ids, tags and models (at most 20 each; at least one list must be non-empty, and every
+non-empty list must hold the request's value, so it never runs on all traffic), the
+endpoints it covers (`chat`, `responses`, `messages`, `generate_content`), optional
+`question_ids`, the check model (an enabled alias of the tenant), the gateway key the calls
+are made with and billed to (never itself in the scope), `warn_header` (default false),
+`timeout_ms` (500 to 10,000, default 3,000) and `max_checks_per_day` (1 to 100,000, default
+1,000, counted per tenant in Redis; without Redis no check runs). Turning it on, changing
+the model, widening a scope list or adding an endpoint is relaxing; turning it off is
+tightening.
+
+The check runs after privacy, so the model reads the masked text, never the values it
+replaced, and never sees the answer. An internal request is never sent to a check model
+that is not internal when anything was detected in it (`skipped_guard`); a model
+labelled internal outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` counts as external, as it
+does for the request itself. The request waits
+at most `timeout_ms` (`timeout`, the call is cancelled), then goes on unchanged: the check
+never blocks, masks, reroutes or edits a request, and a failure inside it never reaches
+the caller. A match adds `SEMANTIC_WARN` to `X-Shim-Warnings` only when `warn_header` is
+true; otherwise it is only recorded, so a tenant can watch the questions behave before
+callers see anything. Each check is an ordinary request of the check key, tagged
+`shim:semantic_check`: its limits, privacy, rules, budgets and ledger apply, it has its own
+cost, it is never checked or archived itself, and it holds the marked request's admission
+lease while it runs, so a separate check deployment is recommended.
+
+The outcome is in the request's [`semantic_check`](DIAGNOSTIC_METADATA.md) record.
+`GET /api/v1/management/semantic-check` (`usage.read`, 1 to 168 hours, default 24) reads
+the switch, the scope sizes, today's count against the cap, outcome counts, latency p50 and
+p95, and the checks' cost. Matches feed the finding
+[`gateway.semantic_check_match`](FINDINGS.md#gatewaysemantic_check_match).
+`shim_semantic_checks_total{outcome}` counts the checks.
 
 ## Imported gateway logs
 
