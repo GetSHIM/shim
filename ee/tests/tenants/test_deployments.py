@@ -2284,6 +2284,22 @@ async def test_a_lane_that_cannot_serve_keeps_the_request_on_the_alias(
 
 
 @pytest.mark.asyncio
+async def test_a_lane_of_another_kind_at_run_time_keeps_the_request_on_the_alias(
+    db, test_api_key, origins, monkeypatch
+):
+    await _replicas(db, test_api_key)
+    # Both rows say internal; the operator's list now makes the lane external.
+    monkeypatch.setattr(
+        settings, "MODEL_DEPLOYMENT_INTERNAL_ORIGINS", ["https://a.internal"]
+    )
+
+    hosts, decisions, _ = await _routed(db, test_api_key, _rules(_lane()), "x" * 2_000)
+
+    assert hosts == ["a.internal"]
+    assert (decisions[0]["to"], decisions[0]["held"]) == ("internal-a", "not_approved")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("watching", ["split", "lane"])
 async def test_a_monitor_split_or_lane_never_switches_off_an_enforced_route_rule(
     db, test_api_key, origins, watching
