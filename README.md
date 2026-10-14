@@ -117,8 +117,9 @@ request it:
   and asks for the providers' own prompt-cache discount (an Anthropic breakpoint,
   an OpenAI `prompt_cache_key`), tool search, the clearing of old thinking and a
   cheaper image detail level for OpenAI and Gemini 3 only when the operator turns
-  them on. The one transform today, also off by default,
-  removes the whitespace from JSON tool results without changing their value.
+  them on. The transforms, also off by default, remove the whitespace from JSON
+  tool results without changing their value, and shrink oversized images to the
+  size the provider would read them at anyway (same token bill, smaller requests).
 
 It does not translate payloads. When a provider ships a new field, a new model,
 or changes streaming behaviour, you are not waiting on shim to catch up.

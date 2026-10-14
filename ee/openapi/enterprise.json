@@ -7301,6 +7301,7 @@
           "transforms": {
             "$ref": "#/components/schemas/TransformSettings",
             "default": {
+              "image_downscale": "off",
               "json_compaction": "off"
             }
           }
@@ -19512,6 +19513,21 @@
       "TransformPatch": {
         "additionalProperties": false,
         "properties": {
+          "image_downscale": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "on"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Downscale"
+          },
           "json_compaction": {
             "anyOf": [
               {
@@ -19535,6 +19551,15 @@
         "additionalProperties": false,
         "description": "Transform band steps: lossless content changes, each off by default (S56).",
         "properties": {
+          "image_downscale": {
+            "default": "off",
+            "enum": [
+              "off",
+              "on"
+            ],
+            "title": "Image Downscale",
+            "type": "string"
+          },
           "json_compaction": {
             "default": "off",
             "enum": [

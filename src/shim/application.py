@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import importlib.util
 import logging
 import sys
 from typing import TextIO
@@ -102,6 +103,12 @@ def create_community_app(
         sentry_dsn=configured.SENTRY_DSN,
         environment=configured.ENVIRONMENT,
     )
+    pillow = importlib.util.find_spec("PIL") is not None
+    if configured.SHIM_IMAGE_DOWNSCALE == "on" and not pillow:
+        logging.getLogger(__name__).warning(
+            "SHIM_IMAGE_DOWNSCALE is on but Pillow is not installed: images are not "
+            "shrunk; install shim-gateway[images]"
+        )
     if configured.SHIM_DOCUMENTS != "as_media" and pdf_reader_version() is None:
         logging.getLogger(__name__).warning(
             "SHIM_DOCUMENTS is on but pypdf is not installed: PDFs are unscannable "
@@ -220,6 +227,8 @@ def create_community_app(
                         anthropic_keep_thinking_turns=configured.SHIM_ANTHROPIC_KEEP_THINKING_TURNS,
                         openai_reasoning_context=configured.SHIM_OPENAI_REASONING_CONTEXT,
                         json_compaction=configured.SHIM_JSON_COMPACTION == "on",
+                        image_downscale=configured.SHIM_IMAGE_DOWNSCALE == "on"
+                        and pillow,
                         image_detail=ImageDetailSettings(
                             openai=configured.SHIM_IMAGE_DETAIL_OPENAI,
                             gemini=configured.SHIM_IMAGE_DETAIL_GEMINI,

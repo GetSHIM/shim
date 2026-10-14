@@ -144,7 +144,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
                 "anthropic_keep_turns": 0,
                 "openai_reasoning_context": "off",
             },
-            "transforms": {"json_compaction": "off"},
+            "transforms": {"json_compaction": "off", "image_downscale": "off"},
             "image_detail": {"openai": "off", "gemini": "off", "models": []},
             "auto_remediation_paused": False,
             "bedrock_region_lock": {"mode": "off", "scopes": [], "regions": []},
@@ -1288,3 +1288,46 @@ async def test_image_detail_round_trips_merges_and_is_neutral(
     for value in ({"openai": "original"}, {"gemini": "high"}, {"anthropic": "low"}):
         with pytest.raises(ValidationError):
             GatewaySettingsPatch.model_validate({"image_detail": value})
+
+
+@pytest.mark.asyncio
+async def test_image_downscale_round_trips_in_the_transforms_group_as_neutral(
+    db, test_org
+) -> None:
+    admin = await _admin(db, test_org.id)
+    view = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"transforms": {"image_downscale": "on"}}),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert view.settings.transforms.image_downscale == "on"
+    assert view.settings.transforms.json_compaction == "off"
+    assert classify_change(GatewaySettings(), view.settings) == ("neutral", [])
+    assert "transforms.image_downscale" not in view.unavailable
+
+
+@pytest.mark.asyncio
+async def test_without_pillow_image_downscale_is_unavailable_and_runs_off(
+    db, test_user_with_org, registry, monkeypatch
+) -> None:
+    import importlib.util
+
+    import shim_enterprise.tenants.policy as policy_module
+
+    found = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *args: None if name == "PIL" else found(name, *args),
+    )
+
+    view = await management.configuration.get_gateway_settings(test_user_with_org, db)
+
+    assert view.unavailable["transforms.image_downscale"] == (
+        "off, needs shim-gateway[images]"
+    )
+    assert (
+        policy_module.SETTING_AVAILABILITY["transforms.image_downscale"]() is not None
+    )

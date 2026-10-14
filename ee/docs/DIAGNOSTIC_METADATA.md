@@ -395,7 +395,14 @@ community JSONL event carries it only when a step was applied.
 `transforms_applied` lists the transform band steps that changed the request, as
 `{"id", "version", "before_chars", "after_chars"}` plus the step's own counts:
 `json_compaction` adds `items`, the tool result strings it compacted, and its
-character sums cover those strings only. Written with the privacy facts, `[]` when the
+character sums cover those strings only. `image_downscale` adds `items` (images
+changed, their base64 characters before and after), `rules` (the size rules
+version), `library` (`pillow-<version>`), `before_bytes` and `after_bytes` (decoded
+bytes of the changed images), `images` (at most 64, in request order: `format`,
+`before` and `after` as `[width, height]`, `before_bytes`, `after_bytes`) and
+`skipped` (images left alone by reason: `below_threshold`, `not_smaller`,
+`unsupported`, `client_opt_out`, `unknown_model`, `too_large`, `corrupt`); it is
+written only when an image changed. Written with the privacy facts, `[]` when the
 band ran and changed nothing (no JSON tool result qualified, or the request was
 skipped as bound to Anthropic thinking), absent when no transform is on and for token
 counting. Sizes and counts only. The request list and its CSV show it, and the

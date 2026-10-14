@@ -270,6 +270,11 @@ DOCUMENTS_TOTAL = Counter(
     "PDF, Word and text files the privacy stage read, by kind and outcome.",
     ("kind", "outcome"),
 )
+IMAGE_DOWNSCALE_TOTAL = Counter(
+    "shim_image_downscale_total",
+    "Inline images the transform band considered, by what happened to each.",
+    ("outcome",),
+)
 INJECTION_MARKERS_TOTAL = Counter(
     "shim_injection_markers_total",
     "Tool results and documents carrying a hidden-instruction marker, by marker.",

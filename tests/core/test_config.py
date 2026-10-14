@@ -559,3 +559,20 @@ def test_image_detail_settings_are_off_bounded_and_listed() -> None:
     ):
         with pytest.raises(ValidationError):
             CommunitySettings(_env_file=None, **values)
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"), [("off", True), ("on", True), ("yes", False)]
+)
+def test_image_downscale_is_off_unless_turned_on(value, valid) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_IMAGE_DOWNSCALE == "off"
+    if valid:
+        assert (
+            CommunitySettings(
+                _env_file=None, SHIM_IMAGE_DOWNSCALE=value
+            ).SHIM_IMAGE_DOWNSCALE
+            == value
+        )
+    else:
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, SHIM_IMAGE_DOWNSCALE=value)

@@ -763,7 +763,7 @@ class GatewayKernel:
             prepared, blocked = await run_stage(SettingsBandStage(pins), prepared)
             if blocked is not None:
                 return prepared, blocked
-        if prepared.band.json_compaction:
+        if prepared.band.json_compaction or prepared.band.image_downscale:
             prepared = await run_stage(TransformBandStage(), prepared)
         return prepared, None
 

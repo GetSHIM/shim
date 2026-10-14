@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import importlib.util
 import logging
 import re
 from typing import Annotated, Any, Literal
@@ -171,12 +172,15 @@ class TransformSettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     json_compaction: Literal["off", "on"] = "off"
+    # Runs only where Pillow is installed (SETTING_AVAILABILITY).
+    image_downscale: Literal["off", "on"] = "off"
 
 
 class TransformPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     json_compaction: Literal["off", "on"] | None = None
+    image_downscale: Literal["off", "on"] | None = None
 
 
 LockMode = Literal["off", "monitor", "enforce"]
@@ -597,6 +601,11 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
 SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {
+    "transforms.image_downscale": lambda: (
+        None
+        if importlib.util.find_spec("PIL") is not None
+        else "off, needs shim-gateway[images]"
+    ),
     "documents": lambda: (
         None if pdf_reader_version() is not None else "PDF off, needs pypdf"
     ),

@@ -2684,3 +2684,96 @@ async def test_image_detail_reaches_openai_through_the_sdk(protocol, stream) -> 
         }
     else:
         assert sent["input"][0]["content"][0]["detail"] == "low"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_downscaled_image_reaches_openai_through_the_sdk(stream) -> None:
+    import base64
+    from io import BytesIO
+
+    from openai import AsyncOpenAI
+    from PIL import Image
+
+    output = BytesIO()
+    Image.linear_gradient("L").resize((4000, 3000)).convert("RGB").save(
+        output, format="JPEG", quality=95
+    )
+    url = f"data:image/jpeg;base64,{base64.b64encode(output.getvalue()).decode()}"
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if stream:
+            return httpx.Response(
+                200,
+                text='data: {"id":"c","object":"chat.completion.chunk","created":0,'
+                '"model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"ok"},'
+                '"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_community_app(
+        CommunitySettings(
+            _env_file=None,
+            SHIM_API_KEY=_EMBEDDING_KEY,
+            SHIM_MEDIA_INPUTS="allow",
+            SHIM_IMAGE_DOWNSCALE="on",
+        ),
+        http_client=outbound,
+        event_stream=StringIO(),
+    )
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            client = AsyncOpenAI(
+                base_url="http://shim.test/v1",
+                api_key=_EMBEDDING_KEY,
+                http_client=inbound,
+                max_retries=0,
+            )
+            created = await client.chat.completions.create(
+                model="gpt-5.4",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": url}}],
+                    }
+                ],
+                stream=stream,
+                extra_headers={"x-provider-key": "sk-upstream"},
+            )
+            if stream:
+                async for _ in created:  # type: ignore[union-attr]
+                    pass
+
+    [sent] = seen
+    sent_url = sent["messages"][0]["content"][0]["image_url"]["url"]
+    assert sent_url.startswith("data:image/jpeg;base64,")
+    assert Image.open(BytesIO(base64.b64decode(sent_url.partition(",")[2]))).size == (
+        1824,
+        1368,
+    )

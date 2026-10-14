@@ -375,10 +375,14 @@ lists. A step that declines a request it was on for records a `settings.<step>`
 follows it, only when a transform is on, and changes content under four conditions:
 nothing changes below a published threshold, each step is deterministic and
 version-pinned, before and after sizes are recorded (`transforms_applied`), and the
-tenant can turn it off. Its one step, `json_compaction`, removes whitespace between
-JSON tokens in tool results and keeps a string only when it parses to the same value;
-it skips Anthropic requests bound to thinking with a `transforms.json_compaction`
-verdict, and runs in a worker thread above 65,536 candidate characters. The `route` kind
+tenant can turn it off. Its first step, `json_compaction`, removes whitespace between
+JSON tokens in tool results and keeps a string only when it parses to the same value.
+Its second, `image_downscale` (needs Pillow, the optional `images` extra), shrinks an
+inline PNG, JPEG or static WEBP to the size the provider publishes it reads that model
+and detail level at (`target_size` in `src/shim/gateway/image_rules.py`) and re-encodes
+it in its own format. Both skip requests bound to thinking with a `transforms.<step>`
+verdict, and the band runs in a worker thread above 65,536 candidate characters or when
+an image is a candidate. The `route` kind
 ships no matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 Admission adds `MODEL_RETIRING` (retirement within 90 days) or `MODEL_RETIRED`

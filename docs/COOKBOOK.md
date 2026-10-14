@@ -24,6 +24,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Stop paying for old thinking](#stop-paying-for-old-thinking)
 - [Shrink JSON tool results](#shrink-json-tool-results)
 - [Read images at a cheaper detail level](#read-images-at-a-cheaper-detail-level)
+- [Shrink oversized images](#shrink-oversized-images)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
@@ -995,6 +996,48 @@ quality for small text in images; try one model first with
 provider's prompt cache holds; changing the setting changes the cached prefix once.
 Leave it off when `OPENAI_BASE_URL` points at another server.
 
+## Shrink oversized images
+
+Send images no larger than the size the provider would resize them to anyway, so
+requests are smaller and an image the provider refused for its byte size may fit.
+
+1. Install the extra (`pip install 'shim-gateway[images]'`, which adds Pillow; the
+   enterprise image has it). Without it the gateway logs a warning at start and the
+   setting stays off.
+2. Set `SHIM_IMAGE_DOWNSCALE=on` (and let images through, see
+   [choose what happens to each data type](#choose-what-happens-to-each-data-type)).
+
+An inline PNG, JPEG or static WEBP in an Anthropic messages, chat or Responses request
+to a catalog model is reduced to the size the provider's page publishes for that model
+and detail level, and re-encoded in its own format: PNG losslessly, JPEG and WEBP at
+quality 90; EXIF and other metadata are dropped, an ICC profile is kept, and a result
+that is not smaller is discarded. The sizes (read 2026-10-08):
+
+| Provider and model | Size |
+| --- | --- |
+| Claude before 4.7 | at most 1,568 px long edge and 1,568 tokens of 28 px tiles |
+| Claude 4.7 and later | at most 2,576 px and 4,784 tokens |
+| `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-5.1`, `high` or no detail | fit 2,048 px, then the short side 768 px |
+| `gpt-4.1-mini`, `gpt-5.2` | 2,048 px and 6,144 patches of 32 px |
+| `gpt-5.4` family | `low` 2,048 px and 6,144 patches; `high` or none 2,048 px and 2,500; `original` 6,000 px and 10,000 |
+| `gpt-5.5` | `low` 512 px; `high` 2,048 px and 2,500 patches; `original` or none 6,000 px and 10,000 |
+| `gpt-5.6-sol`, `-terra`, `-luna`, `gpt-6-astra` | `low` 512 px; `high` 2,500 patches (2,048 px except `gpt-6-astra`); otherwise 65,535 px |
+
+The token bill does not change: providers bill image tokens from the size after their
+own resize, and this is that size. What it saves is bytes and upload time. Never
+touched: Gemini (no published size), images by URL or file id, GIFs and animated
+WEBP, images at or below the size, images with an EXIF rotation, in an Anthropic
+`tool_result`, marked `transformations.oversized_image: "error"`, computer-use
+screenshots, requests bound to thinking (`TRANSFORM_THINKING_BOUND`), token counts,
+and images over 32 MB or 64 megapixels. The usage event's `transforms_applied` gets an
+`image_downscale` entry with the sizes and bytes before and after and the images
+skipped by reason; `shim_image_downscale_total{outcome}` counts each image.
+
+Notes: the same image gives the same bytes on every turn, so the provider's prompt
+cache holds; a Pillow upgrade changes the output bytes once. The work runs in a worker
+thread; a 12-megapixel JPEG takes about 150 ms. Leave it off when
+`ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` points at another server.
+
 ## Stream long generations and read usage
 
 Stream long answers without losing exact token accounting.
@@ -1096,6 +1139,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_response_analysis_total` | `analyzer`, `result` |
 | `shim_injection_markers_total` | `marker` |
 | `shim_media_parts_total` | `kind`, `outcome` (`forwarded`, `blocked`) |
+| `shim_image_downscale_total` | `outcome` (`downscaled`, `below_threshold`, `not_smaller`, `unsupported`, `client_opt_out`, `unknown_model`, `too_large`, `corrupt`, `thinking_bound`) |
 | `shim_documents_total` | `kind`, `outcome` (`scanned`, `converted`, `stopped`, `unscannable`) |
 | `shim_transforms_total` | `transform`, `result` (`applied`, `unchanged`, `skipped`) |
 | `shim_extra_attempts_total` (enterprise tenant rules only) | `reason`, `outcome` (`started`, `skipped`, `not_admitted`) |

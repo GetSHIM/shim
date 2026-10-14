@@ -251,7 +251,7 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 "anthropic_keep_turns": 0,
                 "openai_reasoning_context": "off",
             },
-            "transforms": {"json_compaction": "off"},
+            "transforms": {"json_compaction": "off", "image_downscale": "off"},
             "image_detail": {"openai": "off", "gemini": "off", "models": []},
         }
     }
@@ -300,7 +300,7 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                     "anthropic_keep_turns": 0,
                     "openai_reasoning_context": "off",
                 },
-                "transforms": {"json_compaction": "off"},
+                "transforms": {"json_compaction": "off", "image_downscale": "off"},
                 "image_detail": {"openai": "off", "gemini": "off", "models": []},
             }
         }
@@ -1079,6 +1079,9 @@ def test_a_field_change_not_listed_as_neutral_or_tightening_relaxes(
         {"tool_search": {"mode": "bm25", "min_tools": 3}},
         {"thinking_history": {"anthropic_keep_turns": 2}},
         {"provider_cache": {"anthropic_auto_cache": "1h"}},
+        {"transforms": {"image_downscale": "on"}},
+        {"image_detail": {"openai": "low", "gemini": "medium"}},
+        {"documents": "scan_and_convert", "document_format": "by_provider"},
     ],
 )
 def test_a_plan_on_the_band_settings_alone_is_neutral(change: dict) -> None:

@@ -1424,3 +1424,122 @@ async def test_a_scanned_pdf_document_reaches_anthropic_through_the_sdk() -> Non
     assert sent["messages"][0]["content"][0] == document
     [line] = [json.loads(item) for item in events.getvalue().splitlines()]
     assert line["documents"]["native"] == 1
+
+
+def _jpeg(width: int, height: int) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    output = BytesIO()
+    Image.linear_gradient("L").resize((width, height)).convert("RGB").save(
+        output, format="JPEG", quality=95
+    )
+    return output.getvalue()
+
+
+async def _downscale_through_the_gateway(stream: bool) -> tuple[list[dict], str]:
+    import base64
+    from io import StringIO
+
+    from anthropic import AsyncAnthropic
+
+    from shim.application import create_community_app
+
+    data = base64.b64encode(_jpeg(4000, 3000)).decode()
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if stream:
+            return httpx.Response(
+                200, text=_STREAM, headers={"content-type": "text/event-stream"}
+            )
+        return httpx.Response(200, json=_message("ok"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                ANTHROPIC_BASE_URL="https://upstream.test",
+                SHIM_MEDIA_INPUTS="allow",
+                SHIM_IMAGE_DOWNSCALE="on",
+            ),
+            http_client=outbound,
+            event_stream=StringIO(),
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+            ) as inbound,
+        ):
+            client = AsyncAnthropic(
+                base_url="http://127.0.0.1",
+                api_key="unused",
+                http_client=inbound,
+                max_retries=0,
+                default_headers={"x-provider-key": "sk-ant-tenant"},
+            )
+            content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": data,
+                    },
+                },
+                {"type": "text", "text": "Describe"},
+            ]
+            if stream:
+                async with client.messages.stream(
+                    model="claude-haiku-4-5",
+                    max_tokens=16,
+                    messages=[{"role": "user", "content": content}],
+                ) as events:
+                    async for _ in events:
+                        pass
+            else:
+                await client.messages.create(
+                    model="claude-haiku-4-5",
+                    max_tokens=16,
+                    messages=[{"role": "user", "content": content}],
+                )
+    return seen, data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_downscaled_image_reaches_anthropic_through_the_sdk(stream) -> None:
+    import base64
+    from io import BytesIO
+
+    from PIL import Image
+
+    [sent], _ = await _downscale_through_the_gateway(stream)
+
+    data = sent["messages"][0]["content"][0]["source"]["data"]
+    assert Image.open(BytesIO(base64.b64decode(data))).size == (1270, 952)
+
+
+@pytest.mark.asyncio
+async def test_without_pillow_images_are_not_shrunk_and_the_gateway_warns(
+    monkeypatch, caplog
+) -> None:
+    import importlib.util
+
+    found = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *args: None if name == "PIL" else found(name, *args),
+    )
+
+    with caplog.at_level("WARNING"):
+        [sent], data = await _downscale_through_the_gateway(False)
+
+    assert sent["messages"][0]["content"][0]["source"]["data"] == data
+    assert any(
+        "install shim-gateway[images]" in record.message for record in caplog.records
+    )

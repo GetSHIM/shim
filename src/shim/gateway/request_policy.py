@@ -71,8 +71,10 @@ class BandSettings(FrozenContractModel):
     anthropic_keep_thinking_turns: int = Field(default=0, ge=0, le=8)
     openai_reasoning_context: Literal["off", "current_turn"] = "off"
     image_detail: ImageDetailSettings = ImageDetailSettings()
-    # The transform band's switch; it never starts the settings band.
+    # The transform band's switches; they never start the settings band.
     json_compaction: bool = False
+    # On only where Pillow is installed.
+    image_downscale: bool = False
 
     @property
     def on(self) -> bool:

@@ -96,6 +96,7 @@ class CommunitySettings(BaseSettings):
     SHIM_ANTHROPIC_KEEP_THINKING_TURNS: int = Field(default=0, ge=0, le=8)
     SHIM_OPENAI_REASONING_CONTEXT: Literal["off", "current_turn"] = "off"
     SHIM_JSON_COMPACTION: Literal["off", "on"] = "off"
+    SHIM_IMAGE_DOWNSCALE: Literal["off", "on"] = "off"
     SHIM_IMAGE_DETAIL_OPENAI: Literal["off", "low", "high"] = "off"
     SHIM_IMAGE_DETAIL_GEMINI: Literal["off", "low", "medium"] = "off"
     SHIM_IMAGE_DETAIL_MODELS: Annotated[

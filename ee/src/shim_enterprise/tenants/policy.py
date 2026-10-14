@@ -33,7 +33,11 @@ from shim.privacy.policies import PII_CONFIG_DEFAULTS, EntityAction
 from shim.privacy.record_match import RecordSetIndex
 from shim.rules import RuleSet, RuleSetError, load_rule_set
 from shim_enterprise.rules.models import OrganizationRuleSet
-from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
+from shim_enterprise.tenants.gateway_settings import (
+    SETTING_AVAILABILITY,
+    GatewaySettings,
+    stored_settings,
+)
 from shim_enterprise.tenants.record_sets import RECORD_SETS
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -457,6 +461,9 @@ class TenantRequestPolicyResolver:
                     anthropic_keep_thinking_turns=thinking.anthropic_keep_turns,
                     openai_reasoning_context=thinking.openai_reasoning_context,
                     json_compaction=gateway.transforms.json_compaction == "on",
+                    # A stored on runs as off where Pillow is missing.
+                    image_downscale=gateway.transforms.image_downscale == "on"
+                    and SETTING_AVAILABILITY["transforms.image_downscale"]() is None,
                     image_detail=gateway.image_detail,
                 ),
                 restore_withheld=frozenset(

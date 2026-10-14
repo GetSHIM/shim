@@ -124,7 +124,7 @@ def _apply_pins(
     return value, payload, applied, None
 
 
-def _provider_target(prepared: PreparedInference) -> bool:
+def provider_target(prepared: PreparedInference) -> bool:
     # An on-prem server behind a provider-compatible API may refuse a parameter it
     # does not know, so only listed deployments are touched.
     return (
@@ -137,7 +137,7 @@ def _anthropic_auto_cache(
     prepared: PreparedInference, payload: dict[str, Any]
 ) -> dict[str, Any] | None:
     ttl = prepared.band.anthropic_auto_cache
-    if ttl == "off" or not _provider_target(prepared) or has_cache_control(payload):
+    if ttl == "off" or not provider_target(prepared) or has_cache_control(payload):
         return None
     # A random placeholder changes the prompt on every request: a write, never a read.
     if (
@@ -169,7 +169,7 @@ def _openai_prompt_cache_key(
     scope = prepared.band.openai_prompt_cache_key
     if (
         scope == "off"
-        or not _provider_target(prepared)
+        or not provider_target(prepared)
         or payload.get("prompt_cache_key") is not None
     ):
         return None
@@ -300,7 +300,7 @@ def _tool_search(
     band = prepared.band
     if (
         band.tool_search == "off"
-        or not _provider_target(prepared)
+        or not provider_target(prepared)
         or (
             band.tool_search_api_key_ids
             and str(prepared.api_key_id) not in band.tool_search_api_key_ids
@@ -355,7 +355,7 @@ def _anthropic_clear_thinking(
     prepared: PreparedInference, payload: dict[str, Any]
 ) -> dict[str, Any] | None:
     turns = prepared.band.anthropic_keep_thinking_turns
-    if not turns or not _provider_target(prepared) or not _thinking_on(payload):
+    if not turns or not provider_target(prepared) or not _thinking_on(payload):
         return None
     if "context_management" in payload:
         _skip(prepared, "anthropic_clear_thinking", "SETTING_CLIENT_OWNED")
@@ -373,7 +373,7 @@ def _openai_reasoning_context(
 ) -> dict[str, Any] | None:
     if (
         prepared.band.openai_reasoning_context == "off"
-        or not _provider_target(prepared)
+        or not provider_target(prepared)
         # Earlier models already default to the current turn.
         or not REASONING_CONTEXT_MODELS_V1.match(prepared.pricing_model)
     ):
@@ -397,7 +397,7 @@ def _image_detail(
     if (
         level == "off"
         or not prepared.media
-        or not _provider_target(prepared)
+        or not provider_target(prepared)
         or (setting.models and prepared.model not in setting.models)
     ):
         return None
@@ -450,7 +450,7 @@ def _image_detail(
         return None
     value = {"level": _GEMINI_LEVELS[level]} if google else level
     for path in unset:
-        payload = _write_at(payload, path, value)
+        payload = write_at(payload, path, value)
     return payload
 
 
@@ -517,11 +517,11 @@ def _read(payload: Mapping[str, Any], path: tuple[str, ...]) -> object:
     return value
 
 
-def _write_at(payload: Any, path: tuple[str | int, ...], value: object) -> Any:
+def write_at(payload: Any, path: tuple[str | int, ...], value: object) -> Any:
     """`_write` through lists too: copies only the containers on the path."""
     head, *rest = path
     copied: Any = list(payload) if isinstance(payload, list) else dict(payload)
-    copied[head] = _write_at(payload[head], tuple(rest), value) if rest else value
+    copied[head] = write_at(payload[head], tuple(rest), value) if rest else value
     return copied
 
 

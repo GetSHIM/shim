@@ -29,6 +29,8 @@ dependencies = [
   "joserfc>=1.6,<2",
   # Document scanning is an enterprise feature; the same pin as shim-gateway[documents].
   "pypdf==6.20.1",
+  # Image downscaling; reportlab already installs it.
+  "pillow>=12.3,<13",
 ]
 
 [project.optional-dependencies]

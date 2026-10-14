@@ -32,6 +32,8 @@ dependencies = [
 [project.optional-dependencies]
 # PDF text for document scanning (SHIM_DOCUMENTS); pure Python, no dependencies.
 documents = ["pypdf==6.20.1"]
+# Shrinking oversized images (SHIM_IMAGE_DOWNSCALE); the lock's version.
+images = ["pillow==12.3.0"]
 
 [project.scripts]
 shim = "shim.cli:main"
