@@ -1385,3 +1385,44 @@ async def test_the_same_request_gets_the_same_bytes_every_time() -> None:
     assert json.dumps(first.payload, separators=(",", ":")) == json.dumps(
         second.payload, separators=(",", ":")
     )
+
+
+@pytest.mark.asyncio
+async def test_a_detail_of_another_type_is_the_clients_and_never_fails() -> None:
+    for detail in (["low"], {"level": "low"}):
+        prepared = _imaged(
+            "chat", _chat_image(detail=detail), detail={"openai": "low"}, model="gpt-4o"
+        )
+
+        banded = await _band(prepared)
+
+        assert banded.payload == prepared.payload
+        assert _image_verdicts(banded) == ["SETTING_CLIENT_OWNED"]
+
+
+@pytest.mark.asyncio
+async def test_a_gemini_function_response_image_gets_no_resolution() -> None:
+    from google.genai import types
+
+    returned = {
+        "functionResponse": {
+            "name": "screenshot",
+            "response": {"ok": True},
+            "parts": [_gemini_image()],
+        }
+    }
+    prepared = _imaged(
+        "generate_content",
+        _gemini_image(),
+        returned,
+        detail={"gemini": "low"},
+        model="gemini-3.5-flash",
+    )
+
+    banded = await _band(prepared)
+
+    parts = banded.payload["contents"][0]["parts"]
+    assert parts[0]["mediaResolution"] == {"level": "MEDIA_RESOLUTION_LOW"}
+    assert parts[1] == returned
+    # The SDK forbids any field but inline or file data in a function response part.
+    types.Content.model_validate(banded.payload["contents"][0])

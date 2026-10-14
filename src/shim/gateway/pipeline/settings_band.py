@@ -388,6 +388,14 @@ def _openai_reasoning_context(
 _GEMINI_LEVELS = {"low": "MEDIA_RESOLUTION_LOW", "medium": "MEDIA_RESOLUTION_MEDIUM"}
 
 
+def _top_level_gemini_part(path: tuple[str | int, ...]) -> bool:
+    return (len(path) == 4 and path[0] == "contents" and path[2] == "parts") or (
+        len(path) == 3
+        and path[0] in {"systemInstruction", "system_instruction"}
+        and path[1] == "parts"
+    )
+
+
 def _image_detail(
     prepared: PreparedInference, payload: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -408,9 +416,11 @@ def _image_detail(
         if part.kind != "image":
             continue
         if google:
-            images.append(
-                ((*part.path, "mediaResolution"), node.get("mediaResolution"))
-            )
+            # A function response's parts take files only, no mediaResolution.
+            if _top_level_gemini_part(part.path):
+                images.append(
+                    ((*part.path, "mediaResolution"), node.get("mediaResolution"))
+                )
         elif node.get("type") == "image_url" and isinstance(
             node.get("image_url"), Mapping
         ):
@@ -434,7 +444,8 @@ def _image_detail(
     unset = [
         path
         for path, current in images
-        if (current is None if google else current in {None, "auto"})
+        # A client value of any type is the client's; only absent or "auto" is ours.
+        if current is None or (not google and current == "auto")
     ]
     if not unset or (
         google and isinstance(config, Mapping) and "mediaResolution" in config
