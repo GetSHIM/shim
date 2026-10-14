@@ -32,6 +32,7 @@ from shim_enterprise.tenants.models import ModelDeployment
 # (lever, method, the record's section, {view field: record field}).
 _RECORDED: tuple[tuple[str, Method, str, dict[str, str]], ...] = (
     ("inflight_share", "measured", "measured", {"usd": "usd", "tokens": "tokens"}),
+    ("inflight_share", "estimated", "estimated", {"usd": "usd", "tokens": "tokens"}),
     ("provider_cache", "measured", "measured", {"usd": "usd", "tokens": "read_tokens"}),
     (
         "provider_cache_key",
@@ -166,7 +167,6 @@ async def tenant_savings(
             metadata["settings_applied"],
             cast(literal('$[*] ? (@.id starts with "parameter_pin.")'), JSONPATH),
         ),
-        metadata["transforms_applied"].contains([{"id": "document_text"}]),
     ]
     columns += [func.count().filter(condition) for condition in counted]
     values = list((await session.execute(select(*columns).where(*window))).one())
@@ -189,9 +189,7 @@ async def tenant_savings(
                 unpriced=unpriced,
             )
         )
-    for name, requests in zip(
-        (*_SETTINGS_COUNTED, "parameter_pin", "document_text"), values
-    ):
+    for name, requests in zip((*_SETTINGS_COUNTED, "parameter_pin"), values):
         if requests:
             rows.append(SavingsRow(name, "counted", requests))
     rows += await _routing(session, tenant_id, window)

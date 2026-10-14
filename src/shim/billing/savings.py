@@ -16,6 +16,8 @@ SAVINGS_VERSION = 1
 Method = Literal["measured", "estimated", "not_attributed", "counted"]
 _PLACES = Decimal("0.0000000001")
 _MILLION = Decimal(1_000_000)
+# A provider's own figure above this is no count of a request's tokens.
+_MAX_CLEARED_TOKENS = 10**9
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,8 +31,8 @@ class Lever:
 LEVERS: tuple[Lever, ...] = (
     Lever(
         "inflight_share",
-        ("measured",),
-        "A provider call that did not happen; its usage is the one the provider reported for the first request.",
+        ("measured", "estimated"),
+        "A provider call that did not happen; measured when the provider reported the first request's usage, estimated when shim had to estimate it.",
     ),
     Lever(
         "provider_cache",
@@ -78,7 +80,6 @@ LEVERS: tuple[Lever, ...] = (
             "tool_search",
             "openai_reasoning_context",
             "parameter_pin",
-            "document_text",
         )
     ),
 )
@@ -108,7 +109,7 @@ def cleared_tokens(context_management: object) -> int | None:
         for edit in edits
         if isinstance(edit, Mapping)
         and type(count := edit.get("cleared_input_tokens")) is int
-        and count >= 0
+        and 0 <= count <= _MAX_CLEARED_TOKENS
     ]
     return sum(counts) if counts else None
 
@@ -207,19 +208,21 @@ def request_savings(
     return _record(measured, estimated, not_attributed)
 
 
-def shared_savings(inflight_share: Mapping[str, Any]) -> dict[str, Any] | None:
-    """A follower's record: the provider call its shared answer avoided."""
-    return _record(
-        {
-            "inflight_share": {
-                "usd": usd(Decimal(str(inflight_share["avoided_cost_usd"]))),
-                "tokens": inflight_share["prompt_tokens"]
-                + inflight_share["completion_tokens"],
-            }
-        },
-        {},
-        {},
-    )
+def shared_savings(
+    inflight_share: Mapping[str, Any], usage: StreamUsageSnapshot
+) -> dict[str, Any] | None:
+    """A follower's record: the provider call its shared answer avoided, measured
+    only when the leader's usage is what the provider reported."""
+    figure = {
+        "tokens": inflight_share["prompt_tokens"] + inflight_share["completion_tokens"],
+        **_money(
+            None
+            if usage.pricing_metadata.get("pricing_resolution") == "unknown"
+            else Decimal(str(inflight_share["avoided_cost_usd"]))
+        ),
+    }
+    section = {"inflight_share": figure}
+    return _record({}, section, {}) if usage.estimated else _record(section, {}, {})
 
 
 def _record(*sections: dict[str, dict[str, Any]]) -> dict[str, Any] | None:

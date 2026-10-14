@@ -20,14 +20,16 @@ _HAIKU = DEFAULT_PRICE_BOOK.resolved_price_metadata(
 )
 
 
-def _usage(split=None, metadata=None, prompt=5000) -> StreamUsageSnapshot:
+def _usage(
+    split=None, metadata=None, prompt=5000, estimated=False
+) -> StreamUsageSnapshot:
     return StreamUsageSnapshot(
         prompt_tokens=prompt,
         completion_tokens=10,
         settlement_cost_usd=Decimal("0.001"),
         provider_model="claude-haiku-4-5",
         pricing_metadata=dict(_HAIKU if metadata is None else metadata),
-        estimated=False,
+        estimated=estimated,
         output_hash=None,
         cache_split=split,
     )
@@ -216,6 +218,9 @@ def test_cleared_thinking_is_measured_with_a_gross_estimate() -> None:
         ({"applied_edits": "x"}, None),
         (None, None),
         ({"applied_edits": [{"cleared_input_tokens": 0}]}, 0),
+        # A provider's figure past any request's size is dropped (L11).
+        ({"applied_edits": [{"cleared_input_tokens": 10**25}]}, None),
+        ({"applied_edits": [{"cleared_input_tokens": 10**9}]}, 10**9),
     ],
 )
 def test_cleared_tokens_take_non_negative_integers_only(value, expected) -> None:
@@ -251,7 +256,8 @@ def test_a_follower_records_the_call_it_avoided() -> None:
             "prompt_tokens": 1200,
             "completion_tokens": 200,
             "avoided_cost_usd": "0.0012",
-        }
+        },
+        _usage(),
     )
 
     assert saved == {
@@ -266,7 +272,8 @@ def test_amounts_round_half_even_to_ten_places() -> None:
             "prompt_tokens": 1,
             "completion_tokens": 0,
             "avoided_cost_usd": "0.00000000005",
-        }
+        },
+        _usage(),
     )
 
     assert (
@@ -305,3 +312,37 @@ def test_the_record_holds_only_counts_ids_and_decimal_strings() -> None:
     assert {lever.name for lever in LEVERS} >= {
         name for section in ("measured", "estimated") for name in saved[section]
     }
+
+
+def test_a_follower_of_an_estimated_or_unpriced_answer_saves_no_measured_money() -> (
+    None
+):
+    share = {"prompt_tokens": 1200, "completion_tokens": 200, "avoided_cost_usd": "0"}
+
+    estimated = shared_savings(
+        {**share, "avoided_cost_usd": "0.0012"}, _usage(estimated=True)
+    )
+    unpriced = shared_savings(share, _usage(metadata={"pricing_resolution": "unknown"}))
+
+    assert estimated == {
+        "version": 1,
+        "estimated": {"inflight_share": {"usd": "0.0012000000", "tokens": 1400}},
+    }
+    assert unpriced == {
+        "version": 1,
+        "measured": {"inflight_share": {"usd": None, "unpriced": True, "tokens": 1400}},
+    }
+
+
+def test_a_huge_cleared_count_from_upstream_never_fails_settlement() -> None:
+    edits = {"applied_edits": [{"cleared_input_tokens": 10**25}]}
+
+    saved = request_savings(
+        _prepared(["anthropic_clear_thinking"]), _usage(), cleared_tokens(edits)
+    )
+
+    assert saved is None
+
+
+def test_document_conversion_is_protection_not_a_lever() -> None:
+    assert "document_text" not in {lever.name for lever in LEVERS}

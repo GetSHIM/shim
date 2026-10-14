@@ -203,6 +203,8 @@ async def test_only_measured_figures_are_summed(db) -> None:
             }
         ),
     )
+    # A follower of an estimated answer: listed apart, never in the total (M6).
+    _add(db, key, _saved(estimated={"inflight_share": {"usd": "0.5", "tokens": 9}}))
     _add(
         db,
         key,
@@ -222,6 +224,7 @@ async def test_only_measured_figures_are_summed(db) -> None:
     assert view.measured_usd == "0.0002000000"
     assert [(row.lever, row.method) for row in view.levers] == [
         ("inflight_share", "measured"),
+        ("inflight_share", "estimated"),
         ("provider_cache", "measured"),
         ("provider_cache_key", "not_attributed"),
         ("json_compaction", "measured"),
@@ -229,7 +232,6 @@ async def test_only_measured_figures_are_summed(db) -> None:
         ("image_downscale", "measured"),
         ("image_detail", "counted"),
         ("parameter_pin", "counted"),
-        ("document_text", "counted"),
     ]
     assert (
         rows["provider_cache", "measured"].requests,
@@ -240,6 +242,7 @@ async def test_only_measured_figures_are_summed(db) -> None:
     assert rows["image_downscale", "measured"].bytes == 2400000
     assert rows["provider_cache_key", "not_attributed"].usd == "0.0018000000"
     assert rows["inflight_share", "measured"].note.startswith("A provider call")
+    assert rows["inflight_share", "estimated"].usd == "0.5000000000"
 
 
 @pytest.mark.asyncio

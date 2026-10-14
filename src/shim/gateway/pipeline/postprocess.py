@@ -378,7 +378,9 @@ class ResponsePostprocessor:
         }
         await self.usage.finalize_shared(
             prepared,
-            replace(terminal, usage=replace(usage, savings=shared_savings(share))),
+            replace(
+                terminal, usage=replace(usage, savings=shared_savings(share, usage))
+            ),
             share,
         )
         return gateway_response
