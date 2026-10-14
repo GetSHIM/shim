@@ -98,8 +98,7 @@ INFERENCE_SCRAPES_TOTAL = Counter(
 CHANGE_TEST_SKIPS_TOTAL = Counter(
     "shim_change_test_skips_total",
     "Change test copies not made, by reason: cap_requests, cap_cost, "
-    "counter_unavailable, candidate_scoped_rule, target_not_allowed, "
-    "target_unavailable.",
+    "counter_unavailable, target_not_allowed, target_unavailable.",
     ("reason",),
 )
 CHANGE_TEST_COMPARISONS_TOTAL = Counter(

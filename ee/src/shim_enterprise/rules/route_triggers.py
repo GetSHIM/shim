@@ -328,7 +328,12 @@ async def _check_shadow(
             raise _refused(
                 f"{path}.to", "an internal alias is never copied to an external one"
             )
-        changed = before is None or ShadowMatch.model_validate(before) != match
+        changed = (
+            before is None
+            # An existing rule id that becomes a test is a new test.
+            or before.get("on") != "shadow"
+            or ShadowMatch.model_validate(before) != match
+        )
         if changed and match.ends_at <= now:
             raise _refused(f"{path}.ends_at", "ends_at is in the past")
 

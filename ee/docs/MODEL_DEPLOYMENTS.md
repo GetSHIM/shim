@@ -340,10 +340,11 @@ Enforced, a request to `from` in scope and in the window is copied when the hash
 rule id and request id falls in the share (one copy per request at most). The copy
 follows the core shadow guards: never a token count, a Responses continuation or a
 stored Responses request, only after a completed answer, the masked payload with the
-bands re-run for the candidate, the key's model allowlist applied, no copy when a rule
-scoped to the candidate's model exists (it never saw the payload). The copy is its own
-row (`shadow_of`), with its own cost, which is the tenant's; it uses no request unit.
-Caps are counted in Redis, seeded from the ledger, so a test may overshoot
+bands re-run for the candidate, the key's model allowlist applied, no copy when an
+enforced privacy rule would act at the candidate and not at `from` (it never saw the
+payload). The copy is its own row (`shadow_of`), with its own cost, which is the
+tenant's; it uses no request unit. Caps count the copies sent, after those guards, in
+Redis seeded from the ledger, so a test may overshoot
 `max_requests` or `max_cost_usd` by the copies already in flight
 (`SHADOW_MAX_IN_FLIGHT` per gateway process); without Redis no copy is made. Each
 skipped copy counts in `shim_change_test_skips_total{reason}`.

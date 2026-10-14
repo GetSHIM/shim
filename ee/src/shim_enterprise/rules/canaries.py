@@ -230,6 +230,14 @@ async def rollback_canary(
             status_code=409,
             detail={"code": "RULE_NOT_A_SPLIT", "message": "The rule is not a split."},
         )
+    if before["match"].get("share_percent") == 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NOTHING_TO_CHANGE",
+                "message": "The split already sends no conversation to its candidate.",
+            },
+        )
     after = {**before, "match": {**before["match"], "share_percent": 0}}
     change = await planned_change(
         session, organization_id, "rules", rule_id, before, after, 7

@@ -343,9 +343,12 @@ async def get_change_test(
     match = ShadowMatch.model_validate(
         (await _rule(session, organization_id, rule_id)).match
     )
+    now = datetime.now(timezone.utc)
+    # A scheduled test that has not started reads empty with the default window.
+    scheduled = start is None and end is None and match.starts_at > now
     start = start or match.starts_at
-    end = end or min(datetime.now(timezone.utc), match.ends_at)
-    if not start < end <= start + MAX_SHADOW_WINDOW:
+    end = end or (start if scheduled else min(now, match.ends_at))
+    if not (scheduled or start < end <= start + MAX_SHADOW_WINDOW):
         raise HTTPException(
             status_code=422,
             detail={
@@ -369,6 +372,14 @@ async def stop_change_test(
     version = await current_version(session, organization_id)
     await _rule(session, organization_id, rule_id)
     before = (await RULES.snapshot(session, organization_id, [rule_id]))[rule_id]
+    if before["state"] == "monitor":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NOTHING_TO_CHANGE",
+                "message": "The change test is already stopped.",
+            },
+        )
     change = await planned_change(
         session,
         organization_id,

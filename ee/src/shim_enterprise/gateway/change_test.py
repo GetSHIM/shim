@@ -142,17 +142,10 @@ class ChangeTestSender:
         self, prepared: PreparedInference, selection: ShadowSelection
     ) -> ShadowCandidate | None:
         match = self._match(prepared, selection.rule_id)
-        # Such a rule was never evaluated on this payload: the copy would bypass it.
-        if prepared.rules is not None and any(
-            selection.candidate in rule.scope.models
-            for rule in (*prepared.rules.rules, *prepared.rules.unusable)
-        ):
-            self._skip("candidate_scoped_rule")
-            return None
         try:
             async with self.session_factory() as session:
                 found = await alias_target(session, prepared, selection.candidate)
-                # A copy that cannot be sent never takes from the caps.
+                # A copy that cannot be sent is never counted.
                 reason = (
                     (
                         "target_not_allowed"
@@ -160,7 +153,7 @@ class ChangeTestSender:
                         else "target_unavailable"
                     )
                     if isinstance(found, str)
-                    else await self._count(session, prepared, selection.rule_id, match)
+                    else await self._left(session, prepared, selection.rule_id, match)
                 )
         except Exception as exc:
             logger.warning("Change test candidate failed type=%s", type(exc).__name__)
@@ -171,14 +164,17 @@ class ChangeTestSender:
         target, kind = found
         return ShadowCandidate(provider_target=target, deployment_kind=kind)
 
-    async def _count(
+    async def _left(
         self,
         session: AsyncSession,
         prepared: PreparedInference,
         rule_id: str,
         match: ShadowMatch,
     ) -> str | None:
-        """Takes one copy from the test's caps; the skip reason when none is left."""
+        """The skip reason when the test's caps are reached. A copy is counted when it
+        was sent (`compare`), after the core guards that may still drop it.
+        ponytail: copies in flight are not counted yet, so a test can pass
+        `max_requests` by at most SHADOW_MAX_IN_FLIGHT per process, as its cost cap."""
         redis = self.cache.redis if self.cache is not None else None
         if redis is None:
             return "counter_unavailable"
@@ -198,7 +194,7 @@ class ChangeTestSender:
                 )
                 await redis.set(f"{key}:n", copies, nx=True, ex=expiry)
                 await redis.set(f"{key}:usd", str(cost), nx=True, ex=expiry)
-            copies = int(await redis.incr(f"{key}:n"))
+            copies = int(await redis.get(f"{key}:n") or 0)
             spent = Decimal(await redis.get(f"{key}:usd") or "0")
         except Exception as exc:
             # No copy when its spend cannot be counted.
@@ -206,7 +202,7 @@ class ChangeTestSender:
             return "counter_unavailable"
         reason = (
             "cap_requests"
-            if copies > match.max_requests
+            if copies >= match.max_requests
             else "cap_cost"
             if spent >= match.max_cost_usd
             else None
@@ -224,6 +220,15 @@ class ChangeTestSender:
     ) -> None:
         try:
             match = self._match(prepared, selection.rule_id)
+            redis = self.cache.redis if self.cache is not None else None
+            if redis is not None:
+                # The copy was sent: it counts toward the test's caps.
+                key = counter_key(
+                    prepared.tenant_id, selection.rule_id, match.starts_at
+                )
+                await redis.incr(f"{key}:n")
+                if shadow.cost_usd is not None:
+                    await redis.incrbyfloat(f"{key}:usd", float(shadow.cost_usd))
             primary_results, shadow_results = await asyncio.to_thread(
                 self._analyse, prepared, primary, shadow
             )
@@ -248,12 +253,6 @@ class ChangeTestSender:
                     },
                 )
                 await session.commit()
-            redis = self.cache.redis if self.cache is not None else None
-            if shadow.cost_usd is not None and redis is not None:
-                await redis.incrbyfloat(
-                    f"{counter_key(prepared.tenant_id, selection.rule_id, match.starts_at)}:usd",
-                    float(shadow.cost_usd),
-                )
         except Exception as exc:
             logger.warning("Change test comparison failed type=%s", type(exc).__name__)
             CHANGE_TEST_COMPARISONS_TOTAL.labels(result="failed").inc()

@@ -314,3 +314,61 @@ async def test_the_request_list_and_csv_carry_the_comparison(db) -> None:
     header, row = exported.text.lstrip("﻿").splitlines()[:2]
     assert "shadow_comparison" in header.split(",")
     assert '""schema_valid"": false' in row
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_stopped_test_answers_409_not_a_server_error(db) -> None:
+    user, _, _ = await _seed(db)
+
+    first = await _call(db, user, "POST", f"{TESTS}/llama4_degisiklik/stop")
+    again = await _call(db, user, "POST", f"{TESTS}/llama4_degisiklik/stop")
+
+    assert first.status_code == 200, first.text
+    assert again.status_code == 409, again.text
+    assert again.json()["detail"]["code"] == "NOTHING_TO_CHANGE"
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_test_reads_empty_before_it_starts(db) -> None:
+    user, _, _ = await _seed(
+        db,
+        starts_at=(NOW + timedelta(days=1)).isoformat(),
+        ends_at=(NOW + timedelta(days=8)).isoformat(),
+    )
+
+    detail = await _call(db, user, "GET", f"{TESTS}/llama4_degisiklik")
+
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["copies"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_existing_rule_id_can_become_a_change_test(db) -> None:
+    user, _, _ = await _seed(db)
+    term = {
+        "id": "llama4_degisiklik",
+        "name": "Project names",
+        "kind": "term",
+        "action": "block",
+        "state": "monitor",
+        "match": {"terms": ["Project Falcon"]},
+    }
+    assert (await _put(db, user, [term])).status_code == 200
+
+    past = await _put(
+        db,
+        user,
+        [
+            _shadow(
+                "monitor",
+                starts_at=(NOW - timedelta(days=9)).isoformat(),
+                ends_at=(NOW - timedelta(days=2)).isoformat(),
+            )
+        ],
+    )
+
+    shadowed = await _put(db, user, [_shadow("monitor")])
+
+    # A rule that becomes a test is a new test: its end is checked.
+    assert past.status_code == 422, past.text
+    assert shadowed.status_code == 200, shadowed.text

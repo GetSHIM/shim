@@ -12,7 +12,7 @@ import json
 import logging
 import math
 import re
-from typing import TYPE_CHECKING, cast, Literal
+from typing import TYPE_CHECKING, Any, cast, Literal
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -277,6 +277,9 @@ def _fallback_takes_over(
     """An enforced `health_flag` fallback rule covers this request; a monitor one
     records where it would have gone."""
 
+    if prepared.protocol == "count_tokens":
+        # A token count never reaches the after-privacy step that moves it.
+        return False
     covering = list(
         trigger_rules(prepared.rules, "unavailable", UnavailableMatch, prepared.model)
     )
@@ -325,6 +328,17 @@ async def moved_to(
     )
 
 
+def _keep_watcher(decision: dict[str, Any], prepared: PreparedInference) -> None:
+    """A monitor split or lane that watched this request stays as `previous`, one
+    level deep, so its conversation id is cleared with the decision's."""
+    if prepared.route_decision is not None:
+        decision["previous"] = {
+            key: value
+            for key, value in prepared.route_decision.items()
+            if key != "previous"
+        }
+
+
 def approximate_input_tokens(payload: Mapping[str, object]) -> int:
     """Admission's TPM unit: a quarter of the compact JSON's UTF-8 bytes, rounded up."""
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -360,17 +374,21 @@ class DeploymentResolver:
         split = next(
             trigger_rules(resolved.rules, "split", SplitMatch, resolved.model), None
         )
-        # An alias under a split is served by its split alone.
+        # An alias under an enforced split is served by its split alone; a monitor
+        # one only records where it would go and never changes the target.
         if split is not None and in_scope(split[0], resolved, _tags(resolved, headers)):
-            return await self._split(resolved, *split, headers)
+            resolved = await self._split(resolved, *split, headers)
+            if split[0].state == "enforced":
+                return resolved
         lane = next(
             trigger_rules(resolved.rules, "size", SizeMatch, resolved.model), None
         )
         if lane is not None and in_scope(lane[0], resolved, _tags(resolved, headers)):
-            # A long request is served by its lane alone.
+            # A long request is served by its enforced lane alone.
             laned = await self._lane(resolved, *lane, headers)
-            if laned is not None:
+            if laned is not None and lane[0].state == "enforced":
                 return laned
+            resolved = laned or resolved
         routes = [
             rule
             for rule in (prepared.rules.rules if prepared.rules is not None else ())
@@ -401,7 +419,7 @@ class DeploymentResolver:
                 break
         else:
             return prepared
-        decision = {
+        decision: dict[str, Any] = {
             "rule_id": rule.id,
             "state": rule.state,
             "from": prepared.model,
@@ -411,6 +429,7 @@ class DeploymentResolver:
                 headers.get("x-shim-conversation-id"), _conversation_key(), view[0]
             ),
         }
+        _keep_watcher(decision, prepared)
         routed = prepared
         if rule.state == "monitor":
             decision["outcome"] = "would_route"
@@ -467,6 +486,13 @@ class DeploymentResolver:
         if candidate and rule.state == "enforced":
             async with self.session_factory() as session:
                 moved = await moved_to(session, prepared, match.to)
+            # Checked again at run time: an edit since the rule was written, or the
+            # operator's internal origins, can make the candidate external.
+            if not isinstance(moved, str) and (
+                prepared.deployment_kind == "internal"
+                and moved.deployment_kind != "internal"
+            ):
+                moved = "not_approved"
             if isinstance(moved, str):
                 decision["canary_side"] = "stable"
                 decision["held"] = moved
@@ -501,10 +527,17 @@ class DeploymentResolver:
             ),
             "input_tokens_approx": tokens,
         }
+        _keep_watcher(decision, prepared)
         routed = prepared
         if rule.state == "enforced":
             async with self.session_factory() as session:
                 moved = await moved_to(session, prepared, match.to)
+            # A replica keeps the kind of `from`, checked again at run time.
+            if (
+                not isinstance(moved, str)
+                and moved.deployment_kind != prepared.deployment_kind
+            ):
+                moved = "not_approved"
             if isinstance(moved, str):
                 decision["held"] = moved
             else:

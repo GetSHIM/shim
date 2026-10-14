@@ -319,7 +319,9 @@ async def test_of_a_request_with_personal_data_only_the_outcome_is_kept(
     )
 
     assert response.status_code == 200, response.text
-    assert [host for host, _ in sent] == ["a", "a"], row.lifecycle_metadata.get("semantic_check")
+    assert [host for host, _ in sent] == ["a", "a"], row.lifecycle_metadata.get(
+        "semantic_check"
+    )
     assert "alice@example.com" not in sent[0][1]
     record = row.lifecycle_metadata["semantic_check"]
     assert record["outcome"] == "matched"

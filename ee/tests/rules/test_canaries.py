@@ -109,6 +109,41 @@ async def test_four_eyes_never_holds_a_rollback(db) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("share", [50, 1])
+async def test_a_share_only_change_is_neutral_in_both_directions(db, share) -> None:
+    users = await _enforced_split(db)
+    owner = users["owner"]
+    switched = await _call(
+        db,
+        owner,
+        "PATCH",
+        f"{MANAGEMENT}/gateway-settings",
+        json={"four_eyes": "relaxing"},
+    )
+    assert switched.status_code == 200, switched.text
+
+    # D13: privacy runs after the move and internal never splits to external.
+    changed = await _put(db, owner, [_split("enforced", share)])
+
+    assert changed.status_code == 200, changed.text
+    stored = (await _stored(db, owner.organization_id))[0]
+    assert stored["match"]["share_percent"] == share
+
+
+@pytest.mark.asyncio
+async def test_a_second_rollback_answers_409_not_a_server_error(db) -> None:
+    users = await _enforced_split(db)
+    path = f"{CANARIES}/llama4_kanarya/rollback"
+
+    first = await _call(db, users["admin"], "POST", path)
+    again = await _call(db, users["admin"], "POST", path)
+
+    assert first.status_code == 200, first.text
+    assert again.status_code == 409, again.text
+    assert again.json()["detail"]["code"] == "NOTHING_TO_CHANGE"
+
+
+@pytest.mark.asyncio
 async def test_a_rollback_needs_a_split_rule_and_rules_write(db) -> None:
     users = await _organization(db, "admin")
     owner = users["owner"]

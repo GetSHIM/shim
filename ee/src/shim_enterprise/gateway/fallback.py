@@ -34,15 +34,20 @@ REASONS: dict[Trigger, str] = {
 }
 
 
-def _unhealthy_taken_over(prepared: PreparedInference) -> bool:
-    """The resolver let an unhealthy primary through for an enforced rule, and no
-    route rule or split moved the request off it since."""
-    decision = prepared.route_decision or {}
-    moved = decision.get("outcome") == "routed" or (
-        decision.get("reason") == "canary"
+def _moved(decision: Mapping[str, object]) -> bool:
+    """A route rule, an enforced split or an enforced lane served the request from
+    another alias than the client named."""
+    return decision.get("outcome") == "routed" or (
+        decision.get("state") == "enforced"
+        and decision.get("reason") in {"canary", "long_request"}
         and decision.get("to") != decision.get("from")
     )
-    return not moved and any(
+
+
+def _unhealthy_taken_over(prepared: PreparedInference) -> bool:
+    """The resolver let an unhealthy primary through for an enforced rule, and no
+    route rule, split or lane moved the request off it since."""
+    return not _moved(prepared.route_decision or {}) and any(
         verdict.rule_id == "deployment.registry"
         and verdict.outcome == "skip"
         and verdict.reason_code == "DEPLOYMENT_UNHEALTHY"
@@ -67,15 +72,17 @@ class UnavailableFallback:
     def _rule(
         self, prepared: PreparedInference
     ) -> tuple[Rule, UnavailableMatch] | None:
-        # The rule-set write keeps one per alias; scope as the other rule kinds read it.
+        # The rule-set write keeps one per alias; scope as the other rule kinds read it,
+        # at `from`: an attempt this rule made was in scope there.
         tags = prepared.admission.tags if prepared.admission is not None else ()
+        made = prepared.attempt.rule_id if prepared.attempt is not None else None
         return next(
             (
                 (rule, match)
                 for rule, match in trigger_rules(
                     prepared.rules, "unavailable", UnavailableMatch, prepared.model
                 )
-                if in_scope(rule, prepared, tags)
+                if rule.id == made or in_scope(rule, prepared, tags)
             ),
             None,
         )
@@ -131,7 +138,9 @@ class UnavailableFallback:
 
     async def after_outcome(self, outcome: AttemptOutcome) -> AttemptCandidate | None:
         error = outcome.error
-        if error is None:
+        decision = outcome.prepared.route_decision or {}
+        # A failed canary candidate is the split's to answer (`fallback_to_stable`).
+        if error is None or (decision.get("reason") == "canary" and _moved(decision)):
             return None
         prepared = outcome.prepared
         found = self._rule(prepared)

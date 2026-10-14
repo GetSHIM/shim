@@ -2284,6 +2284,51 @@ async def test_a_lane_that_cannot_serve_keeps_the_request_on_the_alias(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("watching", ["split", "lane"])
+async def test_a_monitor_split_or_lane_never_switches_off_an_enforced_route_rule(
+    db, test_api_key, origins, watching
+):
+    await _replicas(db, test_api_key)
+    watcher = (
+        _lane("monitor")
+        if watching == "lane"
+        else {
+            "id": "kanarya",
+            "name": "Watch a share",
+            "kind": "route",
+            "action": "route",
+            "state": "monitor",
+            "match": {
+                "on": "split",
+                "from": "internal-a",
+                "to": "internal-b",
+                "share_percent": 0,
+            },
+        }
+    )
+    route = _route(state="enforced")
+
+    hosts, decisions, rows = await _routed(
+        db, test_api_key, _rules(route, watcher), "x" * 2_000
+    )
+
+    assert hosts == ["b.internal"]
+    assert (decisions[0]["rule_id"], decisions[0]["outcome"]) == (
+        "cheap_start",
+        "routed",
+    )
+    # The monitor rule's own record is kept beside the decision that routed.
+    assert decisions[0]["previous"]["rule_id"] == watcher["id"]
+    assert decisions[0]["previous"]["state"] == "monitor"
+    assert {
+        match["rule_id"] for match in rows[0].lifecycle_metadata["rule_matches"]
+    } == {
+        "cheap_start",
+        watcher["id"],
+    }
+
+
+@pytest.mark.asyncio
 async def test_an_alias_without_a_lane_is_never_serialized_by_the_resolver(
     db, test_api_key, origins, monkeypatch
 ):

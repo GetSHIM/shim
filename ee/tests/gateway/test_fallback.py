@@ -687,3 +687,132 @@ async def test_an_unhealthy_alias_the_rule_no_longer_covers_after_admission_is_r
     assert refused.status_code == 503
     assert refused.json()["error"]["code"] == "DEPLOYMENT_UNHEALTHY"
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_token_count_never_reaches_an_unhealthy_deployment(
+    db,  # noqa: F811
+    test_api_key,
+) -> None:
+    rows = [await _row(db, test_api_key, host, provider="anthropic") for host in "ab"]
+    for row in rows:
+        (await db.get(ProviderSecret, row.provider_secret_id)).provider = "anthropic"
+    _unhealthy(rows[0])
+    await db.flush()
+    calls = []
+
+    def upstream(request):
+        calls.append(request.url.host[0])
+        return httpx.Response(200, json={"input_tokens": 3})
+
+    async with _fallback_gateway(db, test_api_key, upstream, _rules(_rule())) as (
+        client,
+        _,
+    ):
+        counted = await client.post(
+            "/v1/messages/count_tokens",
+            json={
+                "model": "internal-a",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+    # Retargeting runs after privacy, which a token count never reaches.
+    assert counted.status_code == 503, counted.text
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_canary_candidate_goes_to_stable_not_to_the_fallback_of_from(
+    db,  # noqa: F811
+    test_api_key,
+    three_hosts,
+) -> None:
+    for host in "abc":
+        await _row(db, test_api_key, host)
+    split = {
+        "id": "kanarya",
+        "name": "Candidate b",
+        "kind": "route",
+        "action": "route",
+        "state": "enforced",
+        "match": {
+            "on": "split",
+            "from": "internal-a",
+            "to": "internal-b",
+            "share_percent": 100,
+            "fallback_to_stable": True,
+        },
+    }
+    calls = []
+
+    async with _fallback_gateway(
+        db,
+        test_api_key,
+        _hosts(calls, {"b": 503}),
+        _rules(split, _rule(to=("internal-c",))),
+    ) as (client, _):
+        answered = await client.post(CHAT, json=_body())
+
+    assert answered.status_code == 200, answered.text
+    assert calls == ["b", "a"]
+
+
+@pytest.mark.asyncio
+async def test_a_long_request_moved_to_its_lane_is_not_moved_again_by_a_fallback(
+    db,  # noqa: F811
+    test_api_key,
+    three_hosts,
+) -> None:
+    a = await _row(db, test_api_key, "a")
+    await _row(db, test_api_key, "b", upstream_model="model-a")
+    await _row(db, test_api_key, "c")
+    _unhealthy(a)
+    lane = {
+        "id": "uzun",
+        "name": "Long to b",
+        "kind": "route",
+        "action": "route",
+        "state": "enforced",
+        "match": {
+            "on": "size",
+            "from": "internal-a",
+            "to": "internal-b",
+            "min_input_tokens": 256,
+        },
+    }
+    calls = []
+
+    async with _fallback_gateway(
+        db,
+        test_api_key,
+        _hosts(calls, {}),
+        _rules(lane, _rule(to=("internal-c",))),
+    ) as (client, _):
+        answered = await client.post(CHAT, json=_body("x" * 2_000))
+
+    assert answered.status_code == 200, answered.text
+    assert calls == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_rule_scoped_to_its_source_tries_every_listed_alias(
+    db,  # noqa: F811
+    test_api_key,
+    three_hosts,
+) -> None:
+    for host in "abc":
+        await _row(db, test_api_key, host)
+    scoped = {
+        **_rule(to=("internal-b", "internal-c")),
+        "scope": {"models": ["model-a"]},
+    }
+    calls = []
+
+    async with _fallback_gateway(
+        db, test_api_key, _hosts(calls, {"a": 503, "b": 503}), _rules(scoped)
+    ) as (client, _):
+        answered = await client.post(CHAT, json=_body())
+
+    assert answered.status_code == 200, answered.text
+    assert calls == ["a", "b", "c"]

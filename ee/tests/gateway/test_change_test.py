@@ -217,7 +217,17 @@ async def test_copies_stop_at_max_requests_counting_from_the_ledger(
     selection = ShadowSelection("llama4_degisiklik", "kurum-llama-4", True)
     before = _skips("cap_requests")
 
-    answers = [await sender.candidate(prepared, selection) for _ in range(3)]
+    answers = []
+    for index in range(3):
+        answers.append(await sender.candidate(prepared, selection))
+        if answers[-1] is not None:
+            # Sent: the copy counts, after the core guards let it through.
+            await sender.compare(
+                prepared,
+                selection,
+                _observation("req_primary", "a"),
+                _observation(f"req_copy_{index}", "b", cost=None),
+            )
 
     assert [answer is not None for answer in answers] == [True, True, False]
     key_name = counter_key(user.organization_id, "llama4_degisiklik", STARTS)
@@ -234,7 +244,6 @@ async def test_copies_stop_at_max_requests_counting_from_the_ledger(
         ("spent", {}, None, "cap_cost"),
         (None, {}, None, "counter_unavailable"),
         ("error", {}, None, "counter_unavailable"),
-        ("ok", {"scoped": True}, None, "candidate_scoped_rule"),
         ("ok", {}, ["kurum-llama"], "target_not_allowed"),
         ("ok", {"disabled": True}, None, "target_unavailable"),
     ],
@@ -257,17 +266,6 @@ async def test_every_reason_for_no_copy_is_counted(
             )
         )
         row.enabled = False
-    if rule.get("scoped"):
-        guard = {
-            "id": "only_for_candidate",
-            "name": "Candidate guard",
-            "kind": "term",
-            "action": "block",
-            "state": "enforced",
-            "scope": {"models": ["kurum-llama-4"]},
-            "match": {"terms": ["Project Falcon"]},
-        }
-        prepared.rules = validate_rule_set({"revision": 1, "rules": [_shadow(), guard]})
     await db.flush()
     key_name = counter_key(user.organization_id, "llama4_degisiklik", STARTS)
     fake = {

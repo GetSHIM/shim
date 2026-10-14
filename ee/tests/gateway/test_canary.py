@@ -1,4 +1,4 @@
-"""Split rules through the real resolver, kernel and ledger."""
+"""Split and change-test rules through the real resolver, kernel and ledger."""
 
 from __future__ import annotations
 
@@ -269,3 +269,97 @@ async def test_an_unhealthy_stable_alias_moved_to_its_candidate_is_not_moved_aga
     assert calls == ["b"]
     [row] = await _rows(db, test_api_key)
     assert row.lifecycle_metadata["route_decision"]["canary_side"] == "candidate"
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_that_is_no_longer_internal_keeps_the_request_on_stable(
+    db,  # noqa: F811
+    test_api_key,
+    monkeypatch,
+) -> None:
+    from shim_enterprise.core.config import settings
+
+    await _deployments(db, test_api_key)
+    # b is still labelled internal, but the operator's list now makes it external.
+    monkeypatch.setattr(
+        settings, "MODEL_DEPLOYMENT_INTERNAL_ORIGINS", ["https://a.internal"]
+    )
+
+    calls, [answered] = await _send(db, test_api_key, _rules(_split()), "conv-1")
+
+    assert answered.status_code == 200, answered.text
+    assert calls == ["a"]
+    [row] = await _rows(db, test_api_key)
+    decision = row.lifecycle_metadata["route_decision"]
+    assert (decision["canary_side"], decision["held"]) == ("stable", "not_approved")
+
+
+@pytest.mark.asyncio
+async def test_a_copy_the_core_guard_refuses_takes_nothing_from_the_test_cap(
+    db,  # noqa: F811
+    test_api_key,
+) -> None:
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from ee.tests.gateway.test_change_test import _Redis
+    from ee.tests.gateway.test_fallback import _row
+    from ee.tests.tenants.test_deployments import _gateway, _success
+    from shim_enterprise.gateway.change_test import ChangeTestSender, counter_key
+
+    await _row(db, test_api_key, "a")
+    await _row(db, test_api_key, "b")
+    starts = datetime.now(timezone.utc) - timedelta(hours=1)
+    shadow = {
+        "id": "degisiklik",
+        "name": "Copy to b",
+        "kind": "route",
+        "action": "route",
+        "state": "enforced",
+        "match": {
+            "on": "shadow",
+            "from": "internal-a",
+            "to": "internal-b",
+            "share_percent": 100,
+            "starts_at": starts.isoformat(),
+            "ends_at": (starts + timedelta(days=2)).isoformat(),
+            "max_requests": 5,
+            "max_cost_usd": "5",
+        },
+    }
+    # Acts at b only, so the copy would carry text privacy never masked.
+    guard = {
+        "id": "falcon",
+        "name": "Falcon at b",
+        "kind": "term",
+        "action": "mask",
+        "state": "enforced",
+        "scope": {"models": ["model-b"]},
+        "match": {"terms": ["Falcon"]},
+    }
+    calls = []
+    redis = _Redis()
+
+    def upstream(request):
+        calls.append(request.url.host[0])
+        return _success(request, False, "chat")
+
+    async with _gateway(db, test_api_key, upstream, _rules(shadow, guard)) as (
+        client,
+        app,
+        _,
+    ):
+        kernel = app.state.gateway_service.kernel
+        kernel.shadow_sender = ChangeTestSender(
+            async_sessionmaker(db.bind, expire_on_commit=False),
+            SimpleNamespace(redis=redis),
+        )
+        answered = await client.post(CHAT, json=_body("Project Falcon"))
+        await kernel.postprocessor.drain()
+
+    assert answered.status_code == 200, answered.text
+    assert calls == ["a"]
+    key = counter_key(test_api_key.organization_id, "degisiklik", starts)
+    assert int(redis.values.get(f"{key}:n", 0)) == 0
