@@ -45,15 +45,16 @@ from shim.privacy.policies import (
     is_protocol_field,
     placeholder_type,
 )
+from shim.core.isolation import request_deadline
 from shim.privacy.continuation import PrivacyContinuationStore
 from shim.privacy.documents import (
     DOCUMENT_FORMAT_V1,
     DOCUMENT_TEXT_VERSION,
     MAX_REQUEST_CHARS,
     Unscannable,
-    extract_text,
     is_document,
     pdf_reader_version,
+    read_document,
 )
 from shim.privacy.injection import scan_payload
 from shim.rules.content import CONTENT_KINDS, ContentRules, content_rules
@@ -246,6 +247,8 @@ class PrivacyStage:
             )
             if value.document_format == "by_provider"
             else frozenset(),
+            native_pdf=value.document_format == "by_provider"
+            and DOCUMENT_FORMAT_V1.get(str(value.provider)) == "native",
             report=report,
             # An enforced block cannot see inside media either.
             protects=any(
@@ -371,6 +374,14 @@ class PrivacyStage:
             value,
             payload=safe_payload,
             privacy=privacy,
+            # A scanned document is reserved by its text too, read only now.
+            admission=replace(
+                value.admission,
+                estimated_input_tokens=value.admission.estimated_input_tokens
+                + report.text_bytes,
+            )
+            if value.admission is not None and report.text_bytes
+            else value.admission,
             transforms_applied=privacy.conversions or value.transforms_applied,
             rules_evaluated=value.rules_evaluated
             or content is not None
@@ -479,13 +490,15 @@ def scrub_payload(
     media_inputs: Literal["block", "allow"] = "block",
     documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media",
     convert_clean: frozenset[str] = frozenset(),
+    native_pdf: bool = False,
     report: DocumentReport | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """`batch`: texts scanned together in one analyzer pass before the walk.
 
     `media`: the payload's media parts (`classify_media`), found here when None.
     `documents`: whether inline PDF, Word and text files are read and scanned;
-    `convert_clean` names the kinds sent as text even when nothing was masked;
+    `convert_clean` names the kinds sent as text even when nothing was masked, and
+    `native_pdf` keeps a clean PDF native for a tenant that hides values;
     `report` collects what happened to them.
     """
     verification_map = dict(known_placeholders or {})
@@ -501,8 +514,13 @@ def scrub_payload(
         or any(action in {"mask", "mask_last4", "block"} for action in actions.values())
         or (content is not None and content.protects)
     )
+    # A provider reads a PDF's pages drawn: images, glyphs without text and form
+    # appearances no scan saw. A tenant that hides values sends the text that was scanned.
+    if protects and not native_pdf:
+        convert_clean |= {"pdf"}
     unmasked = {} if unmasked is None else unmasked
     report = DocumentReport() if report is None else report
+    deadline: float | None = None
     refuse_media = protects and media_inputs == "block"
     document_parts = {
         id(value_at(payload, part.path)): part
@@ -623,9 +641,12 @@ def scrub_payload(
             text_cache.update(zip(distinct, scrubbed_texts))
 
     def document(part: MediaPart, scanned: dict[str, Any]) -> dict[str, Any]:
+        nonlocal deadline
         data = value_at(payload, part.data_path) if part.data_path else None
+        # One deadline for all of a request's documents.
+        deadline = request_deadline() if deadline is None else deadline
         try:
-            text = extract_text(part, data)
+            text = read_document(part, data, deadline)
             if report.characters + len(text) > MAX_REQUEST_CHARS:
                 raise Unscannable("too_large")
         except Unscannable as error:
@@ -638,6 +659,7 @@ def scrub_payload(
                 )
             return scanned
         report.characters += len(text)
+        report.text_bytes += len(text.encode())
         report.scanned += 1
         DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="scanned").inc()
         kept: dict[str, str] = {}
@@ -663,18 +685,26 @@ def scrub_payload(
         # A blocked type refuses the whole request after this stage, as in message text.
         if any(actions.get(kind) == "block" for kind in kept.values()):
             return scanned
-        if masked != text and documents == "scan":
+        # Gemini's function response parts hold files only; text cannot replace one.
+        native_only = (
+            "functionResponse" in part.path or "function_response" in part.path
+        )
+        if masked != text and (documents == "scan" or native_only):
             DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="stopped").inc()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     "code": block_code(hidden),
                     "message": f"Request blocked by privacy policy: {', '.join(sorted(hidden))}. "
-                    "A document carries them; turn on document conversion to send it masked.",
+                    + (
+                        "A document in a function response carries them and cannot be sent as text."
+                        if native_only
+                        else "A document carries them; turn on document conversion to send it masked."
+                    ),
                     "reason_code": "DOCUMENT_MASKING_REQUIRED",
                 },
             )
-        if masked == text and part.kind not in convert_clean:
+        if masked == text and (native_only or part.kind not in convert_clean):
             report.native += 1
             return scanned
         report.converted += 1
@@ -759,6 +789,8 @@ class DocumentReport:
     entities: Counter[str] = field(default_factory=Counter)
     transforms: list[dict[str, Any]] = field(default_factory=list)
     characters: int = 0
+    # UTF-8 bytes of the text read, a bound on its tokens.
+    text_bytes: int = 0
 
     def record(self) -> dict[str, Any]:
         return {

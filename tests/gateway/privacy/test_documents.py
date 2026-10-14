@@ -20,6 +20,7 @@ from shim.privacy.pii_scrubber import PIIScrubberService
 from shim.privacy.policies import effective_entity_actions
 
 DEFAULT_ACTIONS = effective_entity_actions()
+MONITOR_ONLY = dict.fromkeys(DEFAULT_ACTIONS, "monitor")
 _FONT = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
 
 
@@ -377,10 +378,32 @@ EMAIL_PDF = _pdf("Iletisim: ayse.yilmaz@example.com adresine yazin.")
 def test_a_clean_document_is_forwarded_unchanged(shape) -> None:
     payload = SHAPES[shape](_b64(_pdf(TEXT_PAGE)), "application/pdf")
 
-    safe, _, report, _ = _scrub(payload, documents="scan")
+    safe, _, report, _ = _scrub(payload, documents="scan", actions=MONITOR_ONLY)
 
     assert _first_part(shape, safe) == _first_part(shape, payload)
     assert (report.scanned, report.native, report.converted) == (1, 1, 0)
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_tenant_that_hides_values_sends_a_clean_pdf_as_its_text(shape) -> None:
+    pdf = SHAPES[shape](_b64(_pdf(TEXT_PAGE)), "application/pdf")
+
+    as_text, _, converted, _ = _scrub(pdf, documents="scan")
+    native, _, kept, _ = _scrub(pdf, documents="scan", native_pdf=True)
+
+    assert TEXT_PAGE in str(_first_part(shape, as_text))
+    assert converted.converted == 1 and converted.native == 0
+    assert _first_part(shape, native) == _first_part(shape, pdf) and kept.native == 1
+
+
+def test_a_clean_word_file_stays_as_it_came_for_a_tenant_that_hides_values() -> None:
+    # A Word file has no drawn pages, so D1's conversion is for PDFs only.
+    docx = SHAPES["gemini"](_b64(_docx(TEXT_PAGE)), DOCX)
+
+    word, _, report, _ = _scrub(docx, documents="scan")
+
+    assert _first_part("gemini", word) == _first_part("gemini", docx)
+    assert report.native == 1
 
 
 @pytest.mark.parametrize("shape", SHAPES)
@@ -422,9 +445,9 @@ def test_a_blocked_type_in_a_document_takes_the_block_path() -> None:
 
 def test_monitored_values_in_a_document_pass_and_are_counted() -> None:
     payload = SHAPES["chat"](_b64(EMAIL_PDF), "application/pdf")
-    actions = {**DEFAULT_ACTIONS, "EMAIL_ADDRESS": "monitor"}
-
-    safe, mapping, report, unmasked = _scrub(payload, documents="scan", actions=actions)
+    safe, mapping, report, unmasked = _scrub(
+        payload, documents="scan", actions=MONITOR_ONLY
+    )
 
     assert _first_part("chat", safe) == _first_part("chat", payload)
     assert mapping == {} and set(unmasked.values()) == {"EMAIL_ADDRESS"}
@@ -464,10 +487,16 @@ def test_by_provider_converts_only_the_kinds_named() -> None:
     pdf_payload = SHAPES["gemini"](_b64(_pdf(TEXT_PAGE)), "application/pdf")
 
     native, _, kept, _ = _scrub(
-        pdf_payload, documents="scan", convert_clean=frozenset({"docx"})
+        pdf_payload,
+        documents="scan",
+        convert_clean=frozenset({"docx"}),
+        actions=MONITOR_ONLY,
     )
     text, _, converted, _ = _scrub(
-        pdf_payload, documents="scan", convert_clean=frozenset({"docx", "pdf"})
+        pdf_payload,
+        documents="scan",
+        convert_clean=frozenset({"docx", "pdf"}),
+        actions=MONITOR_ONLY,
     )
 
     assert _first_part("gemini", native) == _first_part("gemini", pdf_payload)
@@ -521,3 +550,169 @@ def test_a_request_reads_at_most_four_million_characters(monkeypatch) -> None:
 
     assert "too_large" in refused.value.detail["message"]
     assert report.scanned == 2 and report.unscannable == {"too_large": 1}
+
+
+def test_a_dtd_is_refused_in_every_encoding() -> None:
+    for encoding in ("utf-8", "utf-16", "utf-16-le", "utf-16-be"):
+        xml = (
+            f'<?xml version="1.0" encoding="{encoding.upper()}"?>'
+            '<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>'
+        ).encode(encoding)
+        if encoding == "utf-16-le":
+            xml = b"\xff\xfe" + xml
+        elif encoding == "utf-16-be":
+            xml = b"\xfe\xff" + xml
+        assert _reason("docx", _zip({"word/document.xml": xml}), DOCX) == "corrupt"
+
+
+def test_the_element_count_of_a_word_file_is_capped(monkeypatch) -> None:
+    monkeypatch.setattr(documents, "MAX_DOCX_ELEMENTS", 10)
+    body = "<w:p/>" * 8
+
+    assert _text_of("docx", _zip({"word/document.xml": _docx_document("x")}), DOCX)
+    assert (
+        _reason(
+            "docx",
+            _zip(
+                {
+                    "word/document.xml": _docx_document("x").replace(
+                        b"<w:body>", f"<w:body>{body}".encode()
+                    )
+                }
+            ),
+            DOCX,
+        )
+        == "too_large"
+    )
+
+
+def test_word_properties_deleted_text_and_glossary_are_read() -> None:
+    core = (
+        b'<cp:coreProperties xmlns:cp="urn:cp" xmlns:dc="urn:dc">'
+        b"<dc:creator>Ayse Yilmaz</dc:creator><cp:lastModifiedBy>ayse@example.com"
+        b"</cp:lastModifiedBy></cp:coreProperties>"
+    )
+    custom = b'<Properties xmlns:vt="urn:vt"><property><vt:lpwstr>TR001</vt:lpwstr></property></Properties>'
+    deleted = _docx_document("kalan").replace(
+        b"</w:p>",
+        b'<w:r><w:delText xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">silinen</w:delText></w:r></w:p>',
+    )
+    data = _zip(
+        {
+            "word/document.xml": deleted,
+            "word/glossary/document.xml": _docx_document("sozluk"),
+            "docProps/core.xml": core,
+            "docProps/custom.xml": custom,
+        }
+    )
+
+    text = _text_of("docx", data, DOCX)
+
+    for piece in ("kalan", "silinen", "sozluk", "Ayse Yilmaz", "ayse@example.com"):
+        assert piece in text
+    assert "TR001" in text
+
+
+def test_pdf_annotations_and_document_information_are_read() -> None:
+    body = b"BT /F1 12 Tf 72 720 Td (%s) Tj ET" % TEXT_PAGE.encode()
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R] >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body),
+        _FONT,
+        b"<< /Type /Annot /Subtype /FreeText /Rect [0 0 10 10] "
+        b"/Contents (Not: ayse.yilmaz@example.com) >>",
+        b"<< /Author (Ayse Yilmaz) /Title (Kredi basvurusu) >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 8\n0000000000 65535 f \n"
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    out += (
+        b"trailer\n<< /Size 8 /Root 1 0 R /Info 7 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+        % (xref)
+    )
+
+    text = _text_of("pdf", bytes(out), "application/pdf")
+
+    assert TEXT_PAGE in text
+    assert "ayse.yilmaz@example.com" in text
+    assert "Ayse Yilmaz" in text and "Kredi basvurusu" in text
+
+
+def test_lone_surrogates_become_replacement_characters(monkeypatch) -> None:
+    monkeypatch.setattr(documents, "_pdf", lambda raw, deadline: "a\ud800b")
+
+    assert _text_of("pdf", _pdf(TEXT_PAGE), "application/pdf") == "a�b"
+
+
+def test_a_pdf_over_the_stream_limits_is_too_large() -> None:
+    import zlib
+
+    content = b"BT /F1 12 Tf 72 720 Td " + b"(A) Tj " * 800_000 + b"ET"
+    stream = zlib.compress(content, 9)
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d /Filter /FlateDecode >>\nstream\n%s\nendstream"
+        % (len(stream), stream),
+        _FONT,
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 6\n0000000000 65535 f \n"
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    out += b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+
+    assert len(content) > 4 * 1024 * 1024
+    assert _reason("pdf", bytes(out), "application/pdf") == "too_large"
+
+
+def _function_response(data: bytes, mime: str) -> dict:
+    return {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "read_file",
+                            "response": {"ok": True},
+                            "parts": [
+                                {"inlineData": {"mimeType": mime, "data": _b64(data)}}
+                            ],
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_a_document_in_a_gemini_function_response_is_never_replaced_by_text() -> None:
+    # Its parts hold files only; a text part there is refused by the SDK.
+    clean = _function_response(_docx(TEXT_PAGE), DOCX)
+    dirty = _function_response(EMAIL_PDF, "application/pdf")
+
+    safe, _, report, _ = _scrub(
+        clean, documents="scan_and_convert", convert_clean=frozenset({"docx", "pdf"})
+    )
+    with pytest.raises(HTTPException) as stopped:
+        _scrub(dirty, documents="scan_and_convert")
+
+    assert safe == clean and report.native == 1 and report.converted == 0
+    assert stopped.value.detail["code"] == "PII_BLOCKED"
+    assert stopped.value.detail["reason_code"] == "DOCUMENT_MASKING_REQUIRED"
+    assert "function response" in stopped.value.detail["message"]
