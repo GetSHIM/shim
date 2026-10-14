@@ -7,6 +7,7 @@ for the document's window, and the document says what it does not prove.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -454,11 +455,15 @@ async def routing_section(
         .group_by(*keys)
         .order_by(*keys)
     )
+    # A monitor rule never moved the request, whatever its `to` says.
     served = case(
         (
             or_(
                 decision["outcome"].as_string() == "routed",
-                decision["outcome"].as_string().is_(None),
+                and_(
+                    decision["outcome"].as_string().is_(None),
+                    decision["state"].as_string() == "enforced",
+                ),
             ),
             decision["to"].as_string(),
         ),
@@ -470,6 +475,18 @@ async def routing_section(
         .group_by(served)
         .order_by(served)
     )
+    # A retargeted request (a fallback) names deployment ids; the document names aliases.
+    aliases = {
+        str(deployment_id): alias
+        for deployment_id, alias in await session.execute(
+            select(ModelDeployment.id, ModelDeployment.alias).where(
+                ModelDeployment.organization_id == tenant_id
+            )
+        )
+    }
+    by_served: Counter[str] = Counter()
+    for alias, requests in by_alias:
+        by_served[aliases.get(str(alias), str(alias))] += requests
     conversations = await session.scalar(
         select(
             func.count(func.distinct(decision["conversation_id"].as_string()))
@@ -486,7 +503,7 @@ async def routing_section(
             "by_state_reason_outcome": decisions,
             "routed": sum(d["requests"] for d in decisions if d["outcome"] == "routed"),
             "conversations": conversations or 0,
-            "served": {str(alias): requests for alias, requests in by_alias},
+            "served": dict(sorted(by_served.items())),
         },
         "savings": await _savings(
             session, tenant_id, rule_id, start, end, "routed", ratios

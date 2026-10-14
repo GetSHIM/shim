@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Annotated, Any, Literal
@@ -28,6 +29,8 @@ from shim_enterprise.rules.route_triggers import MAX_SHADOW_WINDOW
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim.billing.pricing import DEFAULT_PRICE_BOOK
 from shim_enterprise.tenants.models import ModelDeployment, User
+
+COLLECT_SECONDS = 30
 
 router = APIRouter(prefix="/management/model-evidence", tags=["compliance"])
 _RuleId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,47}$")]
@@ -144,20 +147,34 @@ async def create_model_evidence(
         include={"current", "candidates", "change_tests", "canaries", "route_rules"}
     )
     now = datetime.now(timezone.utc)
-    async with bounded_read(session):
-        facts = await collect(
-            session,
-            tenant_id,
-            kind=payload.kind,
-            title=payload.title,
-            note=payload.note,
-            start=payload.start,
-            end=payload.end,
-            sources=sources,
-            rule_set=stored_rules(await session.get(OrganizationRuleSet, tenant_id)),
-            generated_at=now,
-            generator_version=gateway_version(),
-        )
+    try:
+        # Each statement is bounded; this bounds their sum (up to 20 rules, each
+        # about ten reads and its change tests).
+        async with asyncio.timeout(COLLECT_SECONDS), bounded_read(session):
+            facts = await collect(
+                session,
+                tenant_id,
+                kind=payload.kind,
+                title=payload.title,
+                note=payload.note,
+                start=payload.start,
+                end=payload.end,
+                sources=sources,
+                rule_set=stored_rules(
+                    await session.get(OrganizationRuleSet, tenant_id)
+                ),
+                generated_at=now,
+                generator_version=gateway_version(),
+            )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "QUERY_TIMEOUT",
+                "message": "The document took too long to collect; ask for a "
+                "shorter window or fewer sources.",
+            },
+        ) from None
     document_id, event_id = uuid4(), f"management:{uuid4()}"
     # The file names its audit entry, so the entry's id is chosen before rendering.
     content = await render_model_evidence_pdf(facts, event_id, str(document_id))

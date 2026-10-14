@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
@@ -9,7 +11,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ee.tests.gateway.test_attempts import _deployment, origins  # noqa: F401
 from ee.tests.observability.test_tasks import _request, _tenant
@@ -32,7 +34,7 @@ from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.rules.canaries import canary_sides
 from shim_enterprise.rules.change_tests import change_test_results
-from shim_enterprise.tenants.models import User
+from shim_enterprise.tenants.models import ModelDeployment, User
 
 pytestmark = pytest.mark.usefixtures("origins")
 EVIDENCE = f"{MANAGEMENT}/model-evidence"
@@ -66,6 +68,7 @@ def _routed(
     rule_id="cheap_start",
     previous=False,
     language=None,
+    decision_values=None,
     **values,
 ):
     decision = {
@@ -76,6 +79,7 @@ def _routed(
         "reason": reason,
         "conversation_id": f"conv-{values.pop('conversation', 1)}",
         "outcome": outcome,
+        **(decision_values or {}),
     }
     if previous:
         decision = {"rule_id": "other", "reason": "fallback", "previous": decision}
@@ -209,6 +213,42 @@ async def test_lane_decisions_count_without_repricing_and_previous_decisions_cou
     assert [item["requests"] for item in section["savings"]] == [1]
     [potential] = section["potential_savings"]
     assert potential["potential_savings_usd"] == "0.0052000000"
+
+
+@pytest.mark.asyncio
+async def test_served_counts_aliases_and_a_monitor_row_as_served_by_from(db) -> None:
+    user, key, _ = await _tenant(db)
+    await _priced(db, key)
+    strong, cheap = [
+        await db.scalar(
+            select(ModelDeployment.id).where(
+                ModelDeployment.organization_id == user.organization_id,
+                ModelDeployment.alias == alias,
+            )
+        )
+        for alias in ("strong", "cheap")
+    ]
+    # A monitor lane names its lane as `to`; the request stayed on `from`.
+    _routed(
+        db,
+        key,
+        outcome=None,
+        reason="long_request",
+        decision_values={"state": "monitor"},
+    )
+    # A retargeted request (E63) records deployment ids.
+    _routed(
+        db,
+        key,
+        reason="fallback",
+        decision_values={"from": str(strong), "to": str(cheap)},
+    )
+    _routed(db, key)
+    await db.flush()
+
+    section = await _routing(db, user)
+
+    assert section["decisions"]["served"] == {"cheap": 2, "strong": 1}
 
 
 @pytest.mark.asyncio
@@ -397,6 +437,51 @@ async def test_create_stores_the_file_and_the_audit_intent_together(db) -> None:
     assert event.payload["extra"]["sha256"] == row.sha256
     assert event.payload["extra"]["facts_sha256"] == row.facts_sha256
     assert body["anchored"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_slow_collection_stops_at_one_deadline_and_stores_nothing(
+    db, monkeypatch
+) -> None:
+    from shim_enterprise.compliance import model_evidence_api
+
+    user, key, _ = await _tenant(db, role="admin")
+    await _priced(db, key)
+    await db.flush()
+    collect = model_evidence_api.collect
+
+    async def slow(*args, **kwargs):
+        # Each statement is bounded; their sum is not.
+        await asyncio.sleep(5)
+        return await collect(*args, **kwargs)
+
+    monkeypatch.setattr(model_evidence_api, "collect", slow)
+    monkeypatch.setattr(model_evidence_api, "COLLECT_SECONDS", 0.2)
+
+    refused = await _call(
+        db,
+        user,
+        "POST",
+        EVIDENCE,
+        json={
+            "kind": "routing",
+            "title": "t",
+            "start": START.isoformat(),
+            "end": END.isoformat(),
+            "route_rules": ["cheap_start"],
+        },
+    )
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["code"] == "QUERY_TIMEOUT"
+    assert (
+        await db.scalar(
+            select(func.count()).where(
+                ModelEvidenceFile.organization_id == user.organization_id
+            )
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
