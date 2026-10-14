@@ -4,8 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  # The model-catalog workflow dispatches this on its pull request's branch.
-  workflow_dispatch:
 
 permissions:
   contents: read

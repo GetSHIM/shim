@@ -17,10 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
-      pull-requests: write
-      # A pull request opened with the workflow token starts no checks; a dispatch does.
-      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,10 +33,18 @@ jobs:
           enable-cache: true
       - name: Refresh catalog
         run: uv run --locked python scripts/sync_models_dev.py --report "$RUNNER_TEMP/retirements.md"
+      # A pull request opened with the workflow token starts no checks; the app's token does.
+      - name: Mint the catalog app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.CATALOG_APP_ID }}
+          private-key: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}
+          repositories: shim
       - name: Open update pull request
         env:
           BRANCH: automation/models-dev-catalog
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_BASE: ${{ github.event.repository.default_branch }}
         run: |
           if [ -z "$(git status --porcelain -- src/shim/billing/model_catalog.json)" ]; then
@@ -69,8 +74,3 @@ jobs:
               --title "chore: update Models.dev catalog" \
               --body-file "$RUNNER_TEMP/body.md"
           fi
-
-          # Checks on the pushed head, so the pull request can merge without approving runs.
-          for workflow in test.yml prose.yml codeql.yml; do
-            gh workflow run "$workflow" --ref "$BRANCH"
-          done
