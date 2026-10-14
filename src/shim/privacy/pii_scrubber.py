@@ -23,6 +23,7 @@ from shim.rules.model import ACTION_RANK
 
 
 _INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+_LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 _PLACEHOLDER = re.compile(
     r"<\s*([A-Z][A-Z0-9_]*_(?:[0-9a-f]{8}|[0-9a-f]{32}))(~[0-9A-Z]{4})?\s*>"
 )
@@ -143,6 +144,12 @@ def _normalize_with_spans(
 def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
     if not isinstance(text, str):
         raise TypeError("PII input must be text")
+
+    # Lone surrogates are valid in Python str but cannot be encoded as UTF-8.
+    # Strip them before any analysis reaches spaCy's hash_string, which calls
+    # string.encode("utf8") and would raise UnicodeEncodeError.
+    if _LONE_SURROGATE.search(text):
+        text = _LONE_SURROGATE.sub("", text)
 
     if text.isascii() and "%" not in text:
         return text, [(index, index + 1) for index in range(len(text))]
