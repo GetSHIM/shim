@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import random
-from time import perf_counter
+import sys
 from typing import Any
 
 import pytest
@@ -68,29 +68,40 @@ def test_an_array_is_charged_its_length_against_the_node_bound(
     assert (found.valid, found.reason) == (valid, reason)
 
 
-def _timed(instance: Any, schema: Any) -> tuple[SchemaCheck, float]:
-    started = perf_counter()
-    found = check(instance, schema)
-    return found, perf_counter() - started
+def _work(instance: Any, schema: Any) -> tuple[SchemaCheck, int]:
+    """The check and its work: every call and return it made, counted, not timed."""
+
+    events = 0
+
+    def count(*_: object) -> None:
+        nonlocal events
+        events += 1
+
+    sys.setprofile(count)
+    try:
+        found = check(instance, schema)
+    finally:
+        sys.setprofile(None)
+    return found, events
 
 
 def test_hostile_schemas_end_fast_with_a_decision_or_the_node_bound() -> None:
-    branches, branches_took = _timed(
+    branches, branches_work = _work(
         list(range(50_000)),
         {"anyOf": [{"items": {"type": "string"}}] * 2_000},
     )
-    nested, nested_took = _timed(
+    nested, nested_work = _work(
         [[0] * 2_999 + [index] for index in range(100)],
         {"uniqueItems": True},
     )
-    wide, wide_took = _timed(
+    wide, wide_work = _work(
         [
             {f"k{key}": key for key in range(1_499)} | {"last": index}
             for index in range(140)
         ],
         {"uniqueItems": True},
     )
-    short, short_took = _timed(
+    short, short_work = _work(
         [[0] * 50 + [index] for index in range(100)], {"uniqueItems": True}
     )
 
@@ -98,7 +109,9 @@ def test_hostile_schemas_end_fast_with_a_decision_or_the_node_bound() -> None:
     assert (nested.valid, nested.reason) == (None, "nodes")
     assert (wide.valid, wide.reason) == (None, "nodes")
     assert (short.valid, short.reason) == (True, None)
-    assert max(branches_took, nested_took, wide_took, short_took) < 0.5
+    # About 14 events per node of the default 10,000-node budget; the uncharged pairwise
+    # uniqueness check this replaced made millions on `nested`.
+    assert max(branches_work, nested_work, wide_work, short_work) < 30 * 10_000
 
 
 def test_unique_items_keeps_json_equality() -> None:

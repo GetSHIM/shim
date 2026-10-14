@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from time import thread_time
 import timeit
 
 import pytest
@@ -485,6 +486,10 @@ def test_the_matcher_stays_fast_at_the_set_limits() -> None:
     found = content.content_rules(rule_set, lambda _rule: True)
     assert found is not None and len(found.search(text)) > 2_000
 
-    elapsed = min(timeit.repeat(lambda: found.search(text), number=1, repeat=3))
+    # This thread's CPU time, collection paused (timeit): neither other processes nor
+    # a collection of the whole test heap is counted.
+    elapsed = min(
+        timeit.repeat(lambda: found.search(text), timer=thread_time, number=1, repeat=3)
+    )
 
     assert elapsed < 0.05

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import timeit
 
 import pytest
 
@@ -112,19 +113,20 @@ def test_texts_under_24_characters_are_skipped() -> None:
     ],
 )
 def test_scanning_stays_linear(text: str) -> None:
-    def best_of_three(value: str) -> float:
-        timings = []
-        for _ in range(3):
-            started = time.perf_counter()
-            scan(value)
-            timings.append(time.perf_counter() - started)
-        return min(timings)
+    def cpu_seconds(value: str) -> float:
+        # This thread's CPU time, collection paused (timeit), best of five: neither
+        # other processes nor a collection of the whole test heap is counted.
+        return min(
+            timeit.repeat(
+                lambda: scan(value), timer=time.thread_time, number=1, repeat=5
+            )
+        )
 
     prose = ("Bu dosya eski sürümün kurallarını anlatır ve örnek verir.\n" * 2_000)[
         : len(text)
     ]
 
-    assert best_of_three(text) < 4 * best_of_three(prose)
+    assert cpu_seconds(text) < 4 * cpu_seconds(prose)
 
 
 _PROTOCOL_PAYLOADS = {

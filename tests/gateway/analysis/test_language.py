@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 from importlib.resources import files
 import json
-from time import perf_counter
+from time import thread_time
+import timeit
 
 import pytest
 
+from shim.gateway.analyzers import language
 from shim.gateway.analyzers.language import (
     LanguageAnalyzer,
     fold,
@@ -221,25 +222,36 @@ _HOSTILE = [
 
 @pytest.mark.parametrize("text", _HOSTILE, ids=range(len(_HOSTILE)))
 def test_whitespace_free_text_is_labelled_in_a_few_milliseconds(text) -> None:
-    started = perf_counter()
-    label(text)
+    # This thread's CPU time, collection paused (timeit): neither other processes nor
+    # a collection of the whole test heap is counted.
+    assert timeit.timeit(lambda: label(text), timer=thread_time, number=1) < 0.02
 
-    assert perf_counter() - started < 0.02
 
+def test_labelling_hostile_text_reads_only_the_window(monkeypatch) -> None:
+    """What keeps the event loop free while a thread labels.
 
-@pytest.mark.asyncio
-async def test_labelling_hostile_text_in_a_thread_leaves_the_loop_free() -> None:
-    gaps: list[float] = []
+    A pattern call holds the GIL for as long as it runs. Each one reads at most the
+    window, whatever the text's length, and the window labels in a few milliseconds
+    (above), so a labelling thread never stalls the loop. Uncut, one call took 14 s.
+    """
+    read: list[int] = []
 
-    async def tick() -> None:
-        last = perf_counter()
-        for _ in range(20):
-            await asyncio.sleep(0.001)
-            gaps.append(perf_counter() - last)
-            last = perf_counter()
+    class Recorded:
+        def __init__(self, pattern) -> None:
+            self.pattern = pattern
 
-    await asyncio.gather(
-        asyncio.to_thread(lambda: [label(text) for text in _HOSTILE * 5]), tick()
-    )
+        def sub(self, replacement, text):
+            read.append(len(text))
+            return self.pattern.sub(replacement, text)
 
-    assert max(gaps) < 0.05
+        def findall(self, text):
+            read.append(len(text))
+            return self.pattern.findall(text)
+
+    monkeypatch.setattr(language, "_CLEAN", Recorded(language._CLEAN))
+    monkeypatch.setattr(language, "_WORD", Recorded(language._WORD))
+    for text in _HOSTILE:
+        label(text)
+
+    assert len(read) == 2 * len(_HOSTILE)
+    assert max(read) == language._DATA["max_characters"] == 4_000

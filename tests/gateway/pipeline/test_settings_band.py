@@ -4,9 +4,10 @@ from collections.abc import Iterator
 import copy
 from dataclasses import replace
 from datetime import UTC, datetime
+import gc
 from hashlib import sha256
-from time import perf_counter
 import json
+from time import thread_time
 from typing import Any
 from uuid import UUID
 
@@ -1036,9 +1037,16 @@ async def test_hostile_tool_lists_stay_linear_and_never_raise() -> None:
         "responses", band={"tool_search_keep_loaded": ("t5",)}, tools=tools
     )
 
-    started = perf_counter()
-    banded = await _band(prepared)
+    # This thread's CPU time, collection paused: neither other processes nor a
+    # collection of the whole test heap is counted.
+    gc.disable()
+    try:
+        started = thread_time()
+        banded = await _band(prepared)
+        took = thread_time() - started
+    finally:
+        gc.enable()
 
-    assert perf_counter() - started < 1
+    assert took < 1
     assert len(_deferred(banded.payload)) == 9_999
     assert banded.payload["tools"][1]["defer_loading"] is True
