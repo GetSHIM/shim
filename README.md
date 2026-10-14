@@ -228,6 +228,10 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
   per process.
 - shim validates the routing, privacy and admission fields of a provider
   payload. The rest of the provider's JSON passes through unvalidated.
+- Images, PDFs and other files cannot be scanned. While any type is masked or
+  blocked, a request carrying one is refused with 400, unless
+  `SHIM_MEDIA_INPUTS=allow` (enterprise: the `media_inputs` gateway setting)
+  forwards it unchanged and unscanned; the usage event counts such parts.
 - `background=true` Responses requests are not supported.
 - Stored audit evidence, retained records, roles, budgets and tenant rules are
   enterprise features. Community keeps no request history.

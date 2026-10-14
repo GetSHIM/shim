@@ -392,6 +392,7 @@ class LocalUsageLifecycle:
                 if privacy and privacy.injection_markers is not None
                 else {}
             ),
+            **(dict(privacy.media) if privacy and privacy.media else {}),
             **(
                 {"settings_applied": list(prepared.settings_applied)}
                 if prepared.settings_applied

@@ -113,6 +113,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
         "settings": {
             "response_analysis": [],
             "injection_markers": "off",
+            "media_inputs": "block",
             "price_tier_warning": False,
             "model_retiring_warning": "record",
             "restore_withheld": {},
@@ -1146,3 +1147,53 @@ async def test_json_compaction_round_trips(db, test_org) -> None:
     for bad in ({"json_compaction": True}, {"json_compaction": "yes"}, {"other": "on"}):
         with pytest.raises(ValidationError):
             GatewaySettingsPatch.model_validate({"transforms": bad})
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "classified"),
+    [
+        ("block", "allow", ("relaxing", ["media_inputs"])),
+        ("allow", "block", ("tightening", [])),
+    ],
+)
+def test_allowing_media_relaxes(before, after, classified) -> None:
+    assert GatewaySettings().media_inputs == "block"
+    assert (
+        classify_change(
+            GatewaySettings(media_inputs=before), GatewaySettings(media_inputs=after)
+        )
+        == classified
+    )
+
+
+def test_media_inputs_take_only_block_or_allow() -> None:
+    for value in ("scan", None, True):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate({"media_inputs": value})
+
+
+@pytest.mark.asyncio
+async def test_allowing_media_round_trips_and_is_a_privacy_relaxation(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    allowed = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch(media_inputs="allow"), _request(), admin, db
+    )
+    blocked = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch(media_inputs="block"), _request(), admin, db
+    )
+
+    assert (allowed.settings.media_inputs, blocked.settings.media_inputs) == (
+        "allow",
+        "block",
+    )
+    events = await audit_events(test_org.id)
+    assert [
+        event["extra"]["relaxed"]
+        for event in events
+        if event["endpoint"] == "tenant.privacy_protection_relaxed"
+    ] == [["media_inputs"]]
+    assert not any(
+        event["endpoint"] == "tenant.gateway_protection_relaxed" for event in events
+    )

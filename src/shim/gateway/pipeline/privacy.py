@@ -8,16 +8,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 import logging
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 from fastapi import HTTPException, status
 
 from shim.gateway.kernel.result import EMBEDDINGS_PROTOCOLS, PreparedInference
+from shim.gateway.media import MediaPart, classify_media, value_at
 from shim.gateway.contracts.errors import ScanAnalysisError
 from shim.gateway.contracts.inference import ScanEntity, ScanPolicy, ScanVerdict
 from shim.gateway.kernel.stage import TraceValue
 from shim.observability.metrics import (
     INJECTION_MARKERS_TOTAL,
+    MEDIA_PARTS_TOTAL,
     PRIVACY_BULK_DISCLOSURES_TOTAL,
     PRIVACY_DETECTION_TOTAL,
     PRIVACY_RESPONSE_DETECTION_TOTAL,
@@ -30,120 +32,24 @@ from shim.privacy.pii_scrubber import (
     placeholder_period_key,
 )
 from shim.privacy.policies import (
-    OPAQUE_MEDIA_FIELDS,
-    OPAQUE_MEDIA_TYPE_FIELDS,
+    DEEP_PRIVACY_FIELDS,
+    OPAQUE_PROTOCOL_FIELDS_BY_TYPE,
+    PRIVACY_BEARING_FIELDS,
     EntityAction,
     PrivacyAction,
     PrivacyOutcome,
     block_code,
     effective_entity_actions,
+    is_protocol_field,
     placeholder_type,
 )
 from shim.privacy.continuation import PrivacyContinuationStore
 from shim.privacy.injection import scan_payload
-from shim.rules.content import ContentRules, content_rules
+from shim.rules.content import CONTENT_KINDS, ContentRules, content_rules
 from shim.rules.destination import destination_actions
 from shim.rules.evaluate import in_scope
 
 logger = logging.getLogger(__name__)
-
-_DEEP_PRIVACY_FIELDS = frozenset(
-    {
-        "arguments",
-        "args",
-        "action",
-        "client_metadata",
-        "custom",
-        "environment",
-        "input_examples",
-        "input_schema",
-        "metadata",
-        "operation",
-        "output",
-        "parameters",
-        "parametersJsonSchema",
-        "parameters_json_schema",
-        "response",
-        "result",
-        "responseJsonSchema",
-        "responseSchema",
-        "response_json_schema",
-        "response_schema",
-        "schema",
-        "userLocation",
-        "user_location",
-    }
-)
-_PRIVACY_BEARING_FIELDS = frozenset(
-    {
-        "content",
-        "contents",
-        "description",
-        "instructions",
-        "prompt",
-        "prompt_cache_key",
-        "parts",
-        "safety_identifier",
-        "stop",
-        "stopSequences",
-        "stop_sequences",
-        "system",
-        "text",
-        "user",
-        "user_profile_id",
-    }
-)
-_PROTOCOL_FIELDS = frozenset(
-    {
-        "authorization",
-        "cachedContent",
-        "cached_content",
-        "call_id",
-        "container",
-        "conversation",
-        "encrypted_content",
-        "encrypted_stdout",
-        "fingerprint",
-        "headers",
-        "id",
-        "inference_geo",
-        "language",
-        "media_type",
-        "mimeType",
-        "mime_type",
-        "model",
-        "name",
-        "namespace",
-        "previous_response_id",
-        "role",
-        "service_tier",
-        "server_label",
-        "server_name",
-        "signature",
-        "status",
-        "thoughtSignature",
-        "thought_signature",
-        "tool_call_id",
-        "tool_name",
-        "tool_names",
-        "tool_use_id",
-        "type",
-        "url",
-        "uri",
-    }
-)
-_OPAQUE_PROTOCOL_FIELDS_BY_TYPE = {
-    "encrypted_code_execution_result": frozenset({"encrypted_stdout"}),
-    "fallback": frozenset({"from", "to", "trigger"}),
-    "redacted_thinking": frozenset({"data"}),
-}
-
-
-def _is_protocol_field(key: object) -> bool:
-    return isinstance(key, str) and (
-        key in _PROTOCOL_FIELDS or key.endswith(("_id", "_ids"))
-    )
-
 
 # Actions that keep a value from the provider.
 _HIDING = frozenset({"mask", "mask_last4", "block"})
@@ -163,16 +69,12 @@ class PrivacyStage:
         self.chain_store = chain_store
 
     async def run(self, value: PreparedInference) -> PreparedInference:
-        actions = effective_entity_actions(value.pii_config, value.entity_actions)
-        if value.protocol in EMBEDDINGS_PROTOCOLS:
-            # The tenant's embeddings relaxation: listed types are only counted.
-            actions = {
-                kind: "monitor"
-                if kind in value.embeddings_monitor_types and action in _HIDING
-                else action
-                for kind, action in actions.items()
-            }
-        policy = {"pii_config": value.pii_config, "entity_actions": actions}
+        actions = _base_actions(value)
+        policy = {
+            "pii_config": value.pii_config,
+            "entity_actions": actions,
+            "media_inputs": value.media_inputs,
+        }
         try:
             prepared = await self._run(value, actions)
         except BaseException as error:
@@ -250,6 +152,7 @@ class PrivacyStage:
             )
         unmasked: dict[str, str] = {}
         tags = value.admission.tags if value.admission is not None else ()
+        media = classify_media(value.payload) if value.media is None else value.media
         content = content_rules(
             value.rules, lambda rule: in_scope(rule, value, tags), value.record_sets
         )
@@ -315,6 +218,8 @@ class PrivacyStage:
             batch=embedded_texts(value.payload, value.protocol)
             if value.protocol in EMBEDDINGS_PROTOCOLS
             else (),
+            media=media,
+            media_inputs=value.media_inputs,
             # An enforced block cannot see inside media either.
             protects=any(
                 (rule.state, rule.action) == ("enforced", "block")
@@ -387,7 +292,10 @@ class PrivacyStage:
             monitored_values=frozenset(monitored),
             injection_markers=injection_markers,
             restore_withheld=value.restore_withheld,
+            media=_media_record(media) if media else None,
         )
+        for part in media:
+            MEDIA_PARTS_TOTAL.labels(kind=part.kind, outcome="forwarded").inc()
         if injection_markers and "error" not in injection_markers:
             for marker, count in injection_markers.items():
                 INJECTION_MARKERS_TOTAL.labels(
@@ -441,6 +349,66 @@ class PrivacyStage:
         return output.privacy.trace_metadata()
 
 
+def _base_actions(value: PreparedInference) -> Mapping[str, EntityAction]:
+    actions = effective_entity_actions(value.pii_config, value.entity_actions)
+    if value.protocol not in EMBEDDINGS_PROTOCOLS:
+        return actions
+    # The tenant's embeddings relaxation: listed types are only counted.
+    return {
+        kind: "monitor"
+        if kind in value.embeddings_monitor_types and action in _HIDING
+        else action
+        for kind, action in actions.items()
+    }
+
+
+def media_refused(value: PreparedInference, tags: Sequence[str]) -> bool:
+    """Whether the privacy stage will refuse the request's media parts.
+
+    The same test as `scrub_payload`'s `protects`, from the rules in scope for `tags`.
+    """
+    if value.media_inputs == "allow":
+        return False
+    rules = [
+        rule
+        for rule in (value.rules.rules if value.rules is not None else ())
+        if rule.kind == "destination" or rule.kind in CONTENT_KINDS
+        if in_scope(rule, value, tags)
+    ]
+    destinations = [rule for rule in rules if rule.kind == "destination"]
+    actions = destination_actions(_base_actions(value), destinations)
+    return any(action in _HIDING for action in actions.values()) or any(
+        rule.state == "enforced"
+        and (
+            rule.action == "block"
+            if rule.kind == "destination"
+            else rule.action in {"mask", "block", "require_approval"}
+        )
+        for rule in rules
+    )
+
+
+_MEDIA_IMAGES_LIMIT = 16
+
+
+def _media_record(media: Sequence[MediaPart]) -> dict[str, Any]:
+    images = [
+        [*part.dimensions, part.decoded_bytes]
+        for part in media
+        if part.dimensions is not None
+    ]
+    return {
+        "media_parts": dict(Counter(part.kind for part in media)),
+        "media_unscanned": len(media),
+        **({"media_images": images[:_MEDIA_IMAGES_LIMIT]} if images else {}),
+        **(
+            {"media_images_truncated": True}
+            if len(images) > _MEDIA_IMAGES_LIMIT
+            else {}
+        ),
+    }
+
+
 def embedded_texts(payload: Mapping[str, Any], protocol: str) -> list[str]:
     """The texts an embeddings request embeds."""
     if protocol == "embeddings":
@@ -471,11 +439,19 @@ def scrub_payload(
     content: ContentRules | None = None,
     protects: bool = False,
     batch: Sequence[str] = (),
+    media: Sequence[MediaPart] | None = None,
+    media_inputs: Literal["block", "allow"] = "block",
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """`batch`: texts scanned together in one analyzer pass before the walk."""
+    """`batch`: texts scanned together in one analyzer pass before the walk.
+
+    `media`: the payload's media parts (`classify_media`), found here when None.
+    """
     verification_map = dict(known_placeholders or {})
     if content is None and all(action == "off" for action in actions.values()):
         return dict(payload), verification_map
+    if not isinstance(payload, dict):
+        payload = dict(payload)
+    media = classify_media(payload) if media is None else media
     # Monitored values pass unchanged, so only masked or blocked types refuse
     # what cannot be rewritten; media cannot be searched for tenant terms either.
     protects = (
@@ -484,6 +460,17 @@ def scrub_payload(
         or (content is not None and content.protects)
     )
     unmasked = {} if unmasked is None else unmasked
+    refused_parts = (
+        {id(value_at(payload, part.path)) for part in media}
+        if protects and media_inputs == "block"
+        else set()
+    )
+    # A part's data is never read: base64 is no text, and a false match would corrupt it.
+    unread = {
+        (id(value_at(payload, part.data_path[:-1])), part.data_path[-1])
+        for part in media
+        if part.data_path is not None
+    }
 
     placeholders_by_value = {
         value: placeholder for placeholder, value in verification_map.items()
@@ -536,26 +523,6 @@ def scrub_payload(
                 inspect_identifier(key)
                 inspect_identifier(item)
         return value
-
-    def contains_opaque_media(value: Mapping[str, Any], *, deep: bool) -> bool:
-        media_type = value.get("type")
-        media_fields = (
-            OPAQUE_MEDIA_TYPE_FIELDS.get(media_type)
-            if isinstance(media_type, str)
-            else None
-        )
-        requires_field = deep or media_type == "image_generation_call"
-        if media_fields is not None and (
-            not requires_field
-            or any(value.get(field) is not None for field in media_fields)
-        ):
-            return True
-        if isinstance(media_type, str) and media_type in {"document", "image"}:
-            source = value.get("source")
-            source_type = source.get("type") if isinstance(source, Mapping) else None
-            if isinstance(source_type, str) and source_type in {"base64", "url"}:
-                return True
-        return any(value.get(field) is not None for field in OPAQUE_MEDIA_FIELDS)
 
     def protected(
         found: Mapping[str, str], kept: Mapping[str, str]
@@ -613,16 +580,16 @@ def scrub_payload(
             return [visit(item, content=content, deep=deep) for item in value]
         if isinstance(value, dict):
             value_type = value.get("type")
-            if (
-                protects
-                and (content or value_type == "image_generation")
-                and contains_opaque_media(value, deep=deep)
-            ):
+            if refused_parts and id(value) in refused_parts:
+                for part in media:
+                    MEDIA_PARTS_TOTAL.labels(kind=part.kind, outcome="blocked").inc()
                 reject("PII scrubbing does not support opaque media inputs.")
             scrubbed: dict[str, Any] = {}
             for key, item in value.items():
                 inspect_identifier(key)
-                if deep:
+                if unread and (id(value), key) in unread:
+                    scrubbed[key] = item
+                elif deep:
                     scrubbed[key] = visit(item, content=content, deep=True)
                 elif (
                     key == "model"
@@ -630,25 +597,25 @@ def scrub_payload(
                     and item == request_model
                 ):
                     scrubbed[key] = item
-                elif _is_protocol_field(key) or (
+                elif is_protocol_field(key) or (
                     isinstance(value_type, str)
-                    and key in _OPAQUE_PROTOCOL_FIELDS_BY_TYPE.get(value_type, ())
+                    and key in OPAQUE_PROTOCOL_FIELDS_BY_TYPE.get(value_type, ())
                 ):
                     scrubbed[key] = inspect_identifier(item)
                 elif key == "input":
                     scrubbed[key] = visit(item, content=True, deep=content)
-                elif key in _DEEP_PRIVACY_FIELDS:
+                elif key in DEEP_PRIVACY_FIELDS:
                     scrubbed[key] = visit(item, content=content, deep=True)
                 else:
                     scrubbed[key] = visit(
                         item,
-                        content=content or key in _PRIVACY_BEARING_FIELDS,
+                        content=content or key in PRIVACY_BEARING_FIELDS,
                     )
             return scrubbed
         return value
 
     try:
-        return visit(dict(payload)), verification_map
+        return visit(payload), verification_map
     except PIIInputTooLarge as exc:
         reject(
             str(exc),

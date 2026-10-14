@@ -3293,6 +3293,118 @@ async def test_injection_markers_reach_the_lifecycle_the_request_list_and_csv(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "media",
+    [
+        {
+            "media_parts": {"image": 2, "pdf": 1},
+            "media_unscanned": 3,
+            "media_images": [[4000, 3000, 35000], [10, 20, 24]],
+            "media_images_truncated": True,
+        },
+        None,
+    ],
+)
+async def test_media_records_reach_the_lifecycle_the_request_list_and_csv(
+    db, test_api_key, monkeypatch, media
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    prepared.context.started_at = started_at
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    prepared.privacy = PrivacyOutcome(
+        action=PrivacyAction.DETECTED, pii_detected=False, media=media
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    for key in ("media_parts", "media_unscanned", "media_images"):
+        assert lifecycle.lifecycle_metadata.get(key) == (media or {}).get(key)
+        assert (key in lifecycle.lifecycle_metadata) == (media is not None)
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=prepared.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=prepared.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.activity.list_requests(**filters, limit=1, offset=0)
+    exported = await management.activity.export_requests(**filters)
+    [row] = csv.DictReader(
+        io.StringIO(
+            b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                "utf-8-sig"
+            )
+        )
+    )
+    item, expected = page.items[0], media or {}
+    assert item.media_parts == expected.get("media_parts")
+    assert item.media_unscanned == expected.get("media_unscanned")
+    assert item.media_images == expected.get("media_images")
+    assert item.media_images_truncated == expected.get("media_images_truncated")
+    assert (json.loads(row["media_parts"]) if row["media_parts"] else None) == (
+        expected.get("media_parts")
+    )
+    assert row["media_unscanned"] == str(expected.get("media_unscanned") or "")
+    assert (json.loads(row["media_images"]) if row["media_images"] else None) == (
+        expected.get("media_images")
+    )
+    assert row["media_images_truncated"] == (
+        "True" if expected.get("media_images_truncated") else ""
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "applied", [({"id": "parameter_pin.temp_zero", "version": 3},), (), None]
 )
 async def test_settings_applied_reaches_the_lifecycle_the_request_list_and_csv(

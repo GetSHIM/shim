@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from decimal import ROUND_CEILING, Decimal
 import hashlib
@@ -42,13 +43,22 @@ from shim.gateway.kernel.result import (
     UNSPECIFIED_PROVIDER_MODEL,
 )
 from shim.gateway.kernel.stage import TraceValue
-from shim.gateway.pipeline.privacy import _is_protocol_field
+from shim.gateway.media import (
+    MEDIA_MARKERS,
+    MediaPart,
+    classify_media,
+    media_tokens,
+    pdf_page_count,
+    value_at,
+)
+from shim.gateway.pipeline.privacy import media_refused
 from shim.observability.metrics import (
     AGENT_LOOP_SIGNALS_TOTAL,
     TASK_ID_REJECTED_TOTAL,
     TASK_COUNTER_UNAVAILABLE_TOTAL,
     TASK_LIMIT_REFUSALS_TOTAL,
 )
+from shim.privacy.policies import is_protocol_field
 from shim.rules.evaluate import in_scope, settle_matches
 from shim.rules.request_limit import request_measures
 
@@ -71,19 +81,7 @@ _PROMPT_FIELDS = (
     "systemInstruction",
     "prompt",
 )
-# OpenAI file parts are absent: they need not be PDFs, and the catalog's OpenAI pdf flag is unreliable.
-_MEDIA_PART_TYPES = {
-    "image": "image",
-    "image_url": "image",
-    "input_image": "image",
-    "input_audio": "audio",
-    "document": "pdf",
-}
-_MEDIA_MIME_TYPES = (
-    ("image/", "image"),
-    ("audio/", "audio"),
-    ("application/pdf", "pdf"),
-)
+_CATALOG_MODALITIES = frozenset({"image", "audio", "pdf"})
 # Earlier turns' reasoning, which a provider may drop from the window.
 _UNCOUNTED_BLOCKS = frozenset({"thinking", "redacted_thinking", "reasoning"})
 
@@ -237,16 +235,27 @@ class AdmissionStage:
                     ),
                 },
             )
-        input_tokens, request_digest = _estimate_input_tokens(
+        input_tokens, request_digest, serialized = _estimate_input_tokens(
             payload,
             f"{value.provider}|{value.protocol}|{value.model}|{value.stream}",
         )
+        media = classify_media(payload) if MEDIA_MARKERS.search(serialized) else ()
         candidates = candidate_count(value)
         output_tokens = per_candidate_output_tokens * candidates
         tier = value.context.tier_policy
         key_hash = value.policy.rate_limit_key_hash
         # The byte count stays the reservation bound; the rate unit is four bytes a token.
         approximate_tokens = -(-input_tokens // 4)
+        attribution = CostAttribution.resolve(
+            self.invocation.headers.get("x-shim-tag"),
+            api_key_cost_center=value.policy.cost_center,
+            maximum_length=self.cost_tag_max_length,
+        )
+        # Media that privacy will refuse is sized as bytes, so its refusal is unchanged.
+        if media and not media_refused(value, attribution.tags):
+            input_tokens, approximate_tokens = await _sized_by_parts(
+                value, media, input_tokens
+            )
         # The provider answers an oversized embeddings input natively.
         if (
             value.protocol != "count_tokens"
@@ -259,6 +268,7 @@ class AdmissionStage:
         ):
             _check_catalog_limits(
                 value,
+                media,
                 input_bytes=input_tokens,
                 approximate_tokens=approximate_tokens,
                 requested_output=0
@@ -269,11 +279,6 @@ class AdmissionStage:
             entry = DEFAULT_PRICE_BOOK.exact(value.pricing_model, str(value.provider))
             if entry is not None and entry.status == "deprecated":
                 value.warn("MODEL_DEPRECATED")
-        attribution = CostAttribution.resolve(
-            self.invocation.headers.get("x-shim-tag"),
-            api_key_cost_center=value.policy.cost_center,
-            maximum_length=self.cost_tag_max_length,
-        )
         # Before the rate limits, so a refused request consumes none of them.
         limited = value.protocol != "count_tokens" and _request_limits(
             value,
@@ -476,6 +481,7 @@ class AdmissionStage:
         return replace(
             value,
             admission=admission,
+            media=media,
             rules_evaluated=value.rules_evaluated or limited,
             concurrency_lease=lease,
         )
@@ -578,6 +584,7 @@ class AdmissionStage:
 
 def _check_catalog_limits(
     value: PreparedInference,
+    media: Sequence[MediaPart],
     *,
     input_bytes: int,
     approximate_tokens: int,
@@ -591,7 +598,7 @@ def _check_catalog_limits(
             return
         if entry.status == "deprecated":
             value.warn("MODEL_DEPRECATED")
-        missing = _missing_capability(payload, entry)
+        missing = _missing_capability(payload, entry, media)
         if missing is not None:
             _refuse(
                 value,
@@ -858,7 +865,9 @@ def _refuse(value: PreparedInference, rule_id: str, code: str, message: str) -> 
     raise HTTPException(status_code=400, detail={"code": code, "message": message})
 
 
-def _missing_capability(payload: Mapping[str, object], entry: ModelPrice) -> str | None:
+def _missing_capability(
+    payload: Mapping[str, object], entry: ModelPrice, media: Sequence[MediaPart]
+) -> str | None:
     if entry.tools is False and payload.get("tools"):
         return "tools"
     response_format = payload.get("response_format")
@@ -885,48 +894,62 @@ def _missing_capability(payload: Mapping[str, object], entry: ModelPrice) -> str
     if entry.structured_output is False and structured:
         return "structured_output"
     if entry.input_modalities is not None:
-        missing = _input_media([payload.get(field) for field in _PROMPT_FIELDS]) - set(
-            entry.input_modalities
-        )
+        missing = {
+            part.kind
+            for part in media
+            if part.kind in _CATALOG_MODALITIES
+            and part.path[0] in _PROMPT_FIELDS
+            and not _openai_file(value_at(payload, part.path))
+        } - set(entry.input_modalities)
         if missing:
             return min(missing)
     return None
 
 
-def _input_media(value: object) -> set[str]:
-    found: set[str] = set()
-    if isinstance(value, list):
-        for item in value:
-            found |= _input_media(item)
-    elif isinstance(value, Mapping):
-        part_type = value.get("type")
-        source = value.get("source")
-        if (
-            isinstance(part_type, str)
-            and part_type in _MEDIA_PART_TYPES
-            and not (
-                part_type == "document"
-                and isinstance(source, Mapping)
-                and source.get("type") in {"text", "content"}
-            )
-        ):
-            found.add(_MEDIA_PART_TYPES[part_type])
-        for key in ("inlineData", "inline_data", "fileData", "file_data"):
-            blob = value.get(key)
-            mime = (
-                blob.get("mimeType", blob.get("mime_type"))
-                if isinstance(blob, Mapping)
-                else None
-            )
-            if isinstance(mime, str):
-                found |= {
-                    modality
-                    for prefix, modality in _MEDIA_MIME_TYPES
-                    if mime.startswith(prefix)
-                }
-        for item in value.values():
-            found |= _input_media(item)
-    return found
+def _openai_file(part: Mapping[str, object]) -> bool:
+    # It need not be a PDF, and the catalog's OpenAI pdf flag is unreliable.
+    return part.get("type") == "input_file" or (
+        part.get("type") == "file" and "file" in part
+    )
+
+
+async def _sized_by_parts(
+    value: PreparedInference, media: Sequence[MediaPart], input_bytes: int
+) -> tuple[int, int]:
+    """The reservation bound and the rate amount of a request whose media is forwarded:
+    its text by bytes, each part by the tokens a provider reads it as."""
+    text_bytes, tokens = input_bytes, 0
+    for part in media:
+        data = value_at(value.payload, part.data_path) if part.data_path else None
+        pages = (
+            await asyncio.to_thread(pdf_page_count, data)
+            if part.kind == "pdf" and data is not None
+            else None
+        )
+        part_tokens = media_tokens(part, pages)
+        if part_tokens is None:
+            continue
+        tokens += part_tokens
+        if data is not None:
+            text_bytes -= len(json.dumps(data, ensure_ascii=False).encode()) - 2
+    window = _context_window(value)
+    if window is not None:
+        tokens = min(tokens, window)
+    return text_bytes + tokens, -(-text_bytes // 4) + tokens
+
+
+def _context_window(value: PreparedInference) -> int | None:
+    target = value.target
+    if target is not None and target.context_window:
+        return target.context_window
+    entry = (
+        DEFAULT_PRICE_BOOK.exact(value.pricing_model, str(value.provider))
+        if target is None
+        else DEFAULT_PRICE_BOOK.exact(target.price_model, str(value.provider))
+        if target.price_model
+        else None
+    )
+    return entry.context_window if entry is not None else None
 
 
 def _lower_bound_input(payload: Mapping[str, object]) -> int:
@@ -941,7 +964,7 @@ def _lower_bound_input(payload: Mapping[str, object]) -> int:
             return sum(
                 words(item)
                 for key, item in value.items()
-                if key != "cache_control" and not _is_protocol_field(key)
+                if key != "cache_control" and not is_protocol_field(key)
             )
         return 0
 
@@ -950,8 +973,9 @@ def _lower_bound_input(payload: Mapping[str, object]) -> int:
 
 def _estimate_input_tokens(
     payload: Mapping[str, object], identity: str
-) -> tuple[int, str]:
-    """The byte bound and the request digest: SHA-256 over the identity and those bytes.
+) -> tuple[int, str, str]:
+    """The byte bound, the request digest (SHA-256 over the identity and those
+    bytes) and the compact JSON they were taken from.
 
     Keys hash in the order the client sent them, so a reordered body is another request.
     """
@@ -969,9 +993,11 @@ def _estimate_input_tokens(
             },
         ) from None
     # One token per UTF-8 byte bounds tokenizer-hostile provider payloads.
-    return max(1, len(encoded)), hashlib.sha256(
-        identity.encode() + b"\n" + encoded
-    ).hexdigest()
+    return (
+        max(1, len(encoded)),
+        hashlib.sha256(identity.encode() + b"\n" + encoded).hexdigest(),
+        serialized,
+    )
 
 
 def _shareable(value: PreparedInference, candidates: int) -> bool:

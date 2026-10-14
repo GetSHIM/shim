@@ -1861,3 +1861,243 @@ async def test_token_counting_never_takes_room() -> None:
     )
 
     assert result.concurrency_lease is None
+
+
+def _png_b64(width: int = 4000, height: int = 3000, size: int = 0) -> str:
+    import base64
+
+    header = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+    )
+    return base64.b64encode(header + bytes(max(0, size - len(header)))).decode()
+
+
+def _with_media(
+    prepared: PreparedInference, *parts: dict, **fields
+) -> PreparedInference:
+    prepared.payload["messages"] = [
+        {"role": "user", "content": [{"type": "text", "text": "look"}, *parts]}
+    ]
+    return replace(prepared, **fields)
+
+
+def _image(data: str) -> dict:
+    return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}}
+
+
+def _compact_bytes(payload: dict) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
+
+
+_MONITOR_ALL = {
+    name: "monitor"
+    for name in __import__(
+        "shim.privacy.policies", fromlist=["effective_entity_actions"]
+    ).effective_entity_actions()
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prompt", ["hello", TWELVE_KB, "an image of the file in this document", "Ölçü 日本"]
+)
+async def test_a_text_request_is_sized_exactly_as_before(prompt) -> None:
+    prepared = _prepared(prompt)
+
+    admitted = await _stage(InMemoryRateLimiter()).run(prepared)
+
+    assert admitted.admission is not None
+    assert admitted.admission.estimated_input_tokens == _compact_bytes(prepared.payload)
+    assert admitted.media == ()
+
+
+@pytest.mark.asyncio
+async def test_a_request_without_a_media_marker_is_never_walked(monkeypatch) -> None:
+    import shim.gateway.pipeline.admission as admission_module
+
+    def fail(_payload):
+        raise AssertionError("walked")
+
+    monkeypatch.setattr(admission_module, "classify_media", fail)
+
+    await _stage(InMemoryRateLimiter()).run(_prepared("hello"))
+
+
+@pytest.mark.asyncio
+async def test_media_privacy_refuses_is_sized_as_bytes() -> None:
+    prepared = _with_media(_prepared("x"), _image(_png_b64(size=36_000)))
+
+    admitted = await _stage(InMemoryRateLimiter()).run(prepared)
+
+    assert admitted.admission is not None
+    assert admitted.admission.estimated_input_tokens == _compact_bytes(prepared.payload)
+    assert [part.kind for part in admitted.media or ()] == ["image"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields", [{"media_inputs": "allow"}, {"entity_actions": _MONITOR_ALL}]
+)
+async def test_forwarded_media_is_sized_by_its_parts(fields) -> None:
+    data = _png_b64(size=36_000)
+    prepared = _with_media(_prepared("x"), _image(data), **fields)
+    text_bytes = _compact_bytes(prepared.payload) - len(f"data:image/png;base64,{data}")
+    approximate = -(-text_bytes // 4) + 4_784
+
+    admitted = await _stage(InMemoryRateLimiter()).run(
+        replace(
+            prepared,
+            context=prepared.context.model_copy(
+                update={
+                    "tier_policy": prepared.context.tier_policy.model_copy(
+                        update={"rate_limit_tpm": approximate}
+                    )
+                }
+            ),
+        )
+    )
+    assert admitted.admission is not None
+    assert admitted.admission.estimated_input_tokens == text_bytes + 4_784
+
+    with pytest.raises(HTTPException) as refused:
+        await _stage(InMemoryRateLimiter()).run(
+            replace(
+                prepared,
+                context=prepared.context.model_copy(
+                    update={
+                        "tier_policy": prepared.context.tier_policy.model_copy(
+                            update={"rate_limit_tpm": approximate - 1}
+                        )
+                    }
+                ),
+            )
+        )
+    assert refused.value.detail["dimension"] == "tokens"
+    assert f"about {approximate} tokens" in refused.value.detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_media_tokens_are_capped_at_the_context_window(monkeypatch) -> None:
+    _catalog(monkeypatch, context_window=6_000)
+    prepared = _with_media(
+        _prepared("x"),
+        *(_image(_png_b64()) for _ in range(3)),
+        media_inputs="allow",
+    )
+    data_bytes = 3 * len(f"data:image/png;base64,{_png_b64()}")
+
+    admitted = await _stage(InMemoryRateLimiter()).run(prepared)
+
+    assert admitted.admission is not None
+    assert admitted.admission.estimated_input_tokens == (
+        _compact_bytes(prepared.payload) - data_bytes + 6_000
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_inline_pdf_is_sized_by_its_pages() -> None:
+    import base64
+
+    pdf = base64.b64encode(
+        b"%PDF-1.4\n<</Type /Pages>>\n<</Type /Page>>\n<</Type/Page>>\n"
+    ).decode()
+    prepared = _with_media(
+        _prepared(
+            "x", model="claude-sonnet-4-6", provider="anthropic", protocol="messages"
+        ),
+        {
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": pdf},
+        },
+        media_inputs="allow",
+    )
+    prepared.payload["max_tokens"] = 16
+
+    admitted = await _stage(InMemoryRateLimiter()).run(prepared)
+
+    assert admitted.admission is not None
+    assert admitted.admission.estimated_input_tokens == (
+        _compact_bytes(prepared.payload) - len(pdf) + 2 * 3_000
+    )
+
+
+def _destination(action: str, state: str = "enforced") -> dict:
+    return {
+        "id": "d",
+        "name": "n",
+        "kind": "destination",
+        "action": action,
+        "state": state,
+        "scope": {"deployment_kinds": ["external"]},
+        "match": {"entity_types": ["TR_NATIONAL_ID"]},
+    }
+
+
+def _term(action: str, state: str = "enforced") -> dict:
+    return {
+        "id": "t",
+        "name": "n",
+        "kind": "term",
+        "action": action,
+        "state": state,
+        "match": {"terms": ["Atlas"]},
+    }
+
+
+_OFF_ALL = dict.fromkeys(_MONITOR_ALL, "off")
+
+
+@pytest.mark.parametrize("media_inputs", ["block", "allow"])
+@pytest.mark.parametrize("actions", [None, _MONITOR_ALL, _OFF_ALL])
+@pytest.mark.parametrize(
+    "rules",
+    [
+        [],
+        [_term("mask")],
+        [_term("mask", "monitor")],
+        [_term("warn")],
+        [_destination("block")],
+        [_destination("mask")],
+        [_destination("block", "monitor")],
+    ],
+)
+def test_admission_predicts_exactly_when_privacy_refuses_media(
+    media_inputs, actions, rules
+) -> None:
+    from shim.gateway.pipeline.privacy import media_refused, scrub_payload
+    from shim.privacy.pii_scrubber import PIIScrubberService
+    from shim.privacy.policies import effective_entity_actions
+    from shim.rules import validate_rule_set
+    from shim.rules.content import content_rules
+    from shim.rules.destination import destination_actions
+
+    rule_set = validate_rule_set(
+        {"revision": 1, "rules": rules}, approval_available=True
+    )
+    prepared = _with_media(
+        _prepared("x"),
+        _image(_png_b64()),
+        media_inputs=media_inputs,
+        entity_actions=actions,
+        rules=rule_set,
+    )
+    destinations = [rule for rule in rule_set.rules if rule.kind == "destination"]
+    try:
+        scrub_payload(
+            prepared.payload,
+            destination_actions(effective_entity_actions(None, actions), destinations),
+            PIIScrubberService(),
+            content=content_rules(rule_set, lambda _rule: True),
+            protects=any(
+                (rule.state, rule.action) == ("enforced", "block")
+                for rule in destinations
+            ),
+            media_inputs=media_inputs,
+        )
+        refused = False
+    except HTTPException as error:
+        refused = "opaque media" in error.detail["message"]
+
+    assert media_refused(prepared, ()) is refused

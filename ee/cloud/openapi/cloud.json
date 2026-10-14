@@ -7347,6 +7347,15 @@
             "title": "Injection Markers",
             "type": "string"
           },
+          "media_inputs": {
+            "default": "block",
+            "enum": [
+              "block",
+              "allow"
+            ],
+            "title": "Media Inputs",
+            "type": "string"
+          },
           "model_retiring_warning": {
             "default": "record",
             "enum": [
@@ -7548,6 +7557,21 @@
               }
             ],
             "title": "Injection Markers"
+          },
+          "media_inputs": {
+            "anyOf": [
+              {
+                "enum": [
+                  "block",
+                  "allow"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Inputs"
           },
           "model_retiring_warning": {
             "anyOf": [
@@ -15278,6 +15302,64 @@
             ],
             "description": "Tool results and documents carrying each hidden-instruction marker; {\"error\": true} when the scan failed; null when the tenant's scan was off.",
             "title": "Injection Markers"
+          },
+          "media_images": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "[width, height, decoded bytes] of each inline image whose header was readable, in request order, at most 16; null when there were none.",
+            "title": "Media Images"
+          },
+          "media_images_truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "true when the request had more than 16 such images.",
+            "title": "Media Images Truncated"
+          },
+          "media_parts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Images and files the request carried and privacy forwarded, by kind; null when it carried none.",
+            "title": "Media Parts"
+          },
+          "media_unscanned": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Of those, the parts forwarded without being scanned.",
+            "title": "Media Unscanned"
           },
           "model": {
             "anyOf": [

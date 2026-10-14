@@ -281,6 +281,8 @@ class GatewaySettings(BaseModel):
 
     response_analysis: list[str] = []
     injection_markers: Literal["off", "count", "warn"] = "off"
+    # Images and files: refused while privacy protects anything, or forwarded unscanned.
+    media_inputs: Literal["block", "allow"] = "block"
     price_tier_warning: bool = False
     model_retiring_warning: Literal["record", "header"] = "record"
     restore_withheld: dict[str, RestoreGrant] = {}
@@ -320,6 +322,7 @@ class GatewaySettingsPatch(BaseModel):
 
     response_analysis: list[str] | None = None
     injection_markers: Literal["off", "count", "warn"] | None = None
+    media_inputs: Literal["block", "allow"] | None = None
     price_tier_warning: bool | None = None
     model_retiring_warning: Literal["record", "header"] | None = None
     # Merged into the stored grants type by type; null gives a type back to everyone.
@@ -548,6 +551,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "finding_modes": _finding_modes,
     "request_archive": _request_archive,
     "injection_markers": _marker_direction,
+    # Forwarded media is not scanned.
+    "media_inputs": toward("allow"),
     # A report, not a protection.
     "price_tier_warning": neutral,
     # Where a retirement warning is shown; it is always recorded.

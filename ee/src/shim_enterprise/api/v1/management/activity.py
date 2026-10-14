@@ -291,6 +291,24 @@ class RequestActivityView(BaseModel):
             '{"error": true} when the scan failed; null when the tenant\'s scan was off.'
         ),
     )
+    media_parts: dict[str, int] | None = Field(
+        default=None,
+        description="Images and files the request carried and privacy forwarded, by "
+        "kind; null when it carried none.",
+    )
+    media_unscanned: int | None = Field(
+        default=None,
+        ge=0,
+        description="Of those, the parts forwarded without being scanned.",
+    )
+    media_images: list[list[int]] | None = Field(
+        default=None,
+        description="[width, height, decoded bytes] of each inline image whose header "
+        "was readable, in request order, at most 16; null when there were none.",
+    )
+    media_images_truncated: bool | None = Field(
+        default=None, description="true when the request had more than 16 such images."
+    )
     restore_withheld: dict[str, int] | None = Field(
         default=None,
         description=(
@@ -914,6 +932,10 @@ async def export_requests(
                 "route_decision",
                 "shadow_of",
                 "injection_markers",
+                "media_parts",
+                "media_unscanned",
+                "media_images",
+                "media_images_truncated",
                 "restore_withheld",
                 "approval_id",
                 "content_archived",
@@ -975,6 +997,10 @@ async def export_requests(
                     _json(details.get("route_decision")),
                     details.get("shadow_of"),
                     _json(details.get("injection_markers")),
+                    _json(details.get("media_parts")),
+                    details.get("media_unscanned"),
+                    _json(details.get("media_images")),
+                    details.get("media_images_truncated"),
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),
                     details.get("request_archive") == "stored",

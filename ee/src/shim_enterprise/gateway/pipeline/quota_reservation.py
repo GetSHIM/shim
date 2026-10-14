@@ -638,6 +638,7 @@ class DurableAccountingCoordinator:
                                 if prepared.privacy.restore_withheld
                                 else {}
                             ),
+                            **(prepared.privacy.media or {}),
                             **match_records(prepared),
                             # A target chosen after privacy replaces the one reserved.
                             **(

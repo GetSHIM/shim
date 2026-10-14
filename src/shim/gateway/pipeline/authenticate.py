@@ -113,6 +113,7 @@ class AuthenticateStage:
             response_scan=policy.response_scan,
             response_analysis=policy.response_analysis,
             injection_markers=policy.injection_markers,
+            media_inputs=policy.media_inputs,
             price_tier_warning=policy.price_tier_warning,
             model_retiring_warning=policy.model_retiring_warning,
             embeddings_monitor_types=policy.embeddings_monitor_types,

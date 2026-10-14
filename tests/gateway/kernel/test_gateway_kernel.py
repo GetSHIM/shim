@@ -1,5 +1,6 @@
 from array import array
 import asyncio
+import base64
 from dataclasses import replace
 from decimal import Decimal
 import io
@@ -4545,3 +4546,272 @@ async def test_a_stream_renews_on_heartbeat_and_releases_when_disconnected() -> 
         await asyncio.sleep(0.01)
 
     lease.release.assert_awaited_once()
+
+
+def _png_b64(width: int = 4000, height: int = 3000, size: int = 0) -> str:
+    header = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+    )
+    return base64.b64encode(header + bytes(max(0, size - len(header)))).decode()
+
+
+# A PDF's base64 with a pasted key in it, which privacy must never read or mask.
+_KEY_IN_DATA = base64.b64encode(b"%PDF-1.4\n").decode() + _PASTED_KEY
+_MEDIA_REQUESTS = {
+    "chat": (
+        "/v1/chat/completions",
+        {"authorization": f"Bearer {_GATEWAY_KEY}"},
+        lambda data: {
+            "model": "gpt-5-nano",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{data}"},
+                        },
+                    ],
+                }
+            ],
+        },
+        ("messages", 0, "content", 1),
+    ),
+    "messages": (
+        "/v1/messages",
+        {"x-api-key": _GATEWAY_KEY},
+        lambda data: {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 16,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "title": "Report for ayse@example.com",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": data,
+                            },
+                        },
+                        {"type": "text", "text": "summarise"},
+                    ],
+                }
+            ],
+        },
+        ("messages", 0, "content", 0),
+    ),
+    "gemini": (
+        "/v1beta/models/gemini-3.5-flash:generateContent",
+        {"x-goog-api-key": _GATEWAY_KEY},
+        lambda data: {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": "describe"},
+                        {"inlineData": {"mimeType": "image/png", "data": data}},
+                    ],
+                }
+            ]
+        },
+        ("contents", 0, "parts", 1),
+    ),
+}
+
+
+async def _call_with_media(route: str, data: str, **settings):
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=_RULE_REPLIES[request.url.path])
+
+    path, auth, build, _ = _MEDIA_REQUESTS[route]
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(_env_file=None, SHIM_API_KEY=_GATEWAY_KEY, **settings),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={**auth, "x-provider-key": "provider-secret"},
+                    json=build(data),
+                )
+    lines = [json.loads(item) for item in events.getvalue().splitlines()]
+    return response, calls, lines
+
+
+def _media_sent(route: str, call: httpx.Request) -> object:
+    *_, path = _MEDIA_REQUESTS[route]
+    value = json.loads(call.content)
+    for step in path:
+        value = value[step]
+    return value
+
+
+_ALL_MONITOR = json.dumps(dict.fromkeys(effective_entity_actions(), "monitor"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["chat", "messages", "gemini"])
+async def test_media_is_refused_by_default_with_the_same_error(route) -> None:
+    response, calls, lines = await _call_with_media(route, _png_b64())
+
+    assert response.status_code == 400
+    assert response.headers["x-shim-error-code"] == "PRIVACY_POLICY_BLOCKED"
+    assert "PII scrubbing does not support opaque media inputs." in response.text
+    assert calls == []
+    assert all("media_parts" not in line for line in lines)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["chat", "messages", "gemini"])
+async def test_allowed_media_reaches_the_provider_unchanged_and_unscanned(
+    route,
+) -> None:
+    data = _png_b64() if route != "messages" else _KEY_IN_DATA
+    _, _, build, _ = _MEDIA_REQUESTS[route]
+
+    response, [call], [line] = await _call_with_media(
+        route, data, SHIM_MEDIA_INPUTS="allow"
+    )
+
+    assert response.status_code == 200
+    sent = _media_sent(route, call)
+    expected = build(data)
+    *_, path = _MEDIA_REQUESTS[route]
+    for step in path:
+        expected = expected[step]
+    if route == "messages":
+        # The title is text and is masked; the data is passed on as it came.
+        assert sent["source"] == expected["source"]
+        assert "ayse@example.com" not in sent["title"]
+        assert line["media_parts"] == {"pdf": 1}
+        assert "media_images" not in line
+    else:
+        assert sent == expected
+        assert line["media_parts"] == {"image": 1}
+        assert line["media_images"] == [[4000, 3000, 24]]
+    assert line["media_unscanned"] == 1
+    assert "SECRET" not in line["privacy_counts"]
+    assert "SECRET" not in line["monitored_entities"]
+
+
+@pytest.mark.asyncio
+async def test_a_two_megabyte_image_is_no_longer_too_large_for_privacy() -> None:
+    data = _png_b64(size=1_600_000)
+    for settings in (
+        {"SHIM_MEDIA_INPUTS": "allow"},
+        {"PII_ENTITY_ACTIONS": _ALL_MONITOR},
+    ):
+        response, calls, _ = await _call_with_media("chat", data, **settings)
+        assert response.status_code == 200 and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_forwarded_media_is_sized_by_its_parts_not_its_bytes() -> None:
+    # About 12,000 approximate tokens by bytes; one image of 4,784 by parts.
+    data = _png_b64(size=36_000)
+    limits = {"DEFAULT_TPM_LIMIT": 6000}
+
+    # Under the default actions the media is refused, so it is still sized by bytes.
+    refused, calls, _ = await _call_with_media("chat", data, **limits)
+    assert refused.status_code == 429 and calls == []
+    assert refused.headers["x-should-retry"] == "false"
+
+    admitted, [call], [line] = await _call_with_media(
+        "chat", data, PII_ENTITY_ACTIONS=_ALL_MONITOR, **limits
+    )
+
+    assert admitted.status_code == 200
+    assert _media_sent("chat", call)["image_url"]["url"].endswith(data)
+    assert line["media_parts"] == {"image": 1} and line["media_unscanned"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_record_keeps_at_most_sixteen_image_sizes() -> None:
+    def chat(data: str) -> dict[str, object]:
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{data}"},
+        }
+
+    path, auth, _, _ = _MEDIA_REQUESTS["chat"]
+    truncated = base64.b64encode(b"\x89PNG\r\n\x1a\n\x00\x00").decode()
+    cases = [
+        ([_png_b64(10, 20), _png_b64(30, 40)], [[10, 20, 24], [30, 40, 24]], None),
+        ([truncated], None, None),
+        ([_png_b64(index + 1, 1) for index in range(17)], 16, True),
+    ]
+    for images, sizes, flag in cases:
+        payload = {
+            "model": "gpt-5-nano",
+            "messages": [{"role": "user", "content": [chat(data) for data in images]}],
+        }
+        events = io.StringIO()
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=_CHAT_REPLY)
+            )
+        ) as outbound:
+            app = create_community_app(
+                CommunitySettings(
+                    _env_file=None, SHIM_API_KEY=_GATEWAY_KEY, SHIM_MEDIA_INPUTS="allow"
+                ),
+                http_client=outbound,
+                event_stream=events,
+            )
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app), base_url="http://shim.test"
+                ) as inbound:
+                    response = await inbound.post(
+                        path,
+                        headers={**auth, "x-provider-key": "provider-secret"},
+                        json=payload,
+                    )
+        assert response.status_code == 200
+        [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+        assert line["media_parts"] == {"image": len(images)}
+        if sizes is None:
+            assert "media_images" not in line
+        elif isinstance(sizes, int):
+            assert len(line["media_images"]) == sizes
+        else:
+            assert line["media_images"] == sizes
+        assert line.get("media_images_truncated") is flag
+
+
+@pytest.mark.asyncio
+async def test_the_media_setting_is_part_of_the_privacy_policy_version() -> None:
+    def version(line: dict) -> str:
+        [verdict] = [
+            item
+            for item in line["policy_verdicts"]
+            if item["rule_id"] == "privacy.input"
+        ]
+        return verdict["policy_version"]
+
+    versions = set()
+    for setting in ("block", "allow"):
+        _, _, [line] = await _call_with_media(
+            "chat",
+            _png_b64(),
+            PII_ENTITY_ACTIONS=_ALL_MONITOR,
+            SHIM_MEDIA_INPUTS=setting,
+        )
+        versions.add(version(line))
+
+    assert len(versions) == 2

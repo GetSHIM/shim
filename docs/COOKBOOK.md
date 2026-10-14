@@ -437,9 +437,33 @@ the stronger action (`block`, then `mask`, then `mask_last4`, then `monitor`), s
 watching one type never sends a value another type masks or blocks.
 A type set to `monitor` or `off` is not checked in provider protocol
 identifiers, and a blocked type found there is refused with `SECRET_BLOCKED` or
-`PII_BLOCKED` like one in content. A gateway where no type is `mask` or `block`
-also accepts images and files it cannot inspect. Enterprise sets the same actions per tenant;
+`PII_BLOCKED` like one in content. Enterprise sets the same actions per tenant;
 see the [enterprise cookbook](../ee/docs/COOKBOOK.md).
+
+Images, PDFs and other files (image, file, document, audio and Gemini inline or
+file data parts) cannot be scanned. With `SHIM_MEDIA_INPUTS=block`, the default,
+a request carrying one is refused with 400 `PRIVACY_POLICY_BLOCKED` ("PII
+scrubbing does not support opaque media inputs.") while any type is `mask`,
+`mask_last4` or `block`. With `SHIM_MEDIA_INPUTS=allow`, or when no type masks or
+blocks, the part reaches the provider byte for byte and unscanned: its base64 or
+data URL is never read, while its file name, title and other text are scanned as
+usual and its URL and file id are checked like any identifier. The usage event
+then carries `media_parts` (parts by kind: `image`, `pdf`, `docx`, `text`,
+`audio`, `video`, `other`), `media_unscanned` (parts forwarded unscanned) and, for
+inline images with a readable header, `media_images`: `[width, height,
+decoded_bytes]` for at most 16 of them, with `media_images_truncated: true`
+beyond. The kind comes from the part type, the declared MIME type, the file name
+and the first bytes; when they disagree it is `other`. shim never fetches a URL
+or a file id.
+
+A request whose media is forwarded is sized by its parts, not its base64: its
+text by bytes, an image with a readable header at `ceil(width / 28) ×
+ceil(height / 28)` tokens up to 4,784, another image 1,600, an inline PDF 3,000
+per page object found (up to 1,000 pages, else its decoded bytes / 4), a PDF by URL
+or file id 30,000, a Word or text file its decoded bytes / 4, all parts together
+at most the model's context window; audio, video and other parts stay measured
+by their bytes. The rate limits and the reservation use this estimate; the
+provider's reported tokens still settle the request.
 
 ## Read errors and retry
 
@@ -509,7 +533,8 @@ In OpenAI-shaped bodies, `error.param` names which limit refused: `requests`,
 Notes:
 
 - Approximate tokens are the request body's compact JSON size in bytes divided
-  by four, rounded up. A refused amount is not added to the window that refused it,
+  by four, rounded up; forwarded images and files count as estimated tokens
+  instead (see [choose what happens to each data type](#choose-what-happens-to-each-data-type)). A refused amount is not added to the window that refused it,
   and a request larger than the whole limit is refused before any window is
   counted, so it does not use up a request either. A request exactly at the limit
   is admitted.
@@ -998,6 +1023,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_requests_in_flight` (gauge, provider calls in progress) | `provider` |
 | `shim_response_analysis_total` | `analyzer`, `result` |
 | `shim_injection_markers_total` | `marker` |
+| `shim_media_parts_total` | `kind`, `outcome` (`forwarded`, `blocked`) |
 | `shim_transforms_total` | `transform`, `result` (`applied`, `unchanged`, `skipped`) |
 | `shim_extra_attempts_total` (enterprise tenant rules only) | `reason`, `outcome` (`started`, `skipped`, `not_admitted`) |
 | `shim_shadow_copies_total` (enterprise only) | `outcome` (`sent`, `no_candidate`, `skipped_guard`, `dropped_saturated`, `failed`) |

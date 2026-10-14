@@ -234,6 +234,16 @@ It is written with the privacy counts, in the same transaction, and is in the
 analytics row, the request list and the last column of its CSV (as JSON) and the
 community JSONL event. Only marker ids and counts are kept, never the text.
 
+`media_parts` counts the images and files of a request that privacy forwarded, by
+kind (`image`, `pdf`, `docx`, `text`, `audio`, `video`, `other`), and
+`media_unscanned` how many of them went out without being scanned; `media_images`
+lists `[width, height, decoded_bytes]` of each inline image whose header was
+readable, in request order, at most 16, with `media_images_truncated: true` when
+there were more. All are absent when the request carried no media or its media was
+refused. They are written with the privacy counts, in the same transaction, and are
+in the analytics row, the request list and its CSV and the community JSONL event.
+No format, path, digest or content is kept.
+
 `restore_withheld` counts, per type, the placeholders a caller got back unrestored
 because its key and team are outside the tenant's restore grant for that type
 (`{}` when none was in the request), written with the privacy counts in the same

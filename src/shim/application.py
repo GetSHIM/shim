@@ -183,6 +183,7 @@ def create_community_app(
                     response_scan=configured.PII_RESPONSE_SCAN,
                     response_analysis=tuple(configured.SHIM_RESPONSE_ANALYSIS),
                     injection_markers=configured.SHIM_INJECTION_MARKERS,
+                    media_inputs=configured.SHIM_MEDIA_INPUTS,
                     price_tier_warning=configured.SHIM_PRICE_TIER_WARNING == "on",
                     task_caps=TaskCaps(
                         max_calls=configured.SHIM_TASK_MAX_CALLS,

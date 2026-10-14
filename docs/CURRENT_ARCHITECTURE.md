@@ -234,6 +234,17 @@ HTTP call (the SDK would turn `:embedContent` into a batch); nothing is restored
 vectors; settlement takes the prompt tokens the provider reports, no completion
 tokens and no outcome.
 
+Images and files have one definition, `classify_media` in `src/shim/gateway/media.py`:
+the parts the privacy walk reaches in content (image, file, document, audio and
+Gemini inline or file data parts) with their kind, source, declared type, the path
+of their inline data and its decoded size. Admission walks the payload for them only
+when its compact JSON carries a media word, and the model capability check reads
+them. Privacy refuses them (400 `PRIVACY_POLICY_BLOCKED`) while it protects anything
+and the tenant's `media_inputs` is `block`; otherwise it forwards them byte for byte
+and never gives their data string to the detector. When they will be forwarded,
+admission sizes the request by its text bytes plus a published token estimate per
+part instead of the base64 bytes.
+
 OpenAI errors use `{error: {message, type, param, code, hint}}`. Anthropic
 errors use `{type: "error", error: {type, message, code, hint}, request_id}`,
 where `request_id` keeps its native meaning, the provider's request id, and is

@@ -258,6 +258,15 @@ the same vector. The list replaces the stored one whole; an unknown type or `nul
 is 422. Adding a type records `tenant.privacy_protection_relaxed` with
 `embeddings_monitor_types.<TYPE>`; removing one does not.
 
+Images and files are a [gateway setting](#change-the-gateway-settings),
+`media_inputs`: `block` (default) refuses a request carrying one while any type is
+masked or blocked, or an enforced `mask`, `block` or `require_approval` rule
+applies; `allow` forwards it unchanged and unscanned, and the request list counts
+it in `media_parts` and `media_unscanned`. Turning it to `allow` records
+`tenant.privacy_protection_relaxed` with `media_inputs`. What "unscanned" means and
+how such requests are sized is in the
+[community cookbook](../../docs/COOKBOOK.md#choose-what-happens-to-each-data-type).
+
 `bulk_threshold` (default 50) raises a bulk-disclosure alert when one request
 carries at least that many distinct detected values, across every type and
 action; `null` turns it off. The request still goes on as its actions decide.
@@ -302,6 +311,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `restore_withheld` | `{}` | Per entity type or rule label, the teams and keys that get the value back in the answer; every other caller keeps the placeholder. See [show masked values only to some teams](#show-masked-values-only-to-some-teams). |
 | `model_retiring_warning` | `"record"` | `header` also puts `MODEL_RETIRING` and `MODEL_RETIRED` in `X-Shim-Warnings`; the request list's `warnings` always has them. See [retiring models](MODEL_DEPLOYMENTS.md#retiring-models). |
 | `price_tier_warning` | `false` | Add `PRICE_TIER_CROSSED` to `X-Shim-Warnings` when a request's approximate size is above a catalog model's large-context price tier; see [stay under the price tier](#stay-under-the-price-tier). |
+| `media_inputs` | `"block"` | `allow` forwards images and files unchanged and unscanned instead of refusing them; a privacy relaxation ([privacy settings](#change-the-privacy-settings)). |
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 | `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |
 | `finding_modes` | `{}` | Per finding rule, `observe`, `suggest` or `auto`, up to the rule's highest mode ([let shim suggest a fix](#let-shim-suggest-a-fix)); a PATCH merges per rule. |

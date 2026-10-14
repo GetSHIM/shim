@@ -74,6 +74,7 @@ class CommunitySettings(BaseSettings):
     SHIM_RESPONSE_ANALYSIS: Annotated[list[str], NoDecode] = Field(default_factory=list)
     PII_EMBEDDINGS_MONITOR: Annotated[list[str], NoDecode] = Field(default_factory=list)
     SHIM_INJECTION_MARKERS: Literal["off", "count", "warn"] = "off"
+    SHIM_MEDIA_INPUTS: Literal["block", "allow"] = "block"
     SHIM_PRICE_TIER_WARNING: Literal["off", "on"] = "off"
     SHIM_TRACE_PARENT: Literal["ignore", "honor"] = "ignore"
     SHIM_TASK_MAX_CALLS: int | None = Field(default=None, ge=1, le=100_000)

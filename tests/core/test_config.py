@@ -315,6 +315,21 @@ def test_inflight_sharing_is_off_unless_turned_on(value, valid) -> None:
 
 
 @pytest.mark.parametrize(
+    ("value", "valid"), [("block", True), ("allow", True), ("scan", False)]
+)
+def test_media_inputs_are_blocked_unless_allowed(value, valid) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_MEDIA_INPUTS == "block"
+    if valid:
+        assert (
+            CommunitySettings(_env_file=None, SHIM_MEDIA_INPUTS=value).SHIM_MEDIA_INPUTS
+            == value
+        )
+    else:
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, SHIM_MEDIA_INPUTS=value)
+
+
+@pytest.mark.parametrize(
     ("name", "values"),
     [
         ("SHIM_ANTHROPIC_AUTO_CACHE", ("off", "5m", "1h")),
