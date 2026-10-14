@@ -1392,6 +1392,10 @@ async def test_a_scanned_pdf_document_reaches_anthropic_through_the_sdk() -> Non
                 _env_file=None,
                 ANTHROPIC_BASE_URL="https://upstream.test",
                 SHIM_DOCUMENTS="scan",
+                # Monitor only: a tenant that masks gets the PDF as text (D1).
+                PII_ENTITY_ACTIONS=json.dumps(
+                    dict.fromkeys(DEFAULT_ACTIONS, "monitor")
+                ),
             ),
             http_client=outbound,
             event_stream=events,

@@ -925,7 +925,13 @@ async def test_a_scanned_pdf_part_reaches_gemini_through_the_sdk() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
         app = create_community_app(
             CommunitySettings(
-                _env_file=None, SHIM_API_KEY=_GATEWAY_KEY, SHIM_DOCUMENTS="scan"
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                SHIM_DOCUMENTS="scan",
+                # Monitor only: a tenant that masks gets the PDF as text (D1).
+                PII_ENTITY_ACTIONS=json.dumps(
+                    dict.fromkeys(DEFAULT_ACTIONS, "monitor")
+                ),
             ),
             http_client=outbound,
             event_stream=events,
