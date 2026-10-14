@@ -460,13 +460,22 @@ and the first bytes; when they disagree it is `other`. shim never fetches a URL
 or a file id.
 
 A request whose media is forwarded is sized by its parts, not its base64: its
-text by bytes, an image with a readable header at `ceil(width / 28) ×
-ceil(height / 28)` tokens up to 4,784, another image 1,600, an inline PDF 3,000
+text by bytes, an image with a readable header at what its provider bills for the
+model (read 2026-10-14: Claude its 28 px tiles after its own resize; OpenAI's tile
+families a base plus a price per 512 px tile, `gpt-4o-mini` 2,833 + 5,667; its patch
+families their 32 px patches times 1.2, or 1.62 for `gpt-4.1-mini`), elsewhere
+`ceil(width / 28) × ceil(height / 28)` tokens up to 4,784, another image 1,600, an inline PDF 3,000
 per page object found (up to 1,000 pages, else its decoded bytes / 4), a PDF by URL
 or file id 30,000, a Word or text file its decoded bytes / 4, all parts together
 at most the model's context window; audio, video and other parts stay measured
-by their bytes. The rate limits and the reservation use this estimate; the
-provider's reported tokens still settle the request.
+by their bytes. The rate limits and the reservation use this estimate; a document
+shim reads adds its text's UTF-8 bytes to the spend reservation once read. The
+provider's reported tokens still settle the request. A `max_input_bytes` request
+limit always measures the body as sent.
+
+Image metadata (EXIF with GPS, XMP, JPEG comments) is a known gap: on an image that
+is forwarded as it came it is neither scanned nor removed; only a downscaled image
+loses it.
 
 PDF, Word and text files can be read and checked like message text instead. Install
 the extra for PDFs (`pip install 'shim-gateway[documents]'`, which adds pypdf; the
@@ -476,20 +485,28 @@ gateway logs a warning at start when the setting is on without it), then set
 | `SHIM_DOCUMENTS` | An inline PDF, `.docx`, or text file (`text/plain`, `text/markdown`, `text/csv`, `application/json`) |
 | --- | --- |
 | `as_media` (default) | Follows `SHIM_MEDIA_INPUTS`, as above. |
-| `scan` | Its text is read and scanned with the same actions and rules as message text. Nothing to mask: it is forwarded as it came. A value to mask: 400 `PII_BLOCKED` (`SECRET_BLOCKED` for `SECRET` and `DB_URI`) naming the types and saying to turn on conversion; no provider call. A type whose action is `block`: refused as for message text. |
+| `scan` | Its text is read and scanned with the same actions and rules as message text. Nothing to mask: it is forwarded as it came, except that a PDF goes as its scanned text while any type masks or blocks or a rule hides values (a provider reads a PDF's drawn pages, which hold images and appearances no scan saw). A value to mask: 400 `PII_BLOCKED` (`SECRET_BLOCKED` for `SECRET` and `DB_URI`) naming the types and saying to turn on conversion; no provider call. A type whose action is `block`: refused as for message text. |
 | `scan_and_convert` | The same, except that a document with a value to mask is sent as its masked text, and the answer gets the values back. |
 
 A document shim cannot read (a URL or file id, a PDF without pypdf, an encrypted or
 corrupt file, a PDF without a text layer, over 32 MB decoded, 1,000 pages, 1,000,000
-characters, 4,000,000 characters in one request, or 10 seconds of reading) is refused
+characters, 4,000,000 characters in one request, a page stream over 4 MB decoded, or
+10 seconds of reading a file and 20 seconds for all of a request's files) is refused
 with 400 `DOCUMENT_UNSCANNABLE` naming the reason while media is refused, and
-forwarded unscanned otherwise. Word files are read from their body, headers, footers,
-notes and comments; a `.docx` with more than 1,000 parts, a part over 20 MB or 50 MB in
-all, or a `DOCTYPE` is not read.
+forwarded unscanned otherwise. A PDF is read with its form field values,
+annotation texts and document information, in one of two worker processes with 1 GB
+of memory each, so a hostile file never holds the gateway. Word files are read from
+their body, headers, footers, notes, comments, deleted text, glossary and document
+properties (author, title, custom properties); a `.docx` with more than 1,000 parts,
+a part over 20 MB or 50 MB in all, more than 1,000,000 XML elements, or a DTD in any
+encoding is not read.
 
 `SHIM_DOCUMENT_FORMAT=by_provider` also sends a clean document as text where the
 provider bills that less: PDFs as text to Anthropic and OpenAI, natively to Gemini
-(which does not bill the embedded text), Word files as text everywhere. A converted
+(which does not bill the embedded text, so its pages reach the model unscanned even
+while values are masked), Word files as text everywhere. A document in a Gemini
+function response stays a file: a clean one is sent as it came, one with a value to
+mask is refused with 400 `PII_BLOCKED`. A converted
 document loses its layout, images and figures; the model reads its text only. A
 document sent as text becomes, in Anthropic, a `document` with a `text` source (title,
 context, citations and cache control kept); in chat a `text` part and in Responses an
@@ -1030,13 +1047,16 @@ touched: Gemini (no published size), images by URL or file id, GIFs and animated
 WEBP, images at or below the size, images with an EXIF rotation, in an Anthropic
 `tool_result`, marked `transformations.oversized_image: "error"`, computer-use
 screenshots, requests bound to thinking (`TRANSFORM_THINKING_BOUND`), token counts,
-and images over 32 MB or 64 megapixels. The usage event's `transforms_applied` gets an
+images over 32 MB or 64 megapixels, images past a request's 128 megapixels decoded
+(counted in payload order, `too_large`), and a decode over 10 seconds (`too_slow`). The
+usage event's `transforms_applied` gets an
 `image_downscale` entry with the sizes and bytes before and after and the images
 skipped by reason; `shim_image_downscale_total{outcome}` counts each image.
 
 Notes: the same image gives the same bytes on every turn, so the provider's prompt
-cache holds; a Pillow upgrade changes the output bytes once. The work runs in a worker
-thread; a 12-megapixel JPEG takes about 150 ms. Leave it off when
+cache holds; a Pillow upgrade changes the output bytes once. Decoding runs in one of
+two worker processes shared with PDF reading, at most two at once per gateway process;
+a 12-megapixel JPEG takes about 150 ms. Leave it off when
 `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` points at another server.
 
 ## Stream long generations and read usage
@@ -1095,7 +1115,7 @@ A completed request whose lever had a figure carries `savings` on its usage even
 
 | Lever | Measured (saved) | Estimated or not attributed (never add) |
 | --- | --- | --- |
-| In-flight sharing (`SHIM_INFLIGHT_SHARING`) | `usd`: the provider call the shared answer avoided; `tokens` | none |
+| In-flight sharing (`SHIM_INFLIGHT_SHARING`) | `usd`: the provider call the shared answer avoided; `tokens` | the same fields under `estimated` when the first request's usage was estimated, not reported |
 | Anthropic breakpoint (`SHIM_ANTHROPIC_AUTO_CACHE`) | `usd`: cache reads at the input rate minus the read rate, less writes above the input rate, at the request's own rates; can be negative | none |
 | OpenAI cache key (`SHIM_OPENAI_PROMPT_CACHE_KEY`) | nothing | `not_attributed`: OpenAI caches without the key |
 | JSON compaction | `chars` removed | `tokens` at four characters a token, and their `usd` |

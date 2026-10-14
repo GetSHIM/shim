@@ -248,7 +248,14 @@ inline PDF, Word and text parts are not media: the privacy stage reads their tex
 its worker thread (`src/shim/privacy/documents.py`, bounded in size, pages and time;
 pypdf is the optional `documents` extra), scans it with the same actions and rules, and
 forwards the part, stops the request, or replaces the part with its (masked) text,
-recorded as a `document_text` entry of `transforms_applied`.
+recorded as a `document_text` entry of `transforms_applied`. A tenant that hides any
+value gets every scanned PDF as its text (Gemini with `by_provider` excepted), since a
+provider reads a PDF's drawn pages. PDF reading and image decoding run in
+`src/shim/core/isolation.py`: two spawned worker processes per gateway process, each
+with a 1 GB address-space cap (Linux) and a signal alarm per call (10 s, and 20 s for
+all of a request's files). A caller thread waits on a two-slot semaphore and then on
+the call; a call still running past its deadline plus 2 s has its pool terminated and
+replaced. The event loop never waits on a worker.
 
 OpenAI errors use `{error: {message, type, param, code, hint}}`. Anthropic
 errors use `{type: "error", error: {type, message, code, hint}, request_id}`,
@@ -382,7 +389,8 @@ inline PNG, JPEG or static WEBP to the size the provider publishes it reads that
 and detail level at (`target_size` in `src/shim/gateway/image_rules.py`) and re-encodes
 it in its own format. Both skip requests bound to thinking with a `transforms.<step>`
 verdict, and the band runs in a worker thread above 65,536 candidate characters or when
-an image is a candidate. The `route` kind
+an image is a candidate; the decoding itself runs in the isolation pool, at most 128
+megapixels per request in payload order. The `route` kind
 ships no matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 Admission adds `MODEL_RETIRING` (retirement within 90 days) or `MODEL_RETIRED`

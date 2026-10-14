@@ -31,6 +31,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # PDF text for document scanning (SHIM_DOCUMENTS); pure Python, no dependencies.
+# 6.20.1 (2026-10-12) although under 14 days old: 6.20.0 added the per-stream decoding
+# work limit the reader sets, and 6.20.1 fixes a cyclic page-tree DoS; 6.19.0 has neither.
 documents = ["pypdf==6.20.1"]
 # Shrinking oversized images (SHIM_IMAGE_DOWNSCALE); the lock's version.
 images = ["pillow==12.3.0"]

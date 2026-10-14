@@ -296,7 +296,8 @@ at the input rate minus the read rate, less writes above the input rate, at the
 request's own settled rates, possibly negative; `read_tokens`, `write_tokens`),
 `json_compaction` (`chars`), `image_downscale` (`bytes`) and `context_clearing`
 (`tokens` Anthropic reported clearing). Estimated: `json_compaction` (`tokens` at four
-characters a token, `usd` at the input rate) and `context_clearing` (`usd`, gross).
+characters a token, `usd` at the input rate), `context_clearing` (`usd`, gross) and
+`inflight_share` when the shared answer's usage was estimated, not reported.
 Not attributed: `provider_cache_key` (OpenAI caches without the key). Amounts are
 decimal strings with 10 places; a lever whose price was unknown has `"usd": null,
 "unpriced": true`. Only ids, counts and amounts, never content. It is in the
