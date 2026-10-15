@@ -962,8 +962,8 @@ array of 64 to 1,000,000 characters with space, tab, CR or LF between tokens: th
 characters are dropped and everything else, string contents, number literals such as
 `1.10` and duplicate keys included, is copied byte for byte, and the result is kept
 only when it parses to the same value and is shorter. System, user and assistant
-text, tool call arguments, tool definitions and documents are never changed, nor is
-token counting, which counts the request as you sent it.
+text, tool call arguments, tool definitions and documents are never changed, nor are
+embeddings requests, nor is token counting, which counts the request as you sent it.
 
 Notes: the same input always gives the same output, so from the first request with
 the setting on the provider's prompt cache holds; on the request where the setting
@@ -1054,7 +1054,8 @@ images over 32 MB or 64 megapixels, images past a request's 128 megapixels decod
 (counted in payload order, `too_large`), and a decode over 10 seconds (`too_slow`). The
 usage event's `transforms_applied` gets an
 `image_downscale` entry with the sizes and bytes before and after and the images
-skipped by reason; `shim_image_downscale_total{outcome}` counts each image.
+skipped by reason, also when every image was skipped (`items` 0);
+`shim_image_downscale_total{outcome}` counts each image.
 
 Notes: the same image gives the same bytes on every turn, so the provider's prompt
 cache holds; a Pillow upgrade changes the output bytes once. Decoding runs in one of

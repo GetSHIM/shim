@@ -171,12 +171,16 @@ def _tool_results(
         changed = _rebuilt(parts, part)
         return item if changed is parts else {**item, "parts": changed}
 
-    key, change = {
+    route = {
         "chat": ("messages", chat),
         "responses": ("input", responses),
         "messages": ("messages", messages),
         "generate_content": ("contents", content),
-    }[protocol]
+    }.get(protocol)
+    # Embeddings and token counts carry no tool results.
+    if route is None:
+        return payload
+    key, change = route
     items = payload.get(key)
     if not isinstance(items, list):
         return payload
@@ -319,7 +323,8 @@ def _image_downscale(
                 "after_bytes": len(smaller),
             }
         )
-    if not images:
+    # An image left alone is still recorded, with its reason.
+    if not images and not skipped:
         return None
     from PIL import __version__ as pillow_version
 
@@ -352,7 +357,7 @@ def _candidate_chars(prepared: PreparedInference) -> int:
 
 
 # (id, version, protocols, on, apply). A step copies on write along the path of each
-# string it changes and returns None when it changed nothing.
+# string it changes and returns None when it has nothing to record.
 STEPS: tuple[
     tuple[
         str,
@@ -410,7 +415,8 @@ def _apply(prepared: PreparedInference) -> PreparedInference:
             continue
         result = apply(prepared, payload)
         TRANSFORMS_TOTAL.labels(
-            transform=step_id, result="unchanged" if result is None else "applied"
+            transform=step_id,
+            result="applied" if result is not None and result.items else "unchanged",
         ).inc()
         if result is None:
             continue

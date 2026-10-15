@@ -824,3 +824,94 @@ async def test_a_lone_surrogate_scan_is_a_validation_error() -> None:
     [error] = response.json()["detail"]
     assert (error["type"], error["loc"]) == ("string_unicode", ["body", "text"])
     assert "input" not in error
+
+
+# Every settings and transform switch on; whitespace json_compaction would remove.
+_EVERY_TRANSFORM = {
+    "SHIM_ANTHROPIC_AUTO_CACHE": "5m",
+    "SHIM_OPENAI_PROMPT_CACHE_KEY": "tenant",
+    "SHIM_TOOL_SEARCH": "regex",
+    "SHIM_TOOL_SEARCH_MIN_TOOLS": 2,
+    "SHIM_ANTHROPIC_KEEP_THINKING_TURNS": 1,
+    "SHIM_OPENAI_REASONING_CONTEXT": "current_turn",
+    "SHIM_JSON_COMPACTION": "on",
+    "SHIM_IMAGE_DOWNSCALE": "on",
+    "SHIM_IMAGE_DETAIL_OPENAI": "low",
+    "SHIM_IMAGE_DETAIL_GEMINI": "low",
+}
+_SPACED_JSON = '{ "city": "Ankara", "items": [ 1, 2, 3 ], "note": "kept as sent" }'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body", "sent"),
+    [
+        (
+            "/v1/embeddings",
+            {"model": "text-embedding-3-small", "input": _SPACED_JSON},
+            ("input",),
+        ),
+        (
+            "/v1beta/models/gemini-embedding-001:embedContent",
+            {"content": {"parts": [{"text": _SPACED_JSON}]}},
+            ("content",),
+        ),
+        (
+            "/v1beta/models/gemini-embedding-001:batchEmbedContents",
+            {"requests": [{"content": {"parts": [{"text": _SPACED_JSON}]}}]},
+            ("requests", 0, "content"),
+        ),
+    ],
+    ids=["embeddings", "embed-content", "batch-embed-contents"],
+)
+async def test_embeddings_with_every_transform_on_pass_through_untouched(
+    path: str, body: dict[str, object], sent: tuple[str | int, ...]
+) -> None:
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if request.url.path.endswith(":batchEmbedContents"):
+            return httpx.Response(200, json={"embeddings": [{"values": [0.5]}]})
+        if request.url.path.endswith(":embedContent"):
+            return httpx.Response(200, json={"embedding": {"values": [0.5]}})
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [{"object": "embedding", "index": 0, "embedding": [0.5]}],
+                "model": "text-embedding-3-small",
+                "usage": {"prompt_tokens": 20, "total_tokens": 20},
+            },
+        )
+
+    events = StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        application = create_community_app(
+            _settings(**_EVERY_TRANSFORM), http_client=outbound, event_stream=events
+        )
+        async with application.router.lifespan_context(application):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=application),
+                base_url="http://shim.test",
+            ) as gateway_http:
+                response = await gateway_http.post(
+                    path,
+                    headers={
+                        "authorization": f"Bearer {GATEWAY_KEY}",
+                        "x-provider-key": PROVIDER_KEY,
+                    },
+                    json=body,
+                )
+
+    assert response.status_code == 200, response.text
+    [upstream_body] = seen
+    expected: object = body
+    received: object = upstream_body
+    for step in sent:
+        expected, received = expected[step], received[step]  # type: ignore[index]
+    assert received == expected
+    [event] = [json.loads(line) for line in events.getvalue().splitlines()]
+    assert event["outcome"] == "completed"
+    assert event.get("transforms_applied", []) == []
+    assert "settings_applied" not in event
