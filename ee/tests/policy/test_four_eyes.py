@@ -253,6 +253,24 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
             },
             "transforms": {"json_compaction": "off", "image_downscale": "off"},
             "image_detail": {"openai": "off", "gemini": "off", "models": []},
+            "semantic_review": {
+                "enabled": False,
+                "model": None,
+                "api_key_id": None,
+                "max_items_per_hour": 60,
+                "max_cost_usd_per_day": "5",
+            },
+            "semantic_check": {
+                "enabled": False,
+                "scope": {"api_key_ids": [], "tags": [], "models": []},
+                "endpoints": ["chat", "responses", "messages", "generate_content"],
+                "question_ids": [],
+                "model": None,
+                "api_key_id": None,
+                "warn_header": False,
+                "timeout_ms": 3000,
+                "max_checks_per_day": 1000,
+            },
         }
     }
     assert (version.source, version.risk) == ("api", "tightening")
@@ -302,6 +320,24 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 },
                 "transforms": {"json_compaction": "off", "image_downscale": "off"},
                 "image_detail": {"openai": "off", "gemini": "off", "models": []},
+                "semantic_review": {
+                    "enabled": False,
+                    "model": None,
+                    "api_key_id": None,
+                    "max_items_per_hour": 60,
+                    "max_cost_usd_per_day": "5",
+                },
+                "semantic_check": {
+                    "enabled": False,
+                    "scope": {"api_key_ids": [], "tags": [], "models": []},
+                    "endpoints": ["chat", "responses", "messages", "generate_content"],
+                    "question_ids": [],
+                    "model": None,
+                    "api_key_id": None,
+                    "warn_header": False,
+                    "timeout_ms": 3000,
+                    "max_checks_per_day": 1000,
+                },
             }
         }
     }

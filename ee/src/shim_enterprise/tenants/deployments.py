@@ -8,10 +8,11 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import ipaddress
+import json
 import logging
 import math
 import re
-from typing import TYPE_CHECKING, cast, Literal
+from typing import TYPE_CHECKING, Any, cast, Literal
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -29,10 +30,17 @@ from shim.gateway.kernel.result import (
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.api.v1.chat import model_record
 from shim.rules import Rule, in_scope
+from shim.rules.evaluate import record_rule_verdicts
 from shim.rules.route import conversation_id, owned, route_reason, start_view
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.observability.enterprise_metrics import ROUTE_DECISIONS_TOTAL
+from shim_enterprise.rules.route_triggers import (
+    SizeMatch,
+    SplitMatch,
+    UnavailableMatch,
+    trigger_rules,
+)
 from shim_enterprise.secrets.references import format_reference
 from shim_enterprise.tenants.gateway_settings import GatewaySettings
 from shim_enterprise.tenants.models import (
@@ -59,6 +67,17 @@ def unhealthy_seconds_left(deployment: ModelDeployment) -> int:
         return 0
     elapsed = (datetime.now(timezone.utc) - checked_at).total_seconds()
     return max(0, math.ceil(UNHEALTHY_MARK_SECONDS - elapsed))
+
+
+def unhealthy_refusal(retry_after: int) -> HTTPException:
+    return HTTPException(
+        503,
+        detail={
+            "code": "DEPLOYMENT_UNHEALTHY",
+            "message": "The model deployment is marked unhealthy.",
+        },
+        headers={"Retry-After": str(retry_after), "x-should-retry": "false"},
+    )
 
 
 def _origin(url: str) -> tuple[str, str | None, int]:
@@ -197,14 +216,14 @@ def deployment_target(
     )
 
 
+TargetRefusal = Literal["not_allowed", "disabled", "unhealthy", "not_approved"]
+
+
 async def alias_target(
     session: AsyncSession, prepared: PreparedInference, alias: str
-) -> (
-    tuple[ProviderTarget, Literal["internal", "external"]]
-    | Literal["not_allowed", "unavailable"]
-):
+) -> tuple[ProviderTarget, Literal["internal", "external"]] | TargetRefusal:
     """The registry deployment `alias` names, checked as the resolver checks one:
-    the key's allowlist, then disabled, another provider, unhealthy, origin.
+    the key's allowlist, then disabled or another provider, unhealthy, origin.
     A Bedrock deployment is never a move target: its region lock runs in the
     resolver only."""
 
@@ -219,20 +238,20 @@ async def alias_target(
             ModelDeployment.alias == alias,
         )
     )
-    base_url = None
     if (
-        deployment is not None
-        and deployment.enabled
-        and deployment.upstream != "aws_bedrock"
-        and deployment.provider == str(prepared.provider)
-        and not unhealthy_seconds_left(deployment)
+        deployment is None
+        or not deployment.enabled
+        or deployment.provider != str(prepared.provider)
     ):
-        try:
-            base_url = validate_deployment_url(deployment.base_url)
-        except ValueError:
-            pass
-    if deployment is None or base_url is None:
-        return "unavailable"
+        return "disabled"
+    if unhealthy_seconds_left(deployment):
+        return "unhealthy"
+    try:
+        if deployment.upstream == "aws_bedrock":
+            raise ValueError("a Bedrock deployment is never a move target")
+        base_url = validate_deployment_url(deployment.base_url)
+    except ValueError:
+        return "not_approved"
     kind: Literal["internal", "external"] = (
         "internal"
         if deployment.deployment_kind == "internal"
@@ -240,6 +259,97 @@ async def alias_target(
         else "external"
     )
     return deployment_target(deployment, base_url), kind
+
+
+def _tags(prepared: PreparedInference, headers: Mapping[str, str]) -> tuple[str, ...]:
+    return CostAttribution.resolve(
+        headers.get("x-shim-tag"),
+        api_key_cost_center=prepared.policy.cost_center,
+        maximum_length=settings.COST_TAG_MAX_LENGTH,
+    ).tags
+
+
+def _fallback_takes_over(
+    prepared: PreparedInference,
+    deployment: ModelDeployment,
+    headers: Mapping[str, str],
+) -> bool:
+    """An enforced `health_flag` fallback rule covers this request; a monitor one
+    records where it would have gone."""
+
+    if prepared.protocol == "count_tokens":
+        # A token count never reaches the after-privacy step that moves it.
+        return False
+    covering = list(
+        trigger_rules(prepared.rules, "unavailable", UnavailableMatch, prepared.model)
+    )
+    if not covering:
+        return False
+    # Scope is read at the deployment the request reaches, as everywhere else.
+    reached = replace(
+        prepared,
+        target=deployment_target(deployment, deployment.base_url),
+        deployment_kind=cast(
+            Literal["internal", "external"], deployment.deployment_kind
+        ),
+    )
+    tags = _tags(prepared, headers)
+    applying = [
+        rule
+        for rule, match in covering
+        if "health_flag" in match.triggers and in_scope(rule, reached, tags)
+    ]
+    if any(rule.state == "enforced" for rule in applying):
+        return True
+    if applying:
+        record_rule_verdicts(
+            prepared,
+            {rule.id: ("allow", "RULE_WOULD_ROUTE") for rule in applying},
+        )
+    return False
+
+
+async def moved_to(
+    session: AsyncSession, prepared: PreparedInference, alias: str
+) -> (
+    PreparedInference
+    | Literal["not_allowed_for_key", "disabled", "unhealthy", "not_approved"]
+):
+    """The request sent to `alias` as a direct request to it would be, or why not."""
+    found = await alias_target(session, prepared, alias)
+    if isinstance(found, str):
+        return "not_allowed_for_key" if found == "not_allowed" else found
+    target, kind = found
+    return replace(
+        prepared,
+        payload={**prepared.payload, "model": target.upstream_model},
+        deployment_kind=kind,
+        target=target,
+    )
+
+
+def _keep_watcher(decision: dict[str, Any], prepared: PreparedInference) -> None:
+    """A monitor split or lane that watched this request stays as `previous`, one
+    level deep, so its conversation id is cleared with the decision's."""
+    if prepared.route_decision is not None:
+        decision["previous"] = {
+            key: value
+            for key, value in prepared.route_decision.items()
+            if key != "previous"
+        }
+
+
+def approximate_input_tokens(payload: Mapping[str, object]) -> int:
+    """Admission's TPM unit: a quarter of the compact JSON's UTF-8 bytes, rounded up."""
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    # A lone surrogate is admission's 400 to give, not a resolver error.
+    return -(-max(1, len(serialized.encode("utf-8", "surrogatepass"))) // 4)
+
+
+def canary_bucket(tenant_id: str, rule_id: str, identity: str) -> int:
+    """0 to 9,999: the same conversation always lands in the same bucket."""
+    digest = hashlib.sha256(f"{tenant_id}|{rule_id}|{identity}".encode()).hexdigest()
+    return int(digest[:8], 16) % 10_000
 
 
 def _conversation_key() -> bytes:
@@ -260,7 +370,25 @@ class DeploymentResolver:
     async def resolve(
         self, prepared: PreparedInference, headers: Mapping[str, str]
     ) -> PreparedInference:
-        resolved = await self._registered(prepared)
+        resolved = await self._registered(prepared, headers)
+        split = next(
+            trigger_rules(resolved.rules, "split", SplitMatch, resolved.model), None
+        )
+        # An alias under an enforced split is served by its split alone; a monitor
+        # one only records where it would go and never changes the target.
+        if split is not None and in_scope(split[0], resolved, _tags(resolved, headers)):
+            resolved = await self._split(resolved, *split, headers)
+            if split[0].state == "enforced":
+                return resolved
+        lane = next(
+            trigger_rules(resolved.rules, "size", SizeMatch, resolved.model), None
+        )
+        if lane is not None and in_scope(lane[0], resolved, _tags(resolved, headers)):
+            # A long request is served by its enforced lane alone.
+            laned = await self._lane(resolved, *lane, headers)
+            if laned is not None and lane[0].state == "enforced":
+                return laned
+            resolved = laned or resolved
         routes = [
             rule
             for rule in (prepared.rules.rules if prepared.rules is not None else ())
@@ -280,11 +408,7 @@ class DeploymentResolver:
         view = start_view(prepared.payload, prepared.protocol)
         if view is None:
             return prepared
-        tags = CostAttribution.resolve(
-            headers.get("x-shim-tag"),
-            api_key_cost_center=prepared.policy.cost_center,
-            maximum_length=settings.COST_TAG_MAX_LENGTH,
-        ).tags
+        tags = _tags(prepared, headers)
         for rule in sorted(routes, key=lambda rule: rule.state != "enforced"):
             if prepared.model not in rule.match["from"] or not in_scope(
                 rule, prepared, tags
@@ -295,7 +419,7 @@ class DeploymentResolver:
                 break
         else:
             return prepared
-        decision = {
+        decision: dict[str, Any] = {
             "rule_id": rule.id,
             "state": rule.state,
             "from": prepared.model,
@@ -305,6 +429,7 @@ class DeploymentResolver:
                 headers.get("x-shim-conversation-id"), _conversation_key(), view[0]
             ),
         }
+        _keep_watcher(decision, prepared)
         routed = prepared
         if rule.state == "monitor":
             decision["outcome"] = "would_route"
@@ -313,7 +438,7 @@ class DeploymentResolver:
                 found = await alias_target(session, prepared, rule.match["to"])
             if found == "not_allowed":
                 decision["outcome"] = "not_allowed_for_key"
-            elif found == "unavailable":
+            elif isinstance(found, str):
                 decision["outcome"] = "target_unavailable"
             else:
                 target, kind = found
@@ -330,7 +455,99 @@ class DeploymentResolver:
         ).inc()
         return replace(routed, route_decision=decision)
 
-    async def _registered(self, prepared: PreparedInference) -> PreparedInference:
+    async def _split(
+        self,
+        prepared: PreparedInference,
+        rule: Rule,
+        match: SplitMatch,
+        headers: Mapping[str, str],
+    ) -> PreparedInference:
+        """The conversation's bucket picks the side; enforced, the candidate serves
+        when it can, else the request stays on `from` and says why."""
+
+        sent = headers.get("x-shim-conversation-id")
+        identity = sent if sent and len(sent) <= 128 else f"key:{prepared.api_key_id}"
+        candidate = canary_bucket(str(prepared.tenant_id), rule.id, identity) < round(
+            match.share_percent * 100
+        )
+        view = start_view(prepared.payload, prepared.protocol)
+        decision: dict[str, object] = {
+            "rule_id": rule.id,
+            "state": rule.state,
+            "from": match.from_,
+            "to": match.from_,
+            "reason": "canary",
+            "conversation_id": conversation_id(
+                sent, _conversation_key(), view[0] if view is not None else ""
+            ),
+            "canary_side": "candidate" if candidate else "stable",
+        }
+        routed = prepared
+        if candidate and rule.state == "enforced":
+            async with self.session_factory() as session:
+                moved = await moved_to(session, prepared, match.to)
+            # Checked again at run time: an edit since the rule was written, or the
+            # operator's internal origins, can make the candidate external.
+            if not isinstance(moved, str) and (
+                prepared.deployment_kind == "internal"
+                and moved.deployment_kind != "internal"
+            ):
+                moved = "not_approved"
+            if isinstance(moved, str):
+                decision["canary_side"] = "stable"
+                decision["held"] = moved
+            else:
+                decision["to"], routed = match.to, moved
+        prepared.record_rule_match(rule, 1)
+        return replace(routed, route_decision=decision)
+
+    async def _lane(
+        self,
+        prepared: PreparedInference,
+        rule: Rule,
+        match: SizeMatch,
+        headers: Mapping[str, str],
+    ) -> PreparedInference | None:
+        """At or above the threshold the lane replica serves when it can, else the
+        request stays on `from` and says why; None below the threshold."""
+
+        tokens = approximate_input_tokens(prepared.payload)
+        if tokens < match.min_input_tokens:
+            return None
+        sent = headers.get("x-shim-conversation-id")
+        view = start_view(prepared.payload, prepared.protocol)
+        decision: dict[str, object] = {
+            "rule_id": rule.id,
+            "state": rule.state,
+            "from": match.from_,
+            "to": match.to if rule.state == "monitor" else match.from_,
+            "reason": "long_request",
+            "conversation_id": conversation_id(
+                sent, _conversation_key(), view[0] if view is not None else ""
+            ),
+            "input_tokens_approx": tokens,
+        }
+        _keep_watcher(decision, prepared)
+        routed = prepared
+        if rule.state == "enforced":
+            async with self.session_factory() as session:
+                moved = await moved_to(session, prepared, match.to)
+            # A replica keeps the kind of `from`, checked again at run time.
+            if (
+                not isinstance(moved, str)
+                and moved.deployment_kind != prepared.deployment_kind
+            ):
+                moved = "not_approved"
+            if isinstance(moved, str):
+                decision["held"] = moved
+            else:
+                decision["to"], routed = match.to, moved
+        prepared.record_rule_match(rule, 1)
+        return replace(routed, route_decision=decision)
+
+    async def _registered(
+        self, prepared: PreparedInference, headers: Mapping[str, str]
+    ) -> PreparedInference:
         async with self.session_factory() as session:
             try:
                 key = await self._active_key(session, prepared.api_key_id)
@@ -436,25 +653,23 @@ class DeploymentResolver:
                 },
             )
         retry_after = unhealthy_seconds_left(deployment)
+        taken_over = bool(retry_after) and _fallback_takes_over(
+            prepared, deployment, headers
+        )
         if retry_after:
+            # An enforced fallback rule takes over after privacy (gateway/fallback.py).
             prepared.record_verdict(
                 "deployment.registry",
                 stage="admission",
-                outcome="deny",
+                outcome="skip" if taken_over else "deny",
                 reason_code="DEPLOYMENT_UNHEALTHY",
                 policy={
                     "deployment_id": str(deployment.id),
                     "health_checked_at": deployment.health_checked_at,
                 },
             )
-            raise HTTPException(
-                503,
-                detail={
-                    "code": "DEPLOYMENT_UNHEALTHY",
-                    "message": "The model deployment is marked unhealthy.",
-                },
-                headers={"Retry-After": str(retry_after), "x-should-retry": "false"},
-            )
+            if not taken_over:
+                raise unhealthy_refusal(retry_after)
         bedrock = deployment.upstream == "aws_bedrock"
         if bedrock and prepared.protocol == "count_tokens":
             prepared.record_verdict(
@@ -497,13 +712,14 @@ class DeploymentResolver:
             if bedrock
             else None
         )
-        prepared.record_verdict(
-            "deployment.registry",
-            stage="admission",
-            outcome="allow",
-            reason_code="MODEL_REGISTERED",
-            policy=registry_policy,
-        )
+        if not taken_over:
+            prepared.record_verdict(
+                "deployment.registry",
+                stage="admission",
+                outcome="allow",
+                reason_code="MODEL_REGISTERED",
+                policy=registry_policy,
+            )
         prepared.record_verdict(
             "deployment.destination",
             stage="admission",

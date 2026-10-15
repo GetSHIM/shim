@@ -457,7 +457,21 @@ update fills it in only when privacy found no personal data (null otherwise, als
 under `previous`, as it clears `repeat_digest`), so a request refused before privacy
 finished never keeps it. The
 request list filters on it with `route_outcome=<outcome>`; prompt text and keywords are
-never recorded.
+never recorded. A [split rule](MODEL_DEPLOYMENTS.md#roll-out-a-new-model-gradually)
+writes the same key with `reason: "canary"`, `to` the alias that served (in `monitor`,
+always `from`), no `outcome`, and two keys of its own: `canary_side` (`stable` or
+`candidate`: the side the conversation's bucket chose, the side it would have had in
+`monitor`) and, when an enforced candidate could not serve, `held` (`disabled`,
+`unhealthy`, `not_approved` or `not_allowed_for_key`) with `canary_side: "stable"`. A
+[long-request lane](MODEL_DEPLOYMENTS.md#long-request-lane) writes it with
+`reason: "long_request"`, no `outcome`, `input_tokens_approx` (the request's size in
+admission's TPM unit), `to` the lane (in `monitor`, the lane it would have used;
+enforced, the alias that served) and, when the lane could not serve, `held` with the
+same values. A split or lane whose `to` has another kind than `from` at run time (an
+internal split to a target that is no longer internal, a lane that is not a replica of
+the same kind) holds with `not_approved`. A monitor split or lane never changes the
+target: when a route rule or an enforced lane then decides, the monitor record moves
+under that decision's `previous` (one level).
 
 `shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
 to a candidate model: the primary request's id and the rule that chose it. The copy
@@ -466,6 +480,30 @@ request unit (`request_count` 0). Its tokens count against the organization's qu
 only, never the caller's key or team quota, task cost cap, or a team or tag cost
 budget. The request list and its CSV carry `shadow_of`;
 both keys are absent on every other row.
+
+`shadow_comparison` is on the row of a [change-test](MODEL_DEPLOYMENTS.md#test-a-model-change-on-live-traffic)
+copy, written in a short transaction of its own after the copy settled (so it is not in
+the finalization's analytics event): `rule_id`, `starts_at`, `version` (1),
+`schema_expected` (`json_schema`, `json_object`, `tool_args`, `none`, or null when no
+answer was analysed) and, for `primary` and `candidate`, `status`, `outcome` (the
+completion outcome, `failed` for a copy that ended without an answer),
+`schema_valid`, `language`, `soft_refusal` (null when not computed), `answer_chars`,
+`prompt_tokens`, `completion_tokens`, `provider_latency_ms`, `ttft_ms`, `cost_usd`,
+`error_code` and, when the answer hit the analysis bound, `answer_truncated: true`.
+After a request that carried personal data no answer is analysed: the three analyzer
+fields and `schema_expected` stay null. No answer text, value or tool argument is
+stored. The request list and its CSV carry it.
+
+`semantic_check` is on a request inside a tenant's
+[marked scope](POLICY_DECISIONS.md#live-semantic-check-on-a-marked-endpoint), written in a
+short transaction of its own after privacy and before the provider call: `outcome`
+(`matched`, `clear`, `invalid_answer`, `failed`, `timeout`, `skipped_guard`, `skipped_cap`,
+`skipped_empty`), `latency_ms`, `prompt_version`, and when known `questions_revision`,
+`matched` (question ids, at most 20; never on a request that carried personal data, whose
+record keeps the outcome only) and `check_request_id` (the check call's own row). No
+request text, question text or model answer is stored. The request list and its CSV carry
+it, and `GET /api/v1/management/requests?semantic_outcome=<outcome>` and the export filter
+on one outcome.
 
 `queue_wait_ms` is the milliseconds a request waited for room on its target under a
 concurrency limiter (0 when admitted at once), written at reservation; absent when no
@@ -597,7 +635,7 @@ source has them. A deprecated model stays in the catalog with
 
 `warnings` lists the `X-Shim-Warnings` codes a request carried
 (`MODEL_DEPRECATED`, `CONTEXT_MAY_EXCEED`, `LARGE_CONTEXT_PRICE`,
-`CACHE_NOT_APPLIED`, `RULE_WARN`, `INJECTION_MARKERS`, `PRICE_TIER_CROSSED`,
+`CACHE_NOT_APPLIED`, `RULE_WARN`, `SEMANTIC_WARN`, `INJECTION_MARKERS`, `PRICE_TIER_CROSSED`,
 `MODEL_RETIRING`, `MODEL_RETIRED`), `[]` when none. The two retirement codes are
 always recorded and reach the header only while `model_retiring_warning` is
 `header`. `PRICE_TIER_CROSSED` is raised before the provider call from the request's

@@ -23,6 +23,8 @@ class AttemptCandidate:
     alias: str | None
     reason: AttemptReason
     rule_id: str
+    # Set when the strategy already resolved and checked `alias` itself.
+    target: Target | None = None
 
 
 class AttemptStrategy(Protocol):
@@ -48,7 +50,7 @@ async def resolve_alias_target(
 
     assert candidate.alias is not None
     found = await alias_target(session, prepared, candidate.alias)
-    if found == "not_allowed" or found == "unavailable":
+    if isinstance(found, str):
         skip_attempt(
             prepared,
             candidate.reason,
@@ -103,6 +105,8 @@ class TenantAttemptPolicy:
         *,
         after_error: bool,
     ) -> Target | None:
+        if candidate.target is not None:
+            return candidate.target
         if candidate.alias is None:
             # The target that just failed is never asked again: that is a retry.
             if after_error:

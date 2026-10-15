@@ -65,7 +65,8 @@ to `unknown`. After 300 seconds the deployment serves again and the per-tenant
 provider circuit breaker protects callers if it is still failing; a mark without
 a check time never refuses traffic. To keep traffic away for longer, disable the
 deployment (`enabled: false`). Nothing is routed to another deployment or to the
-public catalog instead, and no probe runs automatically.
+public catalog instead unless the tenant wrote a [fallback rule](#fallback-rule), and
+no probe runs automatically.
 Health is not a version-verification guarantee.
 
 The declared version/hash/digest is operator supplied and included in the
@@ -201,6 +202,178 @@ embeddings, and Responses requests the provider stores (`store` not `false`, or 
 `previous_response_id` or `conversation`), since that conversation's state lives where
 it started. New route rules start in `monitor`, which only records where a request
 would have gone. Recipe: [Send simple requests to a cheaper model](COOKBOOK.md#send-simple-requests-to-a-cheaper-model).
+
+## Fallback rule
+
+A route rule with `match.on: "unavailable"` names what serves an alias when its
+deployment cannot: `from` is one registered alias, `to` one or two others of the same
+provider, tried in order (never `from`, never a catalog model), and `triggers` says
+when:
+
+| Trigger | When | Decided |
+|---|---|---|
+| `health_flag` | `from` is marked `unhealthy` | before the call, one attempt |
+| `circuit_open` | the tenant's circuit for `from` is open | before the call, one attempt |
+| `provider_error` | the attempt failed with 500, 502, 503 or 504, a timeout or a connection error | after the call, a new attempt |
+| `rate_limited` | the provider answered 429 | after the call, a new attempt |
+
+No other 4xx triggers, a disabled `from` is still refused with 403, and a token count
+(`/v1/messages/count_tokens`) for an unhealthy `from` is refused with 503 as before: it
+never reaches the step that moves a request. The rule's scope is read at `from`, so a
+rule scoped by `models` or `deployment_kinds` tries its second `to` too. A tenant
+holds at most one `unavailable` rule per alias; the rules PUT refuses an unknown or
+cross-provider alias, a third `to` and an empty `triggers` with 422 and the field path.
+
+Before the call, an enforced rule takes the request to the first `to` the key may use
+and that can serve (enabled, not unhealthy, approved origin, never Bedrock): one
+provider call, one row, `X-Shim-Request-Id` its id, and `route_decision` with
+`reason: "fallback"`. After a failed call, the next `to` not yet tried runs as its
+own attempt (`X-Shim-Attempts`, rows linked by `attempt_group_id`, the failed one
+refunded, one request unit); streams only before their first byte and never a
+Responses continuation. A request leaves an `internal` deployment for an `external`
+`to` only when nothing was detected in it and no privacy rule matched; otherwise that
+`to` is skipped with `ATTEMPT_WOULD_LEAVE_INTERNAL`.
+
+When no `to` is usable, an unhealthy alias still answers 503 `DEPLOYMENT_UNHEALTHY`
+with the same body and headers, but after admission: the request used its share of
+the rate window and has a refunded row. An open circuit answers 503
+`PROVIDER_UNAVAILABLE` as before. The answer comes from the deployment the tenant
+named; when that is another model, the tenant chose it. A client's Anthropic beta
+`fallbacks` field is a different thing, left untouched and still priced at the
+requested model, so a provider-side fallback to a dearer model is under-priced.
+
+A `monitor` rule never changes the target or adds an attempt. It records where the
+request would have gone, verdict `RULE_WOULD_ROUTE`, from what the request actually
+met: on the refusal's audit event for an unhealthy alias, on the failing row for an
+open circuit or a provider error. The 7-day preview cannot replay health or circuit
+state, so it answers "start in monitor". The circuit is read only for an alias an
+enforced rule covers with `circuit_open`; without a rule nothing is read. Evidence:
+[the record](POLICY_DECISIONS.md#fallback-rules). Recipe:
+[Add a fallback rule](COOKBOOK.md#add-a-fallback-rule).
+
+## Roll out a new model gradually
+
+A route rule with `match.on: "split"` sends a share of one alias's conversations to
+another alias of the same provider: `from` the stable alias, `to` the candidate,
+`share_percent` 0 to 100 (one decimal), `fallback_to_stable` false by default. An
+`internal` alias never splits to an `external` one, since a split moves every kind of
+request; an alias has at most one split, and a split's `to` is never another split's
+`from`. While an alias is under an enforced split, its long-request lane and
+request-start route rules do not run; a `monitor` split never changes the target, so
+they decide as without it.
+
+Each request's bucket is `sha256("<tenant id>|<rule id>|<identity>")`, its first eight
+hex digits as a number, modulo 10,000; the request goes to `to` when the bucket is below
+`share_percent × 100`. The identity is the `X-Shim-Conversation-Id` header (at most 128
+characters), else `key:<gateway key id>`, so without the header every conversation of
+one key lands on one side; send the header, on every turn, for a finer split. Nothing
+is stored: the same conversation always lands on the same side, raising the share keeps
+every conversation already on `to` there, and lowering it moves only the top buckets
+back. A Responses chain stays on its side only while its turns carry the same identity
+and the share stays: raising the share moves the conversations of the new buckets to
+`to` mid-chain, so their next `previous_response_id` turn gets the provider's "not
+found", as a rollback does for chains that started on `to`.
+
+Enforced, the candidate is checked as a direct request to it would be (enabled, not
+unhealthy, approved origin, in the key's allowlist) and, for an internal `from`, still
+internal at run time; one that cannot serve leaves the request on `from` with the reason
+in `held`. A candidate call that fails is the split's to answer: a fallback rule on
+`from` does not take it. Still one provider call; with
+`fallback_to_stable`, a candidate call that fails before its first byte with 500, 502,
+503, 504, a timeout or a connection error gets one more attempt on `from`
+(`attempt_reason: "canary_fallback"`, `X-Shim-Attempts: 2`). In `monitor` every request
+is served by `from` and the row says which side it would have had.
+
+`POST /api/v1/management/canaries/{rule_id}/rollback` (`rules.write`) sets the share to
+0 in one applied policy plan, reason "canary rollback", and returns the new policy
+version; changing only a split's share is neutral, so [four eyes](POLICY_DECISIONS.md#four-eyes)
+never holds it. 404 for an unknown rule, 409 for a rule that is not a split. Undo it by
+restoring the version before it. A Responses chain that started on `to` gets the
+provider's "not found" for its next turn after a rollback. `GET
+/api/v1/management/canaries?hours=24` (`usage.read`, 1 to 744 hours) shows each split
+rule (at most 50) with, per side, the requests of the window, their completion
+outcomes, failed rows (`provider_error`, `timeout`, `failed`), p50 and p95 of
+`shim_latency_ms` and `ttft_ms`, the settled cost and cost per request (null when a row
+of that side is unpriced), and in `monitor` the would-move count. Rows are attributed by
+the side that served them. Recipe: [Roll out a new model to a share of conversations](COOKBOOK.md#roll-out-a-new-model-to-a-share-of-conversations).
+
+## Long-request lane
+
+A route rule with `match.on: "size"` sends an alias's long requests to a replica of the
+same model: `from` the alias, `to` the lane, `min_input_tokens` 256 to 10,000,000. The
+lane must have the provider, the upstream model and the kind (`internal` or `external`)
+of `from`: it is the same model on its own server, not another model or another
+residency (sending long requests to another model is a [route rule](#routing-rules)).
+One lane per alias.
+
+The measure is admission's TPM unit: the UTF-8 bytes of the compact JSON request,
+divided by four and rounded up, computed only for an alias that has a lane. At or above
+the threshold an enforced rule sends the request to the lane, checked as a direct
+request to it (enabled, not unhealthy, approved origin, in the key's allowlist, still
+of the kind of `from` at run time); a lane that cannot serve leaves it on `from` with
+the reason in `held`. One provider call, one
+row, `route_decision` with `reason: "long_request"` and `input_tokens_approx`; a
+request below the threshold gets nothing, and a long request is served by its lane
+alone (request-start route rules do not run for it), and a fallback rule on `from`
+does not move it again. In `monitor` every request is served by `from`, a long one
+records the lane it would have used, and route rules decide as without the lane. A conversation
+whose history grows past the threshold moves to the lane once and stays there while it
+keeps growing; a model server's prefix cache is per replica, so that one turn misses
+it. The 7-day preview cannot count past sizes, so it answers "start in monitor".
+Recipe: [Give long requests their own replica](COOKBOOK.md#give-long-requests-their-own-replica).
+
+## Test a model change on live traffic
+
+A route rule with `match.on: "shadow"` copies a share of an alias's requests to a
+candidate alias after the caller's answer is complete, and compares the two answers
+in memory. The caller always gets the answer of the model it asked for; nothing is
+moved (that is a [split](#roll-out-a-new-model-gradually)) and nothing is replayed:
+shim keeps no prompts to replay, and live copies need none.
+
+```json
+{"id": "llama4_degisiklik", "name": "Llama 4 change test", "kind": "route", "action": "route",
+ "state": "monitor", "scope": {"tags": ["mobil"]},
+ "match": {"on": "shadow", "from": "kurum-llama", "to": "kurum-llama-4", "share_percent": 10,
+           "starts_at": "2026-11-02T00:00:00Z", "ends_at": "2026-11-09T00:00:00Z",
+           "max_requests": 1000, "max_cost_usd": "50"}}
+```
+
+`from` and `to` are registered aliases of one provider (an `internal` alias is never
+copied to an `external` one), `share_percent` 0.1 to 100 with one decimal, a window of
+at most 31 days that ends in the future when the test is new or changed, `max_requests`
+1 to 100,000 and `max_cost_usd` 0.01 to 100,000. One test per alias, ten per set. A
+test is its rule id and `starts_at`: a new `starts_at` starts a new test with fresh
+counters. In `monitor` nothing is copied and `GET /api/v1/management/change-tests` shows
+a 7-day estimate of the copies and their extra cost at the candidate's price (the
+rule's preview counts the same); enforcing is relaxing for four eyes, since masked
+request data goes to one more deployment and the tenant pays for it.
+
+Enforced, a request to `from` in scope and in the window is copied when the hash of the
+rule id and request id falls in the share (one copy per request at most). The copy
+follows the core shadow guards: never a token count, a Responses continuation or a
+stored Responses request, only after a completed answer, the masked payload with the
+bands re-run for the candidate, the key's model allowlist applied, no copy when an
+enforced privacy rule would act at the candidate and not at `from` (it never saw the
+payload). The copy is its own row (`shadow_of`), with its own cost, which is the
+tenant's; it uses no request unit. Caps count the copies sent, after those guards, in
+Redis seeded from the ledger, so a test may overshoot
+`max_requests` or `max_cost_usd` by the copies already in flight
+(`SHADOW_MAX_IN_FLIGHT` per gateway process); without Redis no copy is made. Each
+skipped copy counts in `shim_change_test_skips_total{reason}`.
+
+The comparison writes `shadow_comparison` on the copy's row: per side the outcome,
+schema validity (always checked), language and soft refusal (when the tenant's
+analyzers are on), answer length, tokens, latency and cost; never text, and after a
+request with personal data no answer is analysed. `GET
+/api/v1/management/change-tests/{rule_id}` (`usage.read`, a window of at most 31 days,
+the test's by default) reads the outcome mix, schema rates, length ratios, latency and
+cost per side with fixed caveats; `POST /api/v1/management/change-tests/{rule_id}/stop`
+(`rules.write`) moves the rule to `monitor` in one tightening policy version, undone by
+restoring the version before it. Recipe:
+[Test a model change before switching](COOKBOOK.md#test-a-model-change-before-switching).
+
+Change tests, canaries and route rules can be written up as a
+[model evidence document](POLICY_DECISIONS.md#model-evidence-documents).
 
 ## The inventory
 

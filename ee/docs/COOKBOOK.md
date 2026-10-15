@@ -30,6 +30,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
 - [Export and verify the audit trail](#export-and-verify-the-audit-trail)
 - [Archive audit evidence to a write-once bucket](#archive-audit-evidence-to-a-write-once-bucket)
+- [Ask the archive your own questions](#ask-the-archive-your-own-questions)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Register an Azure OpenAI deployment](#register-an-azure-openai-deployment)
@@ -976,6 +977,49 @@ and action. Filter on `source` if a spreadsheet expects connector rows only.
 More than 10,000 findings answers 422. Details are in
 [decision evidence](POLICY_DECISIONS.md#kvkk-exposure-report).
 
+## Ask the archive your own questions
+
+With the [request archive](#keep-matched-requests-and-open-one) on in a self-hosted
+installation:
+
+1. Write the questions:
+
+```bash
+curl -X PUT http://localhost:8000/api/v1/management/semantic-questions \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"revision": 0, "questions": [{"id": "atlas",
+       "text": "The request discusses Project Atlas, the unannounced acquisition, even without naming it.",
+       "examples": ["the company we are buying next quarter"]}]}'
+```
+
+2. Create a gateway key for the reviews (a service account's key is best) and turn the
+   review on with an internal model on an approved internal origin (any other is
+   refused with 422): `PATCH /api/v1/management/gateway-settings` with
+   `{"semantic_review": {"enabled": true, "model": "denetci", "api_key_id": "<key id>",
+   "max_items_per_hour": 60, "max_cost_usd_per_day": "5"}}`.
+3. Read `GET /api/v1/management/semantic-reviews?status=matched` and the
+   `gateway.semantic_review_match` finding; open a listed request from the archive to
+   decide. The review calls appear in the request list under the review key, tagged
+   `shim:semantic_review`, with their cost.
+
+## Mark an endpoint for a live semantic check
+
+With [questions written](#ask-the-archive-your-own-questions) (no archive needed):
+
+1. Create a gateway key for the checks and register a separate internal deployment
+   for them, so the checks never share the marked endpoint's capacity.
+2. Mark one narrow scope, monitor-first: `PATCH /api/v1/management/gateway-settings` with
+   `{"semantic_check": {"enabled": true, "scope": {"tags": ["hukuk"]}, "model": "kontrol",
+   "api_key_id": "<key id>", "timeout_ms": 1500, "max_checks_per_day": 500}}`.
+3. Watch `GET /api/v1/management/semantic-check`, the `semantic_check` column of
+   `GET /api/v1/management/requests?semantic_outcome=matched` and the
+   `gateway.semantic_check_match` finding. Each marked request waits for its check, at
+   most `timeout_ms`. A request whose rules would protect more at the check model than
+   at its own target is not checked (`skipped_guard`): scope such rules so they also
+   hold at the check model, or use an internal one.
+4. Once the matches look right, send `{"semantic_check": {"warn_header": true}}`:
+   matched requests then carry `SEMANTIC_WARN` in `X-Shim-Warnings`.
+
 ## Register a private model deployment
 
 Route a gateway alias to your own OpenAI- or Anthropic-compatible model server.
@@ -1046,8 +1090,9 @@ Notes:
 
 - A deployment marked `unhealthy` gets no traffic: its alias answers 503
   `DEPLOYMENT_UNHEALTHY` and leaves `/v1/models`. Nothing probes it
-  automatically and nothing fails over. Run the health check again, or update the
-  deployment with `PUT`, which resets it to `unknown`.
+  automatically and nothing fails over unless you [add a fallback rule](#add-a-fallback-rule).
+  Run the health check again, or update the deployment with `PUT`, which resets it
+  to `unknown`.
 - With `MODEL_DEPLOYMENT_REQUIRED=true`, a model that is not a registered alias
   gets 403 `MODEL_NOT_REGISTERED`, and `/v1/models` lists only aliases. A
   disabled alias gets 403 `MODEL_NOT_ALLOWED`; one whose origin was later
@@ -1056,6 +1101,111 @@ Notes:
   public price catalog is unpriced, so a provider spending limit refuses it with
   403 `MODEL_PRICE_UNKNOWN`. The full contract is in
   [model deployments](MODEL_DEPLOYMENTS.md).
+
+### Add a fallback rule
+
+Two replicas of one model, `kurum-llama` and `kurum-llama-b`, both registered: when
+the first cannot serve, send its requests to the second. Add this predefined rule to
+the [rule set](#write-a-tenant-rule):
+
+```json
+{"id": "llama_a_yedek", "name": "Llama A down: use B", "kind": "route", "action": "route",
+ "state": "monitor", "scope": {},
+ "match": {"on": "unavailable", "from": "kurum-llama", "to": ["kurum-llama-b"],
+           "triggers": ["health_flag", "circuit_open", "provider_error"]}}
+```
+
+`to` holds one or two aliases of the same provider, tried in order. `triggers` picks
+from `health_flag` (marked unhealthy), `circuit_open`, `provider_error` (500, 502,
+503, 504, timeout, connection error) and `rate_limited` (429). In `monitor`, requests
+end as before and each one that met a trigger records `RULE_WOULD_ROUTE`. Send the
+set again with `"state": "enforced"`: an unhealthy or open-circuit alias is served by
+`kurum-llama-b` in one call, and a failed call is followed by one attempt there
+(`X-Shim-Attempts: 2`). A request with personal data never leaves an `internal`
+deployment for an `external` fallback. To undo, restore the previous
+[policy version](#plan-apply-and-undo-a-change). The contract is in
+[model deployments](MODEL_DEPLOYMENTS.md#fallback-rule).
+
+### Roll out a new model to a share of conversations
+
+Register the candidate (`kurum-llama-4`) beside the model in use (`kurum-llama`), then
+add a split rule in `monitor`:
+
+```json
+{"id": "llama4_kanarya", "name": "Llama 4 to 5 percent", "kind": "route", "action": "route",
+ "state": "monitor", "scope": {},
+ "match": {"on": "split", "from": "kurum-llama", "to": "kurum-llama-4",
+           "share_percent": 5, "fallback_to_stable": false}}
+```
+
+1. Watch `GET /api/v1/management/canaries`: in `monitor` it counts the conversations
+   that would move. Send `X-Shim-Conversation-Id` on every turn, or each key's traffic
+   moves as one.
+2. Send the set again with `"state": "enforced"`. The chosen share is answered by
+   `kurum-llama-4`; the same read shows both sides' outcomes, failures, latency and cost.
+   Raise `share_percent` as confidence grows; set `fallback_to_stable: true` to answer a
+   failed candidate call from the stable model.
+3. Something looks wrong: `POST /api/v1/management/canaries/llama4_kanarya/rollback`
+   sends every conversation back to `kurum-llama` in one step and returns the policy
+   version it created. To undo the rollback, restore the version before it
+   ([plan, apply and undo](#plan-apply-and-undo-a-change)).
+
+### Give long requests their own replica
+
+Register a second server of the same model (`kurum-llama-uzun`, the same upstream
+model and kind as `kurum-llama`), then add a lane in `monitor`:
+
+```json
+{"id": "uzun_serit", "name": "Long requests to replica 2", "kind": "route", "action": "route",
+ "state": "monitor", "scope": {},
+ "match": {"on": "size", "from": "kurum-llama", "to": "kurum-llama-uzun",
+           "min_input_tokens": 8000}}
+```
+
+Long requests now record `route_decision` with `input_tokens_approx`; when the count
+looks right, send the set again with `"state": "enforced"` and they are served by the
+lane while short questions stay on `kurum-llama`. A lane that is disabled or unhealthy
+leaves the request on the alias with `held` set.
+
+### Test a model change before switching
+
+Register the candidate (`kurum-llama-4`), then add a change test in `monitor` with
+the window and caps you accept to pay for (see
+[model deployments](MODEL_DEPLOYMENTS.md#test-a-model-change-on-live-traffic) for the
+fields):
+
+1. `GET /api/v1/management/change-tests` shows the test in `monitor` with its 7-day
+   estimate of copies and extra cost.
+2. Send the set again with `"state": "enforced"` (with four eyes on, a second admin
+   approves it). Callers keep getting the stable model's answers; copies appear in the
+   request list with `shadow_of`.
+3. Read `GET /api/v1/management/change-tests/llama4_degisiklik`: outcome mix, schema
+   validity, answer length, latency and cost of both sides. The list says `ended` with
+   the reason when the window, `max_requests` or `max_cost_usd` is reached.
+4. Stop early with `POST /api/v1/management/change-tests/llama4_degisiklik/stop`; undo
+   the stop by restoring the version before it.
+
+### Document a model decision
+
+After a change test or a canary, keep the evidence:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/management/model-evidence \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"kind": "model_selection", "title": "Llama 4 replaces Llama 3.3",
+       "start": "2026-11-02T00:00:00Z", "end": "2026-11-09T00:00:00Z",
+       "current": "kurum-llama", "candidates": ["kurum-llama-4"],
+       "change_tests": ["llama4_degisiklik"]}'
+```
+
+The answer has the document's `sha256` and `audit_event_id`; hand the PDF to the auditor
+with the [verification steps](POLICY_DECISIONS.md#model-evidence-documents).
+
+### Report on routing rules
+
+The same route with `"kind": "routing"` and `"route_rules": ["cheap_start"]` reports where
+the rule's requests went, what they cost and would have cost at `from`, and how their
+outcomes compare with the requests the rule left alone.
 
 ## Register an Azure OpenAI deployment
 

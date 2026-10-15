@@ -9,6 +9,7 @@ content is stored, so none is read; a note names labels, never values.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -26,7 +27,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shim.billing.pricing import DATE_SUFFIX
+from shim.billing.pricing import DATE_SUFFIX, DEFAULT_PRICE_BOOK
 from shim.privacy.policies import PII_CONFIG_DEFAULTS, effective_entity_actions
 from shim.rules import Rule, RuleScope
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
@@ -35,7 +36,8 @@ from shim_enterprise.rules.preview import (
     PreviewCount,
     count_matching,
 )
-from shim_enterprise.tenants.models import OrganizationPIIConfig
+from shim_enterprise.rules.route_triggers import ShadowMatch
+from shim_enterprise.tenants.models import ModelDeployment, OrganizationPIIConfig
 
 # A scope's protocol name to the record's `source_endpoint`, as the kernel maps it.
 ENDPOINT_SOURCE = {
@@ -259,6 +261,102 @@ async def estimate_request_limit(
     )
 
 
+async def change_test_estimate(
+    session: AsyncSession,
+    organization_id: UUID,
+    rule: Rule,
+    start: datetime,
+    end: datetime,
+) -> dict[str, Any]:
+    """What a `shadow` rule would have copied over the window, and what it would have
+    cost at the candidate's price: the share of completed requests to `from`."""
+
+    match = ShadowMatch.model_validate(rule.match)
+    # The scope fields the record carries; the reached model is `from` by definition.
+    scope = rule.scope.model_copy(update={"models": (), "deployment_kinds": ()})
+    completed = and_(
+        RequestLifecycle.requested_model == match.from_,
+        RequestLifecycle.status == "completed",
+        *scope_conditions(scope),
+    )
+    requests, _, by_scope = await count_matching(
+        session, organization_id, start, end, completed
+    )
+    prompt, completion = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(UsageLedger.prompt_tokens), 0),
+                func.coalesce(func.sum(UsageLedger.completion_tokens), 0),
+            )
+            .join(
+                RequestLifecycle,
+                and_(
+                    RequestLifecycle.organization_id == UsageLedger.organization_id,
+                    RequestLifecycle.request_id == UsageLedger.request_id,
+                ),
+            )
+            .where(
+                UsageLedger.organization_id == organization_id,
+                UsageLedger.event_type == "quota_settlement",
+                RequestLifecycle.started_at >= start,
+                RequestLifecycle.started_at < end,
+                completed,
+            )
+        )
+    ).one()
+    candidate = await session.scalar(
+        select(ModelDeployment).where(
+            ModelDeployment.organization_id == organization_id,
+            ModelDeployment.alias == match.to,
+        )
+    )
+    prices = None
+    if candidate is not None and candidate.input_price_per_million is not None:
+        prices = (
+            candidate.input_price_per_million,
+            candidate.output_price_per_million,
+        )
+    elif candidate is not None and DEFAULT_PRICE_BOOK.supports(
+        candidate.upstream_model, candidate.provider
+    ):
+        price = DEFAULT_PRICE_BOOK.resolve(candidate.upstream_model, candidate.provider)
+        prices = (price.input_per_million, price.output_per_million)
+    share = Decimal(str(match.share_percent)) / 100
+    extra = (
+        None
+        if prices is None
+        else (prompt * prices[0] + completion * (prices[1] or 0)) * share / 1_000_000
+    )
+    return {
+        "requests": requests,
+        "would_copy": min(int(requests * share), match.max_requests),
+        "extra_cost_usd": None if extra is None else str(round(extra, 6)),
+        "priced": extra is not None,
+        "by_scope": by_scope,
+    }
+
+
+async def estimate_change_test(
+    session: AsyncSession,
+    organization_id: UUID,
+    rule: Rule,
+    start: datetime,
+    end: datetime,
+) -> PreviewCount:
+    estimate = await change_test_estimate(session, organization_id, rule, start, end)
+    return {
+        "requests": estimate["would_copy"],
+        "by_scope": estimate["by_scope"],
+        "note": f"estimated extra cost USD {estimate['extra_cost_usd']}"
+        if estimate["priced"]
+        else "candidate unpriced",
+    }
+
+
 PREVIEW_ESTIMATORS.update(
-    {"destination": estimate_destination, "request_limit": estimate_request_limit}
+    {
+        "destination": estimate_destination,
+        "request_limit": estimate_request_limit,
+        "route:shadow": estimate_change_test,
+    }
 )

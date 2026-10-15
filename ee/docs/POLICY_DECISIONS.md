@@ -212,9 +212,14 @@ and everything after run against the chosen target. A `PUT` refuses with 422
 `RULE_MATCH_INVALID` a `to` that is not a registered alias, or one of another provider
 than a registered `from` alias. A `route` rule with a `match.on` value belongs to
 another feature and is skipped here with no verdict; `on` is one of `unavailable`,
-`capacity`, `format_invalid`, `split`, `degrade`, `size` or `shadow`, and any other
-value is refused with 422. Enforcing a route rule, or changing an enforced one, is a relaxing change for
-[four eyes](#four-eyes); moving it back to monitor or deleting it tightens.
+`capacity`, `format_invalid`, `split`, `degrade`, `size` or `shadow`, any other
+value is refused with 422, and so is a value whose feature this release does not
+have yet (`RULE_MATCH_INVALID` at `match.on`): nothing would evaluate it. Enforcing a route rule, or changing an enforced one, is a relaxing change for
+[four eyes](#four-eyes); moving it back to monitor or deleting it tightens. Changing
+only the `share_percent` of a `split` rule is neutral: its checks already keep both
+aliases on one provider and an internal alias inside. For a `shadow` rule (a change
+test), a match change that only lowers `share_percent`, `max_requests` or
+`max_cost_usd`, or moves `ends_at` earlier, tightens; any other match change relaxes.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:
@@ -255,6 +260,27 @@ at most 32, blocks first) and `rule_matches_truncated`; see
 [diagnostic metadata](DIAGNOSTIC_METADATA.md). Terms and patterns stay in the
 database row and in process memory, never in Redis, a log, a metric or an audit
 event.
+
+### Fallback rules
+
+A `route` rule with `match.on: "unavailable"` ([fallback rule](MODEL_DEPLOYMENTS.md#fallback-rule))
+leaves one `rule.<id>` verdict, stage `rules`, on the row where it decided:
+
+| Decision | Outcome | `reason_code` |
+| --- | --- | --- |
+| took the request to a `to` | `allow` | `FALLBACK_UNHEALTHY`, `FALLBACK_CIRCUIT_OPEN`, `FALLBACK_PROVIDER_ERROR` or `FALLBACK_RATE_LIMITED`, by trigger |
+| no `to` was usable | `skip` | `FALLBACK_NO_CANDIDATE` |
+| state `monitor` | `allow` | `RULE_WOULD_ROUTE` |
+
+When an enforced rule takes over an unhealthy alias, the resolver records
+`deployment.registry` as `skip` with `DEPLOYMENT_UNHEALTHY` instead of `deny`, and
+the request goes on to admission. A monitor rule's verdict for an unhealthy alias is
+on the refusal's audit event (the resolver's refusals have no row); for an open
+circuit or a provider error it is on the failing row. A decision before the call
+also enters `rule_matches` with count 1. Which `to` was refused and why is the
+`gateway.attempt` `skip` verdict (`ATTEMPT_TARGET_NOT_ALLOWED`,
+`ATTEMPT_TARGET_UNAVAILABLE`, `ATTEMPT_WOULD_LEAVE_INTERNAL`, ...); which one served is
+`route_decision` and the `attempt_*` keys.
 
 ### Request approval
 
@@ -340,6 +366,103 @@ the installation does not allow it, the reason under `unavailable`.
   list, an export, a log or a finding.
 - Turning the archive on or keeping content longer is a loosening change for
   [four eyes](#four-eyes); turning it off or shortening is tightening.
+
+## Semantic review of archived requests
+
+Where the operator runs shim with `REQUEST_ARCHIVE_ENABLED` (self-hosted only; never
+in the hosted cloud), a tenant can have its [archived requests](#request-archive) read
+against its own questions by its own model. The questions are one versioned set
+(`GET` and `PUT /api/v1/management/semantic-questions`, `rules.read` and `rules.write`,
+at most 20, each with an id, a meaning of 10 to 500 characters and up to five
+examples), a managed policy resource: removing or rewriting a question relaxes, adding
+one tightens, so four eyes and one-step restore apply. The questions are confidential
+like rule terms: never in Redis, a log, a metric or an audit event, which carries ids
+only. The switch is the `semantic_review` gateway setting: the review model (an
+enabled `internal` alias of the tenant on an origin in `MODEL_DEPLOYMENT_INTERNAL_ORIGINS`,
+because the rules that applied to each item are not kept, so no other target can be
+checked against them), the gateway key the calls are made with and billed to, and caps
+per hour (1 to 1,000 items) and per day (0.01 to 1,000 USD, read before every call, so
+one call may pass it). Turning it on or changing the model is relaxing.
+
+The gateway process reviews every `SEMANTIC_REVIEW_INTERVAL_SECONDS` (default 60, 5 to
+3,600), at most `SEMANTIC_REVIEW_BATCH` items a pass (default 20, 1 to 200), newest
+first, each archived item once per question revision, never an item the review key
+made. Each claim batch writes an audit intent `tenant.request_content_scanned` with the
+request ids, so the [openings read](#request-archive) shows that a member's request was
+read by `system:semantic_review`. The review decrypts the masked payload only, never
+the values it replaced, and never sees the answer. A review model that is no longer
+internal at run time (an edited deployment, or one labelled internal outside
+`MODEL_DEPLOYMENT_INTERNAL_ORIGINS`) claims nothing until it is again. A tenant's pass
+ends within five minutes, half the age at which another process may claim its items
+again, and each call within two; a temporary refusal (a 401 such as an inactive key,
+a 408, a 429 or a usage limit, a 5xx, a timeout) leaves the item `pending`, ends the
+pass and returns the unreviewed claims, so the item is tried again on a later pass
+and never becomes a permanent `failed`. A refusal of the content itself, such as
+`RULE_BLOCKED`, is final. A claim left at an older question revision is claimed again
+at the current one.
+Each call is an ordinary request of the review key, tagged `shim:semantic_review`:
+its limits, privacy, rules, budgets and ledger apply, it has its own cost, and it is
+never archived itself. The tag means this only on a request of the configured review
+key; a client that sends it with any other key is archived and checked as usual. The
+request text sits between fence lines with a random marker per call, so the text cannot
+close the fence and add criteria. An OpenAI call carries no output limit (reasoning
+models refuse `max_tokens`, and not every compatible server takes
+`max_completion_tokens`): its strict answer schema bounds the answer where the server
+honours it, and the caps bound the rest. A tenant rule that blocks a word used in a question makes the
+call fail with `RULE_BLOCKED`; scope such a rule to `deployment_kinds: ["external"]`
+with an internal review model, or reword the question.
+
+The model answers only with JSON naming each question and whether the request matches
+it; an answer that is not that exact shape is `invalid_answer`. No explanation is asked
+for or kept. `GET /api/v1/management/semantic-reviews` (`findings.read`, at most 31
+days) lists reviews by status (`matched`, `clear`, `invalid_answer`, `failed`,
+`skipped_guard`, `skipped_empty`, `pending`) with the matched question ids, the review
+request and its cost. Matches only warn: they feed the finding
+[`gateway.semantic_review_match`](FINDINGS.md#gatewaysemantic_review_match) and never
+block, mask, change a rule or decide anything about a request.
+
+## Live semantic check on a marked endpoint
+
+A tenant can have requests on one narrow scope read against its
+[semantic questions](#semantic-review-of-archived-requests) while they happen, before
+the provider call. The switch is the `semantic_check` gateway setting: a scope of gateway
+key ids, tags and models (at most 20 each; at least one list must be non-empty, and every
+non-empty list must hold the request's value, so it never runs on all traffic), the
+endpoints it covers (`chat`, `responses`, `messages`, `generate_content`), optional
+`question_ids`, the check model (an enabled alias of the tenant), the gateway key the calls
+are made with and billed to (never itself in the scope), `warn_header` (default false),
+`timeout_ms` (500 to 10,000, default 3,000) and `max_checks_per_day` (1 to 100,000, default
+1,000, counted per tenant in Redis; without Redis no check runs). Turning it on, changing
+the model, widening a scope list or adding an endpoint is relaxing; turning it off is
+tightening.
+
+The check runs after privacy, so the model reads the masked text, never the values it
+replaced, and never sees the answer. Privacy ran for the request's own target, so the
+check model gets the same core guard as any later change of target (`skipped_guard`):
+an internal request is never sent to a check model that is not internal when anything
+was detected in it, and no request is sent where one of the caller's enforced mask,
+block or approval rules would act and did not at its own target (a rule scoped to the
+caller's key, team or tag and to the check model or its kind). A model labelled
+internal outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` counts as external, as it does for
+the request itself. The request waits at most `timeout_ms` for everything the check
+does, the reads and the counter included (`timeout`, the call is cancelled), then goes
+on unchanged: the check
+never blocks, masks, reroutes or edits a request, and a failure inside it never reaches
+the caller. A match adds `SEMANTIC_WARN` to `X-Shim-Warnings` only when `warn_header` is
+true; otherwise it is only recorded, so a tenant can watch the questions behave before
+callers see anything. Each check is an ordinary request of the check key, tagged
+`shim:semantic_check`: its limits, privacy, rules, budgets and ledger apply, it has its own
+cost, it is never checked or archived itself (the tag counts only with the configured
+check key), and it holds the marked request's admission lease while it runs, so a
+separate check deployment is recommended. Of a request that carried personal data, the
+record keeps the outcome only, never the matched question ids.
+
+The outcome is in the request's [`semantic_check`](DIAGNOSTIC_METADATA.md) record.
+`GET /api/v1/management/semantic-check` (`usage.read`, 1 to 168 hours, default 24) reads
+the switch, the scope sizes, today's count against the cap, outcome counts, latency p50 and
+p95, and the checks' cost. Matches feed the finding
+[`gateway.semantic_check_match`](FINDINGS.md#gatewaysemantic_check_match).
+`shim_semantic_checks_total{outcome}` counts the checks.
 
 ## Imported gateway logs
 
@@ -964,6 +1087,38 @@ An operator can write one file with `ee/scripts/generate_monthly_evidence.py
 the current month as `monthly_partial` (so a test never takes the closed
 month's place), a future month is refused, and so is a period that already has
 a file of that kind.
+
+## Model evidence documents
+
+`POST /api/v1/management/model-evidence` (`compliance.manage`) builds one document over a
+window of at most 31 days that has ended: `model_selection` ("why this model": the
+current model and one to three candidates, with their prices, the listed change tests
+and canaries, the live traffic of their provider models and the measured tokens per
+character by language) or `routing` ("where did requests go and what did it save": per
+route rule its definition, decisions by state, reason and outcome, the routed rows'
+settled tokens priced at both sides, the potential savings of `would_route` rows,
+outcome and analyzer rates of routed rows beside the rest of `from`, and the matching
+change tests). Every value is an id, label, count, sum, ratio or percentile read from
+`request_lifecycle`, `usage_ledger` and `request_logs`; `title` and `note` are the
+admin's own words. Savings reuse the tokens the serving model billed, priced at each
+side's deployment price, else its upstream model's catalog price, else `unpriced`;
+an output-token adjustment by tokens per character applies when both models have at
+least 30 eligible answers in the language.
+
+The PDF is stored with its facts object, the file's SHA-256 and the facts' SHA-256
+(`json.dumps(facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`). In
+the same transaction an audit intent `tenant.model_evidence_generated` records both
+digests; the PDF names that entry's id. To verify a document without shim code:
+download it (`GET .../model-evidence/{id}`, audited `tenant.model_evidence_downloaded`),
+compute its SHA-256, export the audit bundle for a window holding `generated_at`, find
+the row whose `request_id` is the document's `audit_event_id`, compare `extra.sha256`,
+and verify the chain with `shim-audit-verify`. `GET .../model-evidence` (`audit.read`)
+lists documents with `anchored` once the chained row exists, and
+`GET .../model-evidence/{id}/facts` returns the facts with `X-Content-SHA256`. Rows are
+never updated or deleted. Every document ends with what it does not prove: no answer
+was reviewed, routed and unrouted requests differ, copies ran later under other load,
+counterfactual tokens are estimates, prices are those in force, the numbers describe
+this window only, and candidates saw masked input.
 
 ## Incidents
 
