@@ -72,6 +72,36 @@ def test_sensitive_values_use_random_typed_placeholders(
     assert scrubber.deanonymize(second, second_map) == text
 
 
+# Email-shaped text that is not an address, and one that is: the domain needs a dot and a
+# final label of two or more letters, or a suffix the bundled Public Suffix List knows.
+@pytest.mark.parametrize(
+    ("text", "emails"),
+    [
+        ("pip install pkg@1.2.3", []),
+        ("yarn add react@18.3.1 vue@3.x", []),
+        ("ssh user@localhost", []),
+        ("npm install @scope/name", []),
+        ("@app.route('/users')\n@functools.cache\ndef users(): ...", []),
+        ("git clone git@github.com:org/repo.git", ["git@github.com"]),
+        ("mail ops@example.xn--p1ai", ["ops@example.xn--p1ai"]),
+        ("mail ops@xn--e1afmkfd.xn--p1ai", ["ops@xn--e1afmkfd.xn--p1ai"]),
+        # Accepted for recall: an address at an unknown suffix is masked, so these are too.
+        ('<img src="icon@2x.png">', ["icon@2x.png"]),
+        ("y = x@self.weights", ["x@self.weights"]),
+    ],
+)
+def test_email_look_alikes(
+    scrubber: PIIScrubberService, text: str, emails: list[str]
+) -> None:
+    found = [
+        text[item["start"] : item["end"]]
+        for item in scrubber.analyze(text, DEFAULT_ACTIONS)
+        if item["type"] == "EMAIL_ADDRESS"
+    ]
+
+    assert found == emails
+
+
 # The official VKN check counts a term that is 0 mod 9 as 9 (python-stdnum's own example is
 # 4540536920); the first three need that rule, the last one does not. All but 1112223339
 # are also valid phone numbers in a region the phone rule reads.

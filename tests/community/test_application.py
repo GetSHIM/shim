@@ -705,7 +705,12 @@ def audit(event, args):
         raise OSError("egress refused by the test")
 
 sys.addaudithook(audit)
-EMAIL = "alice@example.com"
+# Suffixes the bundled Public Suffix List knows, does not know yet, and never will.
+EMAILS = [
+    "alice@example.com", "x@example.hotel", "x@example.web", "x@host.corp",
+    "x@intranet.local", "ayse.yilmaz@bank.internal",
+]
+TEXT = "Contact " + ", ".join(EMAILS)
 sent = []
 
 async def upstream(request):
@@ -728,8 +733,8 @@ async def main(path):
     )
     headers = {"authorization": "Bearer shim-gateway-key-123", "x-provider-key": "sk-x"}
     body = (
-        {"text": f"Contact {EMAIL}"} if path == "/v1/scan" else
-        {"model": "gpt-5.6-luna", "messages": [{"role": "user", "content": f"Contact {EMAIL}"}]}
+        {"text": TEXT} if path == "/v1/scan" else
+        {"model": "gpt-5.6-luna", "messages": [{"role": "user", "content": TEXT}]}
     )
     async with application.router.lifespan_context(application):
         async with httpx.AsyncClient(
@@ -738,9 +743,11 @@ async def main(path):
             response = await client.post(path, headers=headers, json=body)
     assert response.status_code == 200, response.text
     if path == "/v1/scan":
-        assert response.json()["entity_types"] == ["EMAIL_ADDRESS"], response.text
+        found = [TEXT[item["start"]:item["end"]] for item in response.json()["entities"]
+                 if item["type"] == "EMAIL_ADDRESS"]
+        assert found == EMAILS, response.text
     else:
-        assert len(sent) == 1 and EMAIL not in sent[0], sent
+        assert len(sent) == 1 and not any(email in sent[0] for email in EMAILS), sent
     assert opened == [], opened
 
 asyncio.run(main(sys.argv[1]))
@@ -748,7 +755,7 @@ asyncio.run(main(sys.argv[1]))
 
 
 @pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/scan"])
-def test_an_email_is_masked_without_any_network_call_from_a_cold_process(
+def test_emails_at_any_suffix_are_masked_without_any_network_call_from_a_cold_process(
     path: str, tmp_path: Path
 ) -> None:
     cache = tmp_path / "tldextract-cache"
