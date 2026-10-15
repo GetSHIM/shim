@@ -28,7 +28,6 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from statistics import median
 
 import httpx
 
@@ -39,9 +38,10 @@ from shim.core.community_config import CommunitySettings
 
 KEY = "shim-bench-gateway-key-0123456789"
 HERE = Path(__file__).parent
-CATALOG = json.loads(
+_CATALOG = json.loads(
     (Path(shim.__file__).parent / "billing/model_catalog.json").read_text()
-)["version"]
+)
+CATALOG, CATALOG_PRICES = _CATALOG["version"], _CATALOG["providers"]
 # Per role, the models to try in order; the first one the keys reach is used, and the
 # ids used are printed and recorded. The fallbacks support the same levers.
 CANDIDATES = {
@@ -54,6 +54,7 @@ CANDIDATES = {
 TOKEN_MODELS = (
     "gpt-5.6-luna",
     "claude-haiku-5-5",
+    "claude-haiku-4-5",
     "claude-sonnet-5-5",
     "gemini-3.8-flash",
 )
@@ -227,10 +228,6 @@ TASKS = (
 )
 
 
-def openai_tools() -> list[dict]:
-    return [{"type": "function", "function": tool} for tool in tools()]
-
-
 def responses_tools() -> list[dict]:
     return [{"type": "function", **tool} for tool in tools()]
 
@@ -375,19 +372,20 @@ async def json_compaction(run: Runner) -> None:
     """S56: a pretty-printed tool result, billed with and without its whitespace."""
     result = json.dumps(orders(150), indent=2)
     question = "Which orders failed and why? Answer in two sentences."
-    call = {
-        "id": "call_1",
-        "type": "function",
-        "function": {"name": "list_order", "arguments": "{}"},
-    }
-    chat = {
+    # gpt-5.6 refuses function tools on chat completions with reasoning on: Responses.
+    responses = {
         "model": MODELS["openai"],
-        "max_completion_tokens": 2_000,
-        "tools": openai_tools(),
-        "messages": [
+        "max_output_tokens": 2_000,
+        "tools": responses_tools(),
+        "input": [
             {"role": "user", "content": question},
-            {"role": "assistant", "content": None, "tool_calls": [call]},
-            {"role": "tool", "tool_call_id": "call_1", "content": result},
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "list_order",
+                "arguments": "{}",
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": result},
         ],
     }
     messages = {
@@ -416,7 +414,7 @@ async def json_compaction(run: Runner) -> None:
         ],
     }
     requests = [
-        ("orders-150", "openai", MODELS["openai"], "/v1/chat/completions", chat),
+        ("orders-150", "openai", MODELS["openai"], "/v1/responses", responses),
         ("orders-150", "anthropic", MODELS["anthropic"], "/v1/messages", messages),
     ]
     for arm in ("off", "on"):
@@ -460,56 +458,68 @@ async def tool_search(run: Runner) -> None:
 
 
 async def prompt_cache(run: Runner, turns: int = 8) -> None:
-    """S54: the same long system prefix over several requests, with the cache settings."""
-    # About 7,000 tokens: above every model's minimum cacheable prefix.
+    """S54: a long prefix sent again and again, with the cache settings off and on.
+
+    Two shapes: independent questions over one system prompt (a support bot), and one
+    conversation that grows by a turn per request (an agent or a chat).
+    """
+    # About 17,000 Anthropic and 13,500 OpenAI tokens: above every minimum cacheable prefix.
     context = "Order export for the support team:\n" + json.dumps(orders(150))
     questions = [
         f"How many orders were created on 2026-10-{day:02d}? Reply with a number."
         for day in range(1, turns + 1)
     ]
-    for arm, settings in (
-        ("off", {}),
-        (
-            "on",
-            {"SHIM_ANTHROPIC_AUTO_CACHE": "5m", "SHIM_OPENAI_PROMPT_CACHE_KEY": "key"},
-        ),
+    settings = {
+        "SHIM_ANTHROPIC_AUTO_CACHE": "5m",
+        "SHIM_OPENAI_PROMPT_CACHE_KEY": "key",
+    }
+    for lever, growing in (
+        ("prompt_cache", False),
+        ("prompt_cache_conversation", True),
     ):
-        nonce = (
-            f"Session {uuid.uuid4()}.\n"  # A fresh prefix: no cache from earlier runs.
-        )
-        requests = []
-        for n, question in enumerate(questions):
-            requests.append(
-                (
-                    f"turn-{n}",
-                    "anthropic",
-                    MODELS["anthropic"],
-                    "/v1/messages",
-                    {
-                        "model": MODELS["anthropic"],
-                        "max_tokens": 50,
-                        "system": nonce + context,
-                        "messages": [{"role": "user", "content": question}],
-                    },
-                )
-            )
-            requests.append(
-                (
-                    f"turn-{n}",
-                    "openai",
-                    MODELS["openai"],
-                    "/v1/chat/completions",
-                    {
-                        "model": MODELS["openai"],
-                        "max_completion_tokens": 1_000,
-                        "messages": [
-                            {"role": "system", "content": nonce + context},
+        for arm, arm_settings in (("off", {}), ("on", settings)):
+            # A fresh prefix per arm: nothing cached by an earlier run or arm.
+            system = f"Session {uuid.uuid4()}.\n{context}"
+            requests = []
+            for n in range(turns):
+                if growing:
+                    history = []
+                    for question in questions[:n]:
+                        history += [
                             {"role": "user", "content": question},
-                        ],
-                    },
+                            {"role": "assistant", "content": "Noted."},
+                        ]
+                    turn = [*history, {"role": "user", "content": questions[n]}]
+                else:
+                    turn = [{"role": "user", "content": questions[n]}]
+                requests.append(
+                    (
+                        f"turn-{n}",
+                        "anthropic",
+                        MODELS["anthropic"],
+                        "/v1/messages",
+                        {
+                            "model": MODELS["anthropic"],
+                            "max_tokens": 50,
+                            "system": system,
+                            "messages": turn,
+                        },
+                    )
                 )
-            )
-        await run.arm("prompt_cache", arm, settings, requests)
+                requests.append(
+                    (
+                        f"turn-{n}",
+                        "openai",
+                        MODELS["openai"],
+                        "/v1/chat/completions",
+                        {
+                            "model": MODELS["openai"],
+                            "max_completion_tokens": 1_000,
+                            "messages": [{"role": "system", "content": system}, *turn],
+                        },
+                    )
+                )
+            await run.arm(lever, arm, arm_settings, requests)
 
 
 def image_bytes(cache: Path) -> list[tuple[str, bytes]]:
@@ -517,17 +527,24 @@ def image_bytes(cache: Path) -> list[tuple[str, bytes]]:
     out = []
     for name, url, sha1, _ in IMAGES:
         path = cache / name
-        if not path.exists():
-            data = httpx.get(
+        data = path.read_bytes() if path.exists() else b""
+        if hashlib.sha1(data).hexdigest() != sha1:
+            reply = httpx.get(
                 url,
-                headers={"User-Agent": "shim-bench/1 (getshim.tech)"},
+                # Wikimedia refuses clients that do not name themselves.
+                headers={
+                    "User-Agent": "shim-bench/1.0 (https://github.com/GetSHIM/shim)"
+                },
                 follow_redirects=True,
                 timeout=120,
-            ).content
+            )
+            reply.raise_for_status()
+            data = reply.content
+            if hashlib.sha1(data).hexdigest() != sha1:
+                raise SystemExit(
+                    f"{name}: SHA-1 does not match the pinned Commons file"
+                )
             path.write_bytes(data)
-        data = path.read_bytes()
-        if hashlib.sha1(data).hexdigest() != sha1:
-            raise SystemExit(f"{name}: SHA-1 does not match the pinned Commons file")
         out.append((name, data))
     return out
 
@@ -650,82 +667,147 @@ async def token_tax(keys: dict[str, str], out: Path, models: list[str]) -> None:
                 print(f"token_tax {model}: {counts}")
 
 
+# A task is handled when the model calls a tool for the right record: looking the order
+# up before refunding it is as right as refunding it at once.
+RELEVANT = {
+    "create_refund": {"create_refund", "get_order", "get_refund"},
+    "update_shipment": {"update_shipment", "get_shipment"},
+    "cancel_subscription": {"cancel_subscription", "get_subscription"},
+}
+
+
+def input_usd(row: dict) -> Decimal:
+    """Input cost at the catalog's list prices.
+
+    shim's own accounting bills an OpenAI token it cannot see as cached at the higher
+    cache-write price; a benchmark of savings uses the plain list input price. Only the
+    cache levers get cache rates: a hit elsewhere (the previous arm sent the same image)
+    is not the lever's saving.
+    """
+    price = CATALOG_PRICES[row["provider"]][row["model"]]
+    rate = Decimal(price["input_per_million"])
+    usage = row["usage"]
+    read = write = 0
+    if row["lever"].startswith("prompt_cache"):
+        details = (
+            usage.get("prompt_tokens_details")
+            or usage.get("input_tokens_details")
+            or {}
+        )
+        read = usage.get("cache_read_input_tokens") or details.get("cached_tokens") or 0
+        write = usage.get("cache_creation_input_tokens") or 0
+    read_rate = Decimal(
+        price.get("cache_read_per_million") or price["input_per_million"]
+    )
+    write_rate = Decimal(price.get("cache_write_per_million") or rate * Decimal("1.25"))
+    plain = row["input_tokens"] - read - write
+    return (plain * rate + read * read_rate + write * write_rate) / 1_000_000
+
+
 def report(path: Path) -> None:
     rows = [json.loads(line) for line in path.read_text().splitlines()]
-    print(
-        f"Prices: shim model catalog `{CATALOG}`. Medians per request; every request is in {path.name}.\n"
-    )
+    print(f"Prices: shim model catalog `{CATALOG}`, list input prices.")
     for row in rows:
         if row["lever"] == "meta":
-            print(
-                f"Models used: {row['models']}; token tax: {row['token_models']}; unreachable: {row['unreachable']}\n"
-            )
+            print(f"Models used: {row['models']}; token tax: {row['token_models']}")
     rows = [row for row in rows if row["lever"] != "meta"]
-    groups: dict[tuple, list[dict]] = defaultdict(list)
+    groups: dict[tuple, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for row in rows:
         if row["lever"] != "token_tax":
-            groups[(row["lever"], row["provider"], row["model"], row["arm"])].append(
-                row
-            )
+            groups[(row["lever"], row["model"], row["arm"])][row["case"]].append(row)
     print(
-        "| Lever | Model | Arm | n | ok | input tokens | cache read share | characters shim removed | USD / request | saved vs off | USD saved per 1M requests |"
+        "\nPaired: only cases that succeeded in both arms; per case, the mean over runs.\n"
+        "\n| Lever | Model | Arm | cases | failed | input tokens / request | cache read share | "
+        "characters shim removed / request | input USD / request | input saved vs off | "
+        "USD saved per 1M requests |"
     )
     print("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for key in sorted(groups):
-        lever, provider, model, arm = key
-        items = groups[key]
-        ok = [r for r in items if r["status"] == 200]
-        usd = median(Decimal(r["usd"]) for r in ok) if ok else None
-        tokens = median(r["input_tokens"] for r in ok) if ok else None
+        lever, model, arm = key
+        cases = groups[key]
+        failed = sum(r["status"] != 200 for runs in cases.values() for r in runs)
+        base = groups.get((lever, model, "off"), {})
+        ok = sorted(
+            case
+            for case in cases
+            if all(r["status"] == 200 for r in cases[case])
+            and (
+                arm == "off"
+                or (case in base and all(r["status"] == 200 for r in base[case]))
+            )
+        )
+        if not ok:
+            print(f"| {lever} | {model} | {arm} | 0 | {failed} | | | | | | |")
+            continue
+
+        def mean(values: list) -> float:
+            return sum(values) / len(values)
+
+        def per_case(arm_cases: dict, field) -> list:
+            return [mean([field(r) for r in arm_cases[case]]) for case in ok]
+
+        tokens = mean(per_case(cases, lambda r: r["input_tokens"]))
+        usd = mean(per_case(cases, lambda r: float(input_usd(r))))
         reads = sum(
             r["usage"].get("cache_read_input_tokens")
-            or (r["usage"].get("prompt_tokens_details") or {}).get("cached_tokens")
+            or (
+                r["usage"].get("prompt_tokens_details")
+                or r["usage"].get("input_tokens_details")
+                or {}
+            ).get("cached_tokens")
             or 0
-            for r in ok
+            for case in ok
+            for r in cases[case]
         )
-        share = (
-            reads / sum(r["input_tokens"] for r in ok)
-            if ok and sum(r["input_tokens"] for r in ok)
-            else 0
-        )
-        removed = median(
-            sum(
-                t["before_chars"] - t["after_chars"]
-                for t in r["shim"]["transforms_applied"] or []
+        share = reads / sum(r["input_tokens"] for case in ok for r in cases[case])
+        removed = mean(
+            per_case(
+                cases,
+                lambda r: sum(
+                    t["before_chars"] - t["after_chars"]
+                    for t in r["shim"]["transforms_applied"] or []
+                ),
             )
-            for r in items
         )
-        base = [
-            r
-            for r in groups.get((lever, provider, model, "off"), [])
-            if r["status"] == 200
-        ]
         saved = per_million = ""
-        if base and ok and arm != "off":
-            base_usd = median(Decimal(r["usd"]) for r in base)
-            saved = f"{1 - usd / base_usd:.1%}" if base_usd else ""
+        if arm != "off":
+            base_usd = mean(per_case(base, lambda r: float(input_usd(r))))
+            saved = f"{1 - usd / base_usd:.1%}"
             per_million = f"{(base_usd - usd) * 1_000_000:,.0f}"
         print(
-            f"| {lever} | {model} | {arm} | {len(items)} | {len(ok)} | {tokens} | {share:.0%} | {removed:,.0f} | {usd} | {saved} | {per_million} |"
+            f"| {lever} | {model} | {arm} | {len(ok)} | {failed} | {tokens:,.0f} | {share:.0%} | "
+            f"{removed:,.0f} | {usd:.8f} | {saved} | {per_million} |"
         )
     tool_rows = [r for r in rows if r["lever"] == "tool_search"]
     if tool_rows:
-        right = defaultdict(lambda: [0, 0])
+        handled: dict[tuple, list[int]] = defaultdict(lambda: [0, 0])
         for r in tool_rows:
-            right[(r["model"], r["arm"])][0] += r["case"] in r["tools_called"]
-            right[(r["model"], r["arm"])][1] += 1
+            handled[(r["model"], r["arm"])][0] += bool(
+                RELEVANT[r["case"]] & set(r["tools_called"])
+            )
+            handled[(r["model"], r["arm"])][1] += 1
         print(
-            "\nTool search, expected tool called: "
-            + ", ".join(f"{m} {a} {h}/{n}" for (m, a), (h, n) in sorted(right.items()))
+            "\nTool search, tasks where the model called a tool for the right record: "
+            + ", ".join(
+                f"{m} {a} {h}/{n}" for (m, a), (h, n) in sorted(handled.items())
+            )
+        )
+        print(
+            "Tools called: "
+            + "; ".join(
+                f"{r['model']} {r['arm']} {r['case']}: {r['tools_called']}"
+                for r in tool_rows
+            )
         )
     print(
-        "\n| Model | TR tokens | EN tokens | TR tokens/char | EN tokens/char | TR/EN tokens for the same text |"
+        "\n| Model | TR tokens | EN tokens | TR tokens per 1k characters | EN tokens per 1k characters | TR ÷ EN tokens, same text |"
     )
     print("| --- | ---: | ---: | ---: | ---: | ---: |")
     for row in (r for r in rows if r["lever"] == "token_tax"):
         t, c = row["tokens"], row["characters"]
         print(
-            f"| {row['model']} | {t['tr']} | {t['en']} | {t['tr'] / c['tr']:.3f} | {t['en'] / c['en']:.3f} | {t['tr'] / t['en']:.2f}x |"
+            f"| {row['model']} | {t['tr']} | {t['en']} | {1000 * t['tr'] / c['tr']:.1f} | "
+            f"{1000 * t['en'] / c['en']:.1f} | {t['tr'] / t['en']:.2f}× |"
         )
 
 

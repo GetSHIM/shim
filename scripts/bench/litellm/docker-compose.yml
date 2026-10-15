@@ -35,6 +35,7 @@ services:
     entrypoint: ["python", "/srv/presidio_registry.py"]
     environment:
       WORKERS: ${PRESIDIO_WORKERS:-1} # 1 as the image ships; the scaled arm sets 4
+      PYTHONPATH: /app # the analyzer package lives in the image's working directory
     volumes:
       - ./presidio_registry.py:/srv/presidio_registry.py:ro
 

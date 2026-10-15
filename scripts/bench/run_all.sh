@@ -71,7 +71,7 @@ score() {  # score <corpus file>
     --corpus "$corpus" --out "$OUT/$name-shim-v030.jsonl"
   uv run --locked --with "$SPACY_MODEL" python -m scripts.bench.pii_score run --system presidio \
     --corpus "$corpus" --out "$OUT/$name-presidio.jsonl"
-  rm -f "$CAPTURES"/*.jsonl
+  rm -f "${CAPTURES:?}"/*.jsonl
   MOCK_RECORD=/captures/upstream.jsonl \
     PRESIDIO_ANALYZER_API_BASE=http://relay-analyzer:3000 \
     PRESIDIO_ANONYMIZER_API_BASE=http://relay-anonymizer:3000 \

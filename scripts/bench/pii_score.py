@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -210,7 +211,7 @@ def run_litellm(cases: list[dict], url: str, captures: Path) -> tuple[dict, list
     with httpx.Client(
         base_url=url, headers={"Authorization": f"Bearer {LITELLM_KEY}"}, timeout=120
     ) as http:
-        health = http.get("/health/readiness").json()
+        litellm = http.get("/openapi.json").json()["info"]["version"]
         for case in cases:
             reply = http.post(
                 "/v1/chat/completions",
@@ -249,7 +250,7 @@ def run_litellm(cases: list[dict], url: str, captures: Path) -> tuple[dict, list
                 }
             )
     meta = {
-        "label": f"LiteLLM {health.get('litellm_version', '?')} + Presidio guardrail",
+        "label": f"LiteLLM {litellm} + Presidio guardrail",
         "egress": {
             "chat_requests": len(cases),
             "upstream_calls": calls["upstream"],
@@ -297,6 +298,16 @@ def leaked(value: str, upstream: list) -> bool:
     return target in sent or target[::-1] in sent
 
 
+def sent(row: dict, text: str) -> list:
+    """What reached the provider; for a library, the text with its detections masked."""
+    if "upstream" in row:
+        return row["upstream"]
+    masked = list(text)
+    for start, end, _ in row["spans"]:
+        masked[start:end] = ["\0"] * (end - start)
+    return [re.sub("\0+", "<MASKED>", "".join(masked))]
+
+
 def covered(start: int, end: int, text: str, spans: list) -> bool:
     return all(
         text[i].isspace() or any(s <= i < e for s, e, _ in spans)
@@ -329,13 +340,9 @@ def score(cases: dict, rows: list[dict]) -> dict:
                 tally[key]["n"] += 1
                 tally[key]["tp" if hit else "fn"] += 1
                 tally[key]["partial"] += touched and not hit
-            if "upstream" in row:
-                value = text[g["start"] : g["end"]]
-                for key in keys:
-                    tally[key]["leaked"] += leaked(value, row["upstream"])
-            else:
-                for key in keys:
-                    tally[key]["leaked"] += not hit
+            value = text[g["start"] : g["end"]]
+            for key in keys:
+                tally[key]["leaked"] += leaked(value, sent(row, text))
         for s, e, kind in spans:
             if any(g["start"] < e and s < g["end"] for g in gold):
                 continue
@@ -354,26 +361,37 @@ def score(cases: dict, rows: list[dict]) -> dict:
 
 def detection_tables(cases: dict, results: list[tuple[dict, list]]) -> str:
     scored = [(meta["label"], score(cases, rows)) for meta, rows in results]
-    out = [
-        "| Type | n | "
-        + " | ".join(f"{label} P / R / F1" for label, _ in scored)
+    # Recall per type is type-agnostic (masked is masked); a false positive is counted
+    # under the type the system gave it, so precision is only meaningful over all types.
+    out = ["| Recall | n | " + " | ".join(label for label, _ in scored) + " |"]
+    out.append("| --- | ---: |" + " ---: |" * len(scored))
+    for family in FAMILIES:
+        out.append(
+            f"| {family} | {scored[0][1][family]['n']} | "
+            + " | ".join(pct(t[family]["tp"], t[family]["n"]) for _, t in scored)
+            + " |"
+        )
+    totals = []
+    for _, t in scored:
+        tp = sum(t[f]["tp"] for f in FAMILIES)
+        n = sum(t[f]["n"] for f in FAMILIES)
+        fp = sum(t[f]["fp"] for f in (*FAMILIES, "OTHER"))
+        p, r = tp / (tp + fp) if tp + fp else 0.0, tp / n if n else 0.0
+        totals.append((tp, n, fp, p, r, 2 * p * r / (p + r) if p + r else 0.0))
+    n = totals[0][1]
+    out.append(
+        f"| **all types** | {n} | " + " | ".join(pct(x[0], x[1]) for x in totals) + " |"
+    )
+    out.append("| false positives | | " + " | ".join(str(x[2]) for x in totals) + " |")
+    out.append(
+        "| **precision** | | " + " | ".join(f"{x[3]:.1%}" for x in totals) + " |"
+    )
+    out.append("| **F1** | | " + " | ".join(f"{x[5]:.3f}" for x in totals) + " |")
+    out.append(
+        "| other-type detections, not scored | | "
+        + " | ".join(str(t["OTHER"]["ignored"]) for _, t in scored)
         + " |"
-    ]
-    out.append("| --- | ---: |" + " --- |" * len(scored))
-    for family in (*FAMILIES, "OTHER"):
-        n = scored[0][1][family]["n"]
-        cells = []
-        for _, tally in scored:
-            t = tally[family]
-            p = t["tp"] / (t["tp"] + t["fp"]) if t["tp"] + t["fp"] else 0.0
-            r = t["tp"] / t["n"] if t["n"] else 0.0
-            f1 = 2 * p * r / (p + r) if p + r else 0.0
-            cells.append(
-                f"FP {t['fp']}, other {t['ignored']}"
-                if family == "OTHER"
-                else f"{p:.2f} / {r:.2f} / {f1:.2f}"
-            )
-        out.append(f"| {family} | {n} | " + " | ".join(cells) + " |")
+    )
     out += [
         "",
         "| Subtype | n | "
@@ -436,10 +454,7 @@ def evasion_table(cases: dict, results: list[tuple[dict, list]]) -> str:
         for row in rows:
             case = cases[row["id"]]
             g = case["spans"][0]
-            if "upstream" in row:
-                hit = leaked(g["value"], row["upstream"])
-            else:
-                hit = not covered(g["start"], g["end"], case["text"], row["spans"])
+            hit = leaked(g["value"], sent(row, case["text"]))
             for key in (case["disguise"], f"{case['disguise']}:{g['label']}"):
                 leaks[key][column]["n"] += 1
                 leaks[key][column]["leaked"] += hit
