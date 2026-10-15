@@ -1380,7 +1380,8 @@ def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -
         ("ara + 9 0 5 3 2 1 2 3 4 5 6 7", "ara +905321234567"),
         ("IBAN TR3-300-061-005-197-864-578-413-26", "IBAN TR330006100519786457841326"),
         ("kart 4111-1111-1111-1111", "kart 4111111111111111"),
-        ("a@\n example.com", "a@example.com"),
+        ("a@\nexample.com", "a@example.com"),
+        ("a@\r\nexample.com", "a@example.com"),
         ("\u202e64100000001\u202c ok", "64100000001\n10000000146 ok"),
         ("a\u0301li@e\u0301xample.com", "ali@example.com"),
         # Left alone: under ten digits, groups of mixed sizes, a word glued on.

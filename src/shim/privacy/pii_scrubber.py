@@ -35,9 +35,9 @@ _OVERRIDE, _OVERRIDE_ENDS = "\u202e", "\u202c\n\r\u2029"
 _SPLIT_IDENTIFIER = re.compile(
     r"(?<![^\W_])(?P<spaced>(?:\+ )?(?:[0-9A-Za-z] ){9,}[0-9A-Za-z])(?![^\W_])"
     r"|(?<![\w+-])(?P<hyphenated>\+?[A-Za-z]{0,2}[0-9]{1,4}(?:-[0-9]{1,4})+)(?![\w-])"
-    r"|(?<=[0-9A-Za-z]@)[ \t]*\r?\n[ \t]*(?=[0-9A-Za-z])"
+    r"|(?<=[0-9A-Za-z]@)\r?\n(?=[0-9A-Za-z])"
 )
-_SEPARATORS = frozenset(" -\t\r\n")
+_SEPARATORS = frozenset(" -\r\n")
 PLACEHOLDER = re.compile(
     r"<\s*([A-Z][A-Z0-9_]*_(?:[0-9a-f]{8}|[0-9a-f]{32}))(~[0-9A-Z]{4})?\s*>"
 )
