@@ -144,6 +144,7 @@ _NOT_ID_WORD = re.compile(
     r"(?:[ _-]?(?:numaras[ıi]|number|no|num|id|at|ms))*[\"':=#. _-]{0,4}$",
     re.IGNORECASE,
 )
+_TAX_WORD = re.compile(r"vergi|vkn|tax", re.IGNORECASE)
 _IDENTIFIER_TAIL = re.compile(r"[A-Za-z0-9_.-]*$")
 _LETTER = re.compile(r"[A-Za-z]")
 
@@ -153,6 +154,10 @@ def _in_decimal(text: str, start: int, end: int) -> bool:
     return (start >= 2 and text[start - 1] == "." and text[start - 2].isdigit()) or (
         text[end : end + 1] == "." and text[end + 1 : end + 2].isdigit()
     )
+
+
+def after_tax_word(text: str, start: int) -> bool:
+    return bool(_TAX_WORD.search(text, max(0, start - 24), start))
 
 
 def _glued_to_identifier(text: str, start: int) -> bool:
@@ -399,10 +404,11 @@ class ShimTurkishTaxIdRecognizer(PatternRecognizer):
 
     About one ten-digit number in ten passes the checksum, so an invoice number, a
     timestamp or a decimal fraction would be masked; a tax word in front overrules.
+    The scrubber gives a span the phone rule also claims to the phone, unless a tax
+    word is in front.
     """
 
     COUNTRY_CODE = "tr"
-    _TAX_WORD = re.compile(r"vergi|vkn|tax", re.IGNORECASE)
 
     def __init__(self) -> None:
         super().__init__(
@@ -427,11 +433,10 @@ class ShimTurkishTaxIdRecognizer(PatternRecognizer):
         ]
 
     def _is_tax_id(self, text: str, start: int, end: int) -> bool:
-        window = max(0, start - 24)
-        return bool(self._TAX_WORD.search(text, window, start)) or not (
+        return after_tax_word(text, start) or not (
             _in_decimal(text, start, end)
             or _glued_to_identifier(text, start)
-            or _NOT_ID_WORD.search(text, window, start)
+            or _NOT_ID_WORD.search(text, max(0, start - 24), start)
         )
 
     def validate_result(self, pattern_text: str) -> bool:
@@ -442,7 +447,8 @@ class ShimTurkishTaxIdRecognizer(PatternRecognizer):
         for index, digit in enumerate(digits[:9]):
             adjusted = (digit + 9 - index) % 10
             if adjusted:
-                checksum += (adjusted * 2 ** (9 - index)) % 9
+                # python-stdnum's stdnum.tr.vkn: a term that is 0 mod 9 counts as 9.
+                checksum += (adjusted * 2 ** (9 - index)) % 9 or 9
         return digits[-1] == (10 - checksum % 10) % 10
 
 

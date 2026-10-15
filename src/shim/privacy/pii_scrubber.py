@@ -17,7 +17,7 @@ from typing import Any, get_args
 from presidio_analyzer import RecognizerResult
 
 from shim.privacy.policies import EntityAction
-from shim.privacy.presidio_analyzer import PresidioAnalyzer
+from shim.privacy.presidio_analyzer import PresidioAnalyzer, after_tax_word
 from shim.rules.content import ContentHit, ContentRules, first_fit, fold_digits
 from shim.rules.model import ACTION_RANK
 
@@ -382,7 +382,24 @@ class PIIScrubberService:
         enabled_entities = {
             entity_type for entity_type, action in actions.items() if action != "off"
         }
-        return self._deduplicate(self._analyzer.analyze(text, enabled_entities))
+        results = self._deduplicate(self._analyzer.analyze(text, enabled_entities))
+        # Ten digits both rules claim are a tax ID after a tax word, unless the phone
+        # action is stronger: the tie never weakens what happens to the value.
+        strength = get_args(EntityAction).index
+        if strength(actions.get("PHONE_NUMBER", "off")) > strength(
+            actions.get("TR_VKN", "off")
+        ):
+            return results
+        taxed = {
+            (item.start, item.end)
+            for item in results
+            if item.entity_type == "TR_VKN" and after_tax_word(text, item.start)
+        }
+        return [
+            item
+            for item in results
+            if item.entity_type != "PHONE_NUMBER" or (item.start, item.end) not in taxed
+        ]
 
     def _source_detections(
         self,
@@ -437,8 +454,9 @@ class PIIScrubberService:
             "IBAN_CODE": 85,
             "CREDIT_CARD": 80,
             "TR_NATIONAL_ID": 70,
-            "TR_VKN": 70,
-            # Below the types that rank 0 too, so every other detector wins a shared span.
+            # Below the types that rank 0 too, so every other detector wins a shared span:
+            # ten digits the phone rule claims are a phone, unless a tax word is in front.
+            "TR_VKN": -1,
             "PERSON_NAME_TR": -1,
         }
         ordered = sorted(items, key=lambda item: (item.start, item.end))
