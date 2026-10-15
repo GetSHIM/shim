@@ -56,13 +56,23 @@ def _strings(value: object, path: tuple[object, ...] = ()) -> Iterator[tuple]:
             yield from _strings(item, (*path, index))
 
 
-# Structural markers a step may set inside the conversation: image detail levels.
-_MARKERS = frozenset({"detail", "mediaResolution"})
+# Structural markers a step may set inside the conversation: image detail levels and
+# cache breakpoints.
+_MARKERS = frozenset({"detail", "mediaResolution", "cache_control"})
+
+
+def _system_blocks(payload: dict[str, Any]) -> dict[str, Any]:
+    # A string system prompt and its one text block are the same prompt.
+    system = payload.get("system")
+    if isinstance(system, str):
+        return {**payload, "system": [{"type": "text", "text": system}]}
+    return payload
 
 
 def assert_content_untouched(before: dict[str, Any], after: dict[str, Any]) -> None:
     """No band step changes a string of the conversation or of a tool description."""
 
+    before, after = _system_blocks(before), _system_blocks(after)
     for field in _CONTENT_FIELDS:
         assert [
             item for item in _strings(before.get(field)) if not _MARKERS & set(item[0])
@@ -410,12 +420,18 @@ _BREAKPOINT = {"type": "ephemeral"}
     ("ttl", "marker"),
     [("5m", {"type": "ephemeral"}), ("1h", {"type": "ephemeral", "ttl": "1h"})],
 )
-async def test_auto_cache_adds_one_top_level_breakpoint(ttl, marker) -> None:
+async def test_auto_cache_marks_the_system_prompt_and_the_conversation(
+    ttl, marker
+) -> None:
     prepared = _cached("messages", band={"anthropic_auto_cache": ttl})
 
     banded = await _band(prepared)
 
-    assert banded.payload == {**prepared.payload, "cache_control": marker}
+    assert banded.payload == {
+        **prepared.payload,
+        "system": [{"type": "text", "text": "be brief", "cache_control": marker}],
+        "cache_control": marker,
+    }
     assert banded.settings_applied == ({"id": "anthropic_auto_cache", "version": 1},)
 
 

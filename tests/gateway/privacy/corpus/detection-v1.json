@@ -909,8 +909,98 @@
       ]
     },
     {
-      "id": "number-after-no-cue-is-masked",
+      "id": "tckn-spaced-per-digit",
+      "text": "TC 1 0 0 0 0 0 0 0 1 4 6, teşekkürler",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "1 0 0 0 0 0 0 0 1 4 6"
+        }
+      ]
+    },
+    {
+      "id": "iban-hyphen-every-third",
+      "text": "IBAN TR3-300-061-005-197-864-578-413-26 lütfen",
+      "expect": [
+        {
+          "entity": "IBAN_CODE",
+          "value": "TR3-300-061-005-197-864-578-413-26"
+        }
+      ]
+    },
+    {
+      "id": "email-broken-after-at",
+      "text": "Mail: ayse.yilmaz@\nornek.com.tr",
+      "expect": [
+        {
+          "entity": "EMAIL_ADDRESS",
+          "value": "ayse.yilmaz@\nornek.com.tr"
+        }
+      ]
+    },
+    {
+      "id": "not-joined-date-range",
+      "text": "Aralık 2026-10-15-2026-10-20",
+      "expect": []
+    },
+    {
+      "id": "not-joined-isbn",
+      "text": "ISBN 978-3-16-148410-0",
+      "expect": []
+    },
+    {
+      "id": "not-pii-spaced-binary-row",
+      "text": "mask 0 1 0 1 0 1 0 1 0 1 0 1",
+      "expect": []
+    },
+    {
+      "id": "not-joined-amount",
+      "text": "Tutar 1 250 000 TL",
+      "expect": []
+    },
+    {
+      "id": "secret-with-hyphenated-digits",
+      "text": "key sk-proj-1234-5678-9012-abcd",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "sk-proj-1234-5678-9012-abcd"
+        }
+      ]
+    },
+    {
+      "id": "order-number-with-no-cue",
       "text": "Sipariş no: 4829104455",
+      "expect": []
+    },
+    {
+      "id": "invoice-number-with-possessive-cue",
+      "text": "fatura numaranız 4829104455",
+      "expect": []
+    },
+    {
+      "id": "tracking-number-with-no-cue",
+      "text": "kargo takip no 918226586102",
+      "expect": []
+    },
+    {
+      "id": "not-phone-dotted-date",
+      "text": "Kaydınızı 05.03.2026 tarihli faturayla eşleştirdim.",
+      "expect": []
+    },
+    {
+      "id": "phone-after-tel-no-cue",
+      "text": "Tel no: 4829104455",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4829104455"
+        }
+      ]
+    },
+    {
+      "id": "phone-after-order-phone-cue",
+      "text": "Sipariş telefon no: 4829104455",
       "expect": [
         {
           "entity": "PHONE_NUMBER",

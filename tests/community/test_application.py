@@ -234,6 +234,132 @@ async def test_identifiers_in_any_script_s_digits_never_reach_the_provider(
     )
 
 
+_TCKN, _CARD, _IBAN = "10000000146", "4111111111111111", "TR330006100519786457841326"
+_PHONE, _EMAIL = "+905321234567", "ayse.yilmaz@ornek.com.tr"
+
+
+def _every_third(value: str) -> str:
+    return "-".join(value[index : index + 3] for index in range(0, len(value), 3))
+
+
+# How the benchmark of 15 October 2026 hid an identifier from detection.
+_DISGUISED = {
+    "spaced-tckn": " ".join(_TCKN),
+    "spaced-card": " ".join(_CARD),
+    "spaced-iban": " ".join(_IBAN),
+    "spaced-phone": " ".join(_PHONE),
+    "reversed-override-tckn": f"\u202e{_TCKN[::-1]}\u202c",
+    "reversed-override-card": f"\u202e{_CARD[::-1]}\u202c",
+    "reversed-override-iban": f"\u202e{_IBAN[::-1]}\u202c",
+    "reversed-override-phone": f"\u202e{_PHONE[::-1]}\u202c",
+    "reversed-override-email": f"\u202e{_EMAIL[::-1]}\u202c",
+    "override-unclosed-email": f"\u202e{_EMAIL[::-1]}",
+    # Stored in order with an override inside, and stored with a part reversed.
+    "override-inside-tckn": f"{_TCKN[:4]}\u202e{_TCKN[4:8]}\u202c{_TCKN[8:]}",
+    "reversed-part-of-tckn": f"{_TCKN[:7]}\u202e{_TCKN[7:][::-1]}\u202c",
+    "email-broken-after-at": _EMAIL.replace("@", "@\n"),
+    "acute-on-email-letters": "".join(
+        c + "\u0301" if c.isalnum() else c for c in _EMAIL
+    ),
+    "acute-on-iban-letters": "".join(c + "\u0301" for c in _IBAN),
+    "hyphen-every-third-iban": _every_third(_IBAN),
+    "hyphen-every-third-card": _every_third(_CARD),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shown", _DISGUISED.values(), ids=_DISGUISED)
+async def test_disguised_identifiers_never_reach_the_provider(shown: str) -> None:
+    prompt = f"Müşteri bilgisi: {shown} teşekkürler."
+    sent: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][0]["content"]
+        sent.append(content)
+        return httpx.Response(200, json=_completion(content))
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    application = create_community_app(
+        _settings(), http_client=upstream, event_stream=StringIO()
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 200, response.text
+    [upstream_text] = sent
+    # Every character of the value is masked; direction controls may stay.
+    masked = re.sub(r"<[A-Z_]+_[0-9a-f]{32}>", "", upstream_text)
+    assert masked.translate({0x202E: None, 0x202C: None}) == (
+        "Müşteri bilgisi:  teşekkürler."
+    ), upstream_text
+    assert response.json()["choices"][0]["message"]["content"] == prompt
+
+
+@pytest.mark.asyncio
+async def test_invoice_order_and_tracking_numbers_and_dates_reach_the_provider() -> (
+    None
+):
+    kept = (
+        "Fatura no: 6726182317. Fatura no 1628469723. fatura numaranız 2704530520. "
+        "Invoice No: 6726182317. Sipariş no 17409706488. Sipariş numaranız "
+        "12139597577. order no: 6726182317. Kargo takip numarası 911872290065. "
+        "kargo takip no 918226586102. Kaydınızı 05.03.2026 tarihli faturayla "
+        "eşleştirdim."
+    )
+    phones = "Tel no: 2704530521. telefon no 2125551234. cep no 4155552671."
+    sent: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][0]["content"]
+        sent.append(content)
+        return httpx.Response(200, json=_completion(content))
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    application = create_community_app(
+        _settings(), http_client=upstream, event_stream=StringIO()
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": f"{kept} {phones}"}],
+                },
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 200, response.text
+    [upstream_text] = sent
+    # A "no" after an invoice, order or tracking word is not a phone cue; after a
+    # phone word it still is.
+    assert re.sub(r"<PHONE_NUMBER_[0-9a-f]{32}>", "#", upstream_text) == (
+        f"{kept} Tel no: #. telefon no #. cep no #."
+    ), upstream_text
+
+
 class _SplitStream(httpx.AsyncByteStream):
     def __init__(self, content: bytes) -> None:
         self.content = content

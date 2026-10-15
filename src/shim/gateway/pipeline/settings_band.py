@@ -149,7 +149,16 @@ def _anthropic_auto_cache(
     marker = (
         {"type": "ephemeral"} if ttl == "5m" else {"type": "ephemeral", "ttl": "1h"}
     )
-    return {**payload, "cache_control": marker}
+    cached = {**payload, "cache_control": marker}
+    # The top-level breakpoint lands after the last message, which an independent
+    # request never repeats: alone, every request writes and none reads. A second
+    # one ends the system prompt, the prefix such requests share; two of four.
+    system = payload.get("system")
+    if isinstance(system, str) and system:
+        cached["system"] = [{"type": "text", "text": system, "cache_control": marker}]
+    elif isinstance(system, list) and system and isinstance(system[-1], Mapping):
+        cached["system"] = [*system[:-1], {**system[-1], "cache_control": marker}]
+    return cached
 
 
 def _leading_instructions(items: object) -> list[object]:

@@ -331,7 +331,16 @@ number written in Arabic-Indic, Devanagari or fullwidth digits is found and
 masked like one written in 0-9, and so is a rule term or template. Marks and
 invisible characters on the digits (an accent after each digit, a variation
 selector, a keycap, a zero-width joiner) do not hide the number; they are masked
-with it and restored with it.
+with it and restored with it, and so are marks on the letters of an email or an
+IBAN. A TCKN, card, IBAN or phone number with a space between every character
+(`1 0 0 0 0 0 0 0 1 4 6`) or in hyphenated groups of one size
+(`TR3-300-061-005-...`) is read without the separators when it has ten digits or
+more, and an email broken over a line after its `@` is read whole. Text after a
+right-to-left override (U+202E) is also read in the order it is shown, so a value
+stored reversed is found; the mask covers the separators and the reversed text.
+A number after `fatura no`, `sipariş no`, `order no`, `invoice no` or `takip no`
+(and `numarası`, `numaranız`) is not taken for a phone; after `tel no`,
+`telefon no` or `cep no` it is. A date such as `05.03.2026` is not a phone.
 
 Each entity also carries its `action` (see the next recipe); a type whose action
 is `off` is not reported. Enterprise names the list `entities_found` and gives
@@ -858,10 +867,13 @@ changing your application.
 
 1. For Anthropic, set `SHIM_ANTHROPIC_AUTO_CACHE=5m` (or `1h`). A messages request
    that carries no `cache_control` anywhere (top level, `system`, `tools`, message
-   content, content inside a `tool_result`) gets one top-level
+   content, content inside a `tool_result`) gets a top-level
    `"cache_control": {"type": "ephemeral"}` (`"ttl": "1h"` with `1h`); Anthropic
-   places the breakpoint on the last cacheable block and moves it as the
-   conversation grows. A request with your own breakpoints is sent as it is.
+   places that breakpoint on the last cacheable block and moves it as the
+   conversation grows. The same marker goes on the last `system` block (a string
+   `system` becomes one text block), so independent requests that share a system
+   prompt read it back instead of each writing their own entry: two of Anthropic's
+   four breakpoints. A request with your own breakpoints is sent as it is.
 2. For OpenAI, set `SHIM_OPENAI_PROMPT_CACHE_KEY=key` (one routing key per shim key)
    or `tenant` (shared by every key). A chat or Responses request without a
    `prompt_cache_key` gets `shim-` and 32 hex characters, derived from the scope,

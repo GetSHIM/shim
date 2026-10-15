@@ -137,11 +137,12 @@ class ShimIbanRecognizer(IbanRecognizer):
 
 
 # A word in front of a digit run that marks it as another kind of number than a phone or
-# a tax ID: an order, a time, an amount.
+# a tax ID: an order, a shipment, a time, an amount.
 _NOT_ID_WORD = re.compile(
-    r"\b(?:order|sipari[şs]|fatura|invoice|ticket|ref|reference|sku|kod|code|"
-    r"timestamp|epoch|ts|duration|created|updated|value|amount|total|count)"
-    r"(?:[ _-]?(?:numaras[ıi]|number|no|num|id|at|ms))*[\"':=#. _-]{0,4}$",
+    r"\b(?:order|sipari[şs]|fatura|invoice|takip|tracking|ticket|ref|reference|sku|"
+    r"kod|code|timestamp|epoch|ts|duration|created|updated|value|amount|total|count)"
+    r"(?:[ _-]?(?:numara(?:s[ıi]|n[ıi]z|m[ıi]z|m)?|number|no|num|id|at|ms))*"
+    r"[\"':=#. _-]{0,4}$",
     re.IGNORECASE,
 )
 _TAX_WORD = re.compile(r"vergi|vkn|tax", re.IGNORECASE)
@@ -181,6 +182,11 @@ class ShimPhoneRecognizer(PhoneRecognizer):
     _TURKISH = re.compile(r"(?:90)?0?5\d{9}|0[2-4]\d{9}")
     _NOT_DIGIT = re.compile(r"\D")
     _FORMATTED = re.compile(r"[\s()+]")
+    # 05.03.2026 and 2026-03-05, the same separator twice.
+    _DATE = re.compile(
+        r"(?:0?[1-9]|[12]\d|3[01])(?P<a>[./-])(?:0?[1-9]|1[0-2])(?P=a)(?:19|20)\d\d"
+        r"|(?:19|20)\d\d(?P<b>[./-])(?:0?[1-9]|1[0-2])(?P=b)(?:0?[1-9]|[12]\d|3[01])"
+    )
     _CUE = re.compile(
         r"\b(?:tel|telefon|phone|gsm|cep|mobile|mobil|cell|fax|whatsapp|call|contact|"
         r"numara|num|no)"
@@ -209,23 +215,27 @@ class ShimPhoneRecognizer(PhoneRecognizer):
 
     def _is_phone(self, text: str, start: int, end: int) -> bool:
         raw = text[start:end]
-        if self._DECIMAL.fullmatch(raw) or _in_decimal(text, start, end):
+        if (
+            self._DECIMAL.fullmatch(raw)
+            or _in_decimal(text, start, end)
+            or self._DATE.fullmatch(raw)
+        ):
             return False
         bare = self._BARE.fullmatch(raw)
         window = max(0, start - 24)
-        if self._TURKISH.fullmatch(self._NOT_DIGIT.sub("", raw)) or self._CUE.search(
+        # "Fatura no:" and "takip no" name another number; "Tel no:" names a phone.
+        other_number = _NOT_ID_WORD.search(
             text, window, start
+        ) and not self._PHONE_WORD.search(text, window, start)
+        if self._TURKISH.fullmatch(self._NOT_DIGIT.sub("", raw)) or (
+            self._CUE.search(text, window, start) and not other_number
         ):
             return True
         # Digits joined by "-", "_" or "." can end a name, claude-sonnet-4-5-20250929;
         # a space, a bracket or a "+" makes a phone: "musteri-0532 123 45 67".
         if _glued_to_identifier(text, start) and not self._FORMATTED.search(raw):
             return False
-        return not (
-            bare
-            and _NOT_ID_WORD.search(text, window, start)
-            and not self._PHONE_WORD.search(text, window, start)
-        )
+        return not (bare and other_number)
 
 
 class ShimIpRecognizer(IpRecognizer):

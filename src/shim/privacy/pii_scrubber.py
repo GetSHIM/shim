@@ -23,6 +23,21 @@ from shim.rules.model import ACTION_RANK
 
 
 _INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+# A right-to-left override shows the characters after it reversed, up to a pop or the
+# end of the line.
+_OVERRIDE, _POP, _LINE_ENDS = "\u202e", "\u202c", "\n\r\u2029"
+# Separators inside an identifier, dropped for detection: "1 0 0 0 0 0 0 0 1 4 6" and
+# "+ 9 0 5 3 2 ..." (a character per word), "TR3-300-061-005-..." (hyphenated digit
+# groups) and a line break after an email's @. A run is not glued to a letter or a
+# digit, and is joined only with ten digits or more and inner groups of one size.
+# Linear: a run starts only at a word start, and a failed match gives back at most
+# one group at a time.
+_SPLIT_IDENTIFIER = re.compile(
+    r"(?<![^\W_])(?P<spaced>(?:\+ )?(?:[0-9A-Za-z] ){9,}[0-9A-Za-z])(?![^\W_])"
+    r"|(?<![\w+-])(?P<hyphenated>\+?[A-Za-z]{0,2}[0-9]{1,4}(?:-[0-9]{1,4})+)(?![\w-])"
+    r"|(?<=[0-9A-Za-z]@)\r?\n(?=[0-9A-Za-z])"
+)
+_SEPARATORS = frozenset(" -\r\n")
 PLACEHOLDER = re.compile(
     r"<\s*([A-Z][A-Z0-9_]*_(?:[0-9a-f]{8}|[0-9a-f]{32}))(~[0-9A-Z]{4})?\s*>"
 )
@@ -140,23 +155,101 @@ def _normalize_with_spans(
     return "".join(output), normalized_spans
 
 
+def _join_split_identifiers(
+    text: str, spans: list[_SourceSpan]
+) -> tuple[str, list[_SourceSpan]]:
+    output: list[str] = []
+    output_spans: list[_SourceSpan] = []
+    cursor = 0
+    for match in _SPLIT_IDENTIFIER.finditer(text):
+        start, end = match.span()
+        value = match.group()
+        # Inner groups of one size, as identifiers are written: a date range is not.
+        if match.lastgroup and (
+            sum(map(str.isdigit, value)) < 10
+            or len({len(group) for group in value.split("-")[1:-1]}) > 1
+        ):
+            continue
+        output.append(text[cursor:start])
+        output_spans.extend(spans[cursor:start])
+        for index in range(start, end):
+            if text[index] not in _SEPARATORS:
+                output.append(text[index])
+                output_spans.append(spans[index])
+        cursor = end
+    if not cursor:
+        return text, spans
+    output.append(text[cursor:])
+    output_spans.extend(spans[cursor:])
+    return "".join(output), output_spans
+
+
 def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
     if not isinstance(text, str):
         raise TypeError("PII input must be text")
 
     if text.isascii() and "%" not in text:
-        return text, [(index, index + 1) for index in range(len(text))]
+        return _join_split_identifiers(
+            text, [(index, index + 1) for index in range(len(text))]
+        )
 
     decoded, spans = _decode_with_spans(text)
     visible_characters: list[str] = []
     visible_spans: list[_SourceSpan] = []
+    # The current line's start, its override segments, and the open one's start.
+    line = 0
+    segments: list[tuple[int, int]] = []
+    override: int | None = None
+
+    def close_override() -> None:
+        nonlocal override
+        if override is not None and len(visible_characters) > override:
+            segments.append((override, len(visible_characters)))
+        override = None
+
+    def show_line() -> None:
+        # A line with an override is read as stored, the order a model reads, and
+        # then, after a blank line, as shown, the order a person copies. Each order
+        # keeps an identifier the override sits inside whole.
+        close_override()
+        if not segments:
+            return
+        shown = visible_characters[line:]
+        shown_spans = visible_spans[line:]
+        for start, end in segments:
+            shown[start - line : end - line] = shown[start - line : end - line][::-1]
+            shown_spans[start - line : end - line] = shown_spans[
+                start - line : end - line
+            ][::-1]
+        visible_characters.extend(["\n", "\n", *shown])
+        visible_spans.extend([shown_spans[-1], shown_spans[-1], *shown_spans])
+        segments.clear()
+
     for character, span in zip(decoded, spans):
-        # A mark or an invisible character on a digit (an accent, a variation selector,
-        # a keycap, a joiner) would split an identifier: it is dropped for detection
-        # and masked with its digit.
+        if character in _LINE_ENDS:
+            show_line()
+            visible_characters.append(character)
+            visible_spans.append(span)
+            line = len(visible_characters)
+            continue
+        if character == _POP and override is not None:
+            close_override()
+            continue
+        # Neither a mark nor an invisible character.
+        if character.isascii():
+            visible_characters.append(character)
+            visible_spans.append(span)
+            continue
+        if character == _OVERRIDE and override is None:
+            override = len(visible_characters)
+            continue
+        # A mark or an invisible character on a digit or an ASCII character (an accent,
+        # a variation selector, a keycap, a joiner) would split an identifier: it is
+        # dropped for detection and masked with the character it follows. A
+        # lower-cased İ is i and a combining dot (JavaScript and Python lower()).
         if (
             visible_characters
-            and visible_characters[-1].isdigit()
+            and (visible_characters[-1].isdigit() or visible_characters[-1].isascii())
             and (
                 unicodedata.category(character)[0] == "M"
                 or _INVISIBLE.fullmatch(character)
@@ -164,15 +257,21 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
         ):
             visible_spans[-1] = (visible_spans[-1][0], span[1])
             continue
-        # A lower-cased İ is i and a combining dot (JavaScript and Python lower()).
-        dotted_i = character == "\u0307" and visible_characters[-1:] == ["i"]
-        if not dotted_i and not _INVISIBLE.fullmatch(character):
+        if not _INVISIBLE.fullmatch(character):
             visible_characters.append(character)
             visible_spans.append(span)
+    show_line()
     normalized, normalized_spans = _normalize_with_spans(
         "".join(visible_characters), visible_spans
     )
-    return fold_digits(normalized), normalized_spans
+    return _join_split_identifiers(fold_digits(normalized), normalized_spans)
+
+
+def _source_span(spans: list[_SourceSpan], start: int, end: int) -> _SourceSpan:
+    # A reversed override maps a match back to its characters in reverse order.
+    matched = spans[start:end]
+    assert matched
+    return min(span[0] for span in matched), max(span[1] for span in matched)
 
 
 class PIIScrubberService:
@@ -415,13 +514,12 @@ class PIIScrubberService:
         detections = self._non_overlapping(self._detections(prepared, actions), actions)
         mapped: list[RecognizerResult] = []
         for item in detections:
-            matched_spans = spans[item.start : item.end]
-            assert matched_spans
+            start, end = _source_span(spans, item.start, item.end)
             mapped.append(
                 RecognizerResult(
                     entity_type=item.entity_type,
-                    start=matched_spans[0][0],
-                    end=matched_spans[-1][1],
+                    start=start,
+                    end=end,
                     score=item.score,
                 )
             )
@@ -430,7 +528,7 @@ class PIIScrubberService:
             return detections, []
         # Rule matches run on the same preprocessed text as the built-in detectors.
         return detections, [
-            ContentHit(spans[hit.start][0], spans[hit.end - 1][1], hit.rules)
+            ContentHit(*_source_span(spans, hit.start, hit.end), hit.rules)
             for hit in content.search(prepared)
         ]
 

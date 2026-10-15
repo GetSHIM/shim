@@ -51,8 +51,9 @@ request it:
   `password hunter2` when the value carries a digit or a symbol, so
   `token budget` stays prose), Turkish (`şifre:`, `parolanız:`) included. A
   digit run counts as a phone number unless something marks it as another kind
-  of number: an order, invoice, timestamp or amount word in front of it, a
-  decimal, or an id it is glued to (`claude-sonnet-4-5-20250929`); a number
+  of number: an order, invoice, tracking, timestamp or amount word in front of
+  it (`Fatura no:` too; `Tel no:` stays a phone cue), a date, a decimal, or an
+  id it is glued to (`claude-sonnet-4-5-20250929`); a number
   written with a space, a bracket or a `+` is a phone number even there
   (`musteri-0532 123 45 67`, `user-+905321234567`). A ten-digit
   number that passes the Turkish tax-number checksum, about one in ten does,
