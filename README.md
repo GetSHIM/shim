@@ -56,10 +56,11 @@ request it:
   written with a space, a bracket or a `+` is a phone number even there
   (`musteri-0532 123 45 67`, `user-+905321234567`). A ten-digit
   number that passes the Turkish tax-number checksum, about one in ten does,
-  counts as a tax number under the same rule, unless a tax word (`vergi`,
-  `VKN`, `tax`) is in front of it. A number that passes the Luhn check is
-  masked as a card, so about one numeric id in ten that starts like a Visa or
-  Mastercard number is masked too. When in doubt it is masked: a masked order
+  counts as a tax number under the same rule; one that is also a valid phone
+  number is masked as a phone. A tax word (`vergi`, `VKN`, `tax`) in front of
+  it overrules both and makes it a tax number. A number that passes the Luhn
+  check is masked as a card, so about one numeric id in ten that starts like a
+  Visa or Mastercard number is masked too. When in doubt it is masked: a masked order
   number comes back in the answer, a missed phone number would have reached the
   provider. Each detected value becomes a
   placeholder before the request leaves, and is restored in the answer before

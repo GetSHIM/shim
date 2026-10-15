@@ -72,6 +72,46 @@ def test_sensitive_values_use_random_typed_placeholders(
     assert scrubber.deanonymize(second, second_map) == text
 
 
+# The official VKN check counts a term that is 0 mod 9 as 9 (python-stdnum's own example is
+# 4540536920); the first three need that rule, the last one does not. All but 1112223339
+# are also valid phone numbers in a region the phone rule reads.
+VALID_TAX_IDS = ["4540536920", "1112223339", "6028831518", "1234567890"]
+
+
+@pytest.mark.parametrize("vkn", VALID_TAX_IDS)
+def test_every_valid_tax_id_is_masked(scrubber: PIIScrubberService, vkn: str) -> None:
+    masked, mapping = scrubber.scrub(f"Vergi kimlik no {vkn}", DEFAULT_ACTIONS)
+
+    assert vkn not in masked
+    assert any(key.startswith("<TR_VKN_") for key in mapping)
+
+
+# Without a tax word a phone the phone rule claims wins the span, so the value is masked
+# as one type or the other; with phones off it is still a tax ID.
+@pytest.mark.parametrize("phone", ["mask", "off"])
+@pytest.mark.parametrize(
+    "template", ["{}", "Telefon: {}", '{{"x": {}}}', "John Smith {} New York"]
+)
+@pytest.mark.parametrize("vkn", VALID_TAX_IDS)
+def test_a_valid_tax_id_is_masked_whichever_rule_claims_it(
+    scrubber: PIIScrubberService, vkn: str, template: str, phone: str
+) -> None:
+    actions = effective_entity_actions(overrides={"PHONE_NUMBER": phone})
+    masked, mapping = scrubber.scrub(template.format(vkn), actions)
+
+    assert vkn not in masked
+    assert phone == "mask" or any(key.startswith("<TR_VKN_") for key in mapping)
+
+
+def test_a_tax_id_with_a_wrong_check_digit_is_left_alone(
+    scrubber: PIIScrubberService,
+) -> None:
+    # After a tax word only the checksum decides.
+    masked, mapping = scrubber.scrub("Vergi no 4540536921", DEFAULT_ACTIONS)
+
+    assert not any(key.startswith("<TR_VKN_") for key in mapping)
+
+
 def test_placeholder_does_not_expose_an_unkeyed_value_digest(
     scrubber: PIIScrubberService,
 ) -> None:

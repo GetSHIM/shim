@@ -437,8 +437,9 @@ class PIIScrubberService:
             "IBAN_CODE": 85,
             "CREDIT_CARD": 80,
             "TR_NATIONAL_ID": 70,
-            "TR_VKN": 70,
-            # Below the types that rank 0 too, so every other detector wins a shared span.
+            # Below the types that rank 0 too, so every other detector wins a shared span:
+            # ten digits the phone rule claims are a phone, unless a tax word is in front.
+            "TR_VKN": -1,
             "PERSON_NAME_TR": -1,
         }
         ordered = sorted(items, key=lambda item: (item.start, item.end))

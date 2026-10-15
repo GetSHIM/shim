@@ -640,11 +640,31 @@
     },
     {
       "id": "vkn-bare",
-      "text": "1700000003",
+      "text": "1112223339",
       "expect": [
         {
           "entity": "TR_VKN",
+          "value": "1112223339"
+        }
+      ]
+    },
+    {
+      "id": "bare-vkn-that-is-also-a-phone",
+      "text": "1700000003",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
           "value": "1700000003"
+        }
+      ]
+    },
+    {
+      "id": "vkn-tax-word-over-a-phone-shape",
+      "text": "Vergi no: 2125551234",
+      "expect": [
+        {
+          "entity": "TR_VKN",
+          "value": "2125551234"
         }
       ]
     },
