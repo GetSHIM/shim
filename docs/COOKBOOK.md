@@ -867,10 +867,13 @@ changing your application.
 
 1. For Anthropic, set `SHIM_ANTHROPIC_AUTO_CACHE=5m` (or `1h`). A messages request
    that carries no `cache_control` anywhere (top level, `system`, `tools`, message
-   content, content inside a `tool_result`) gets one top-level
+   content, content inside a `tool_result`) gets a top-level
    `"cache_control": {"type": "ephemeral"}` (`"ttl": "1h"` with `1h`); Anthropic
-   places the breakpoint on the last cacheable block and moves it as the
-   conversation grows. A request with your own breakpoints is sent as it is.
+   places that breakpoint on the last cacheable block and moves it as the
+   conversation grows. The same marker goes on the last `system` block (a string
+   `system` becomes one text block), so independent requests that share a system
+   prompt read it back instead of each writing their own entry: two of Anthropic's
+   four breakpoints. A request with your own breakpoints is sent as it is.
 2. For OpenAI, set `SHIM_OPENAI_PROMPT_CACHE_KEY=key` (one routing key per shim key)
    or `tenant` (shared by every key). A chat or Responses request without a
    `prompt_cache_key` gets `shim-` and 32 hex characters, derived from the scope,

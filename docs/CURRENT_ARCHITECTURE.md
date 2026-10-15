@@ -370,7 +370,7 @@ provider parameters on the masked payload, copying only the objects it changes,
 and never a content string. Its verdicts carry stage `settings`; an enforced block
 records the privacy facts and then refuses with `RULE_BLOCKED`. Applied steps are
 recorded as `settings_applied`. After the pins the band runs its fixed `STEPS`,
-each off by default: `anthropic_auto_cache` (a top-level Anthropic breakpoint) and
+each off by default: `anthropic_auto_cache` (a top-level Anthropic breakpoint and one on the system prompt) and
 `openai_prompt_cache_key` (an OpenAI routing key derived from the prompt prefix),
 `tool_search` (`defer_loading` and the provider's search tool),
 `anthropic_clear_thinking` (`context_management`, with its beta flag in

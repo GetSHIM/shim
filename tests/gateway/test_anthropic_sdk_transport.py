@@ -1153,6 +1153,80 @@ async def test_the_band_breakpoint_reaches_anthropic_through_the_sdk(
     assert line["settings_applied"] == [{"id": "anthropic_auto_cache", "version": 1}]
 
 
+_SYSTEM = "You are the support agent of an online shop. Answer in Turkish."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ttl", "marker"),
+    [("5m", {"type": "ephemeral"}), ("1h", {"type": "ephemeral", "ttl": "1h"})],
+)
+@pytest.mark.parametrize(
+    ("system", "sent_system"),
+    [
+        (_SYSTEM, [{"type": "text", "text": _SYSTEM}]),
+        (
+            [{"type": "text", "text": "Rules."}, {"type": "text", "text": _SYSTEM}],
+            [{"type": "text", "text": "Rules."}, {"type": "text", "text": _SYSTEM}],
+        ),
+    ],
+    ids=["string", "blocks"],
+)
+async def test_independent_requests_sharing_a_system_prompt_can_read_it_back(
+    ttl, marker, system, sent_system
+) -> None:
+    from io import StringIO
+
+    from shim.application import create_community_app
+
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=_message("ok"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                ANTHROPIC_BASE_URL="https://upstream.test",
+                BACKEND_CORS_ORIGINS=[],
+                SHIM_ANTHROPIC_AUTO_CACHE=ttl,
+            ),
+            http_client=outbound,
+            event_stream=StringIO(),
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+            ) as client,
+        ):
+            for question in ("Where is my order?", "Can I return a gift?"):
+                response = await client.post(
+                    "/v1/messages",
+                    headers={"x-provider-key": "sk-ant-tenant"},
+                    json={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 16,
+                        "system": system,
+                        "messages": [{"role": "user", "content": question}],
+                    },
+                )
+                assert response.status_code == 200
+
+    # The top-level breakpoint lands after each question, which no other request
+    # repeats; the one on the system prompt is what the second request reads.
+    *shared, last = sent_system
+    for sent in seen:
+        assert sent["cache_control"] == marker
+        assert sent["system"] == [*shared, {**last, "cache_control": marker}]
+    assert [sent["messages"][0]["content"] for sent in seen] == [
+        "Where is my order?",
+        "Can I return a gift?",
+    ]
+
+
 _SEARCHED = {
     "id": "msg_search",
     "type": "message",
