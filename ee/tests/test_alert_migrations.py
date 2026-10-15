@@ -226,6 +226,21 @@ async def test_the_never_written_saving_columns_are_dropped_and_come_back_on_dow
             {"id": request_id},
         )
     ).one() == (0, 0)
+    # A v0.4.0 worker still draining during a rollback writes neither column.
+    await db.execute(
+        text(
+            "INSERT INTO request_logs (id, request_id, api_key_id, organization_id, "
+            "timestamp, prompt_tokens, completion_tokens, latency_ms, is_cache_hit, "
+            "pii_detected, details, flags) VALUES (:row, :id, :key, :org, now(), "
+            "1, 1, 1, false, false, '{}', '{}')"
+        ),
+        {
+            "row": uuid4(),
+            "id": f"req_saved_{uuid4().hex}",
+            "key": test_api_key.id,
+            "org": test_api_key.organization_id,
+        },
+    )
 
     await _run(db, "e8cb8fb75cb0_drop_request_log_saving_columns", "upgrade")
 
