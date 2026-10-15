@@ -183,3 +183,50 @@ async def test_service_account_downgrade_survives_their_request_history(
         )
         is False
     )
+
+
+_SAVED_COLUMNS = text(
+    "SELECT column_name FROM information_schema.columns "
+    "WHERE table_schema = current_schema() AND table_name = 'request_logs' "
+    "AND column_name IN ('cost_saved', 'tokens_saved') ORDER BY column_name"
+)
+
+
+@pytest.mark.asyncio
+async def test_the_never_written_saving_columns_are_dropped_and_come_back_on_downgrade(
+    db, test_api_key
+) -> None:
+    assert (await db.scalars(_SAVED_COLUMNS)).all() == []
+    request_id = f"req_saved_{uuid4().hex}"
+    await db.execute(
+        text(
+            "INSERT INTO request_logs (id, request_id, api_key_id, organization_id, "
+            "timestamp, prompt_tokens, completion_tokens, latency_ms, is_cache_hit, "
+            "pii_detected, details, flags) VALUES (:row, :id, :key, :org, now(), "
+            "1, 1, 1, false, false, '{}', '{}')"
+        ),
+        {
+            "row": uuid4(),
+            "id": request_id,
+            "key": test_api_key.id,
+            "org": test_api_key.organization_id,
+        },
+    )
+
+    await _run(db, "e8cb8fb75cb0_drop_request_log_saving_columns", "downgrade")
+
+    # An image from before the drop writes both columns again; older rows read 0.
+    assert (await db.scalars(_SAVED_COLUMNS)).all() == ["cost_saved", "tokens_saved"]
+    assert (
+        await db.execute(
+            text(
+                "SELECT cost_saved, tokens_saved FROM request_logs "
+                "WHERE request_id = :id"
+            ),
+            {"id": request_id},
+        )
+    ).one() == (0, 0)
+
+    await _run(db, "e8cb8fb75cb0_drop_request_log_saving_columns", "upgrade")
+
+    assert (await db.scalars(_SAVED_COLUMNS)).all() == []

@@ -382,6 +382,7 @@ enterprise = [
   "ee/alembic/versions/de7150dd2f7a_tenant_level_forward_targets.py",
   "ee/alembic/versions/e248b23a6fe1_add_aws_role_credentials.py",
   "ee/alembic/versions/e76342d08c22_add_rule_previews_and_definitions.py",
+  "ee/alembic/versions/e8cb8fb75cb0_drop_request_log_saving_columns.py",
   "ee/alembic/versions/ea4e658a2648_normalize_budget_scope_values.py",
   "ee/alembic/versions/ea548dcbea1b_add_inference_metrics_hourly.py",
   "ee/alembic/versions/eb9c14b64226_add_aws_bedrock_deployments.py",
