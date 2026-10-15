@@ -27,6 +27,11 @@ _GRACE_SECONDS = 2.0
 
 # A call waits here, not in the pool's queue, so a submitted call is always running.
 _slots = threading.BoundedSemaphore(WORKERS)
+# Calls inside run(), running or waiting for a slot. Each holds a thread of the default
+# executor that every request's privacy stage shares, so a call beyond these fails at once.
+_callers = threading.BoundedSemaphore(2 * WORKERS)
+# How often a waiting call checks that another call has not discarded its pool.
+_POLL_SECONDS = 0.1
 _lock = threading.Lock()
 _pool: Pool | None = None
 
@@ -48,23 +53,40 @@ def run[T](function: Callable[..., T], *args: object, deadline: float) -> T:
     cap, and whatever `function` raises. Blocks the calling thread, never the loop.
     """
     deadline = min(deadline, time.monotonic() + CALL_SECONDS)
-    if not _slots.acquire(timeout=max(0.0, deadline - time.monotonic())):
+    if not _callers.acquire(blocking=False):
         raise TimeoutError
     try:
-        pool = _get()
+        if not _slots.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise TimeoutError
         try:
-            pending = pool.apply_async(_call, (function, args, deadline))
-        except ValueError:
-            # Another call discarded this pool a moment ago.
-            raise TimeoutError from None
-        try:
-            return pending.get(max(0.0, deadline - time.monotonic()) + _GRACE_SECONDS)
-        except multiprocessing.TimeoutError:
-            # Stuck in native code past its own alarm, or its worker died.
-            _discard(pool)
-            raise TimeoutError from None
+            return _await(function, args, deadline)
+        finally:
+            _slots.release()
     finally:
-        _slots.release()
+        _callers.release()
+
+
+def _await[T](
+    function: Callable[..., T], args: tuple[object, ...], deadline: float
+) -> T:
+    pool = _get()
+    try:
+        pending = pool.apply_async(_call, (function, args, deadline))
+    except ValueError:
+        # Another call discarded this pool a moment ago.
+        raise TimeoutError from None
+    end = deadline + _GRACE_SECONDS
+    while True:
+        try:
+            return pending.get(min(_POLL_SECONDS, max(0.0, end - time.monotonic())))
+        except multiprocessing.TimeoutError:
+            if _pool is not pool:
+                # Another call's timeout killed this call's worker with its pool.
+                raise TimeoutError from None
+            if time.monotonic() >= end:
+                # Stuck in native code past its own alarm, or its worker died.
+                _discard(pool)
+                raise TimeoutError from None
 
 
 def _get() -> Pool:
@@ -83,7 +105,7 @@ def _discard(pool: Pool) -> None:
     with _lock:
         if _pool is pool:
             _pool = None
-    # ponytail: kills the other worker's call too; per-worker pools if this happens often.
+    # The other worker's call goes too; it sees the pool gone and fails as too slow.
     pool.terminate()
 
 

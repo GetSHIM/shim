@@ -495,7 +495,9 @@ characters, 4,000,000 characters in one request, a page stream over 4 MB decoded
 with 400 `DOCUMENT_UNSCANNABLE` naming the reason while media is refused, and
 forwarded unscanned otherwise. A PDF is read with its form field values,
 annotation texts and document information, in one of two worker processes with 1 GB
-of memory each, so a hostile file never holds the gateway. Word files are read from
+of memory each, so a hostile file never holds the gateway. Two more files may wait
+for a worker; a fifth at the same moment counts as `too_slow`, as does a file whose
+worker was stopped for another file's timeout. Word files are read from
 their body, headers, footers, notes, comments, deleted text, glossary and document
 properties (author, title, custom properties); a `.docx` with more than 1,000 parts,
 a part over 20 MB or 50 MB in all, more than 1,000,000 XML elements, or a DTD in any
