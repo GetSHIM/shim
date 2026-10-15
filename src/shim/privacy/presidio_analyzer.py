@@ -144,9 +144,7 @@ _NOT_ID_WORD = re.compile(
     r"(?:[ _-]?(?:numaras[ıi]|number|no|num|id|at|ms))*[\"':=#. _-]{0,4}$",
     re.IGNORECASE,
 )
-# A word in front of ten digits that marks them as a tax ID.
 _TAX_WORD = re.compile(r"vergi|vkn|tax", re.IGNORECASE)
-_TEN_DIGITS = re.compile(r"(?<!\d)\d{10}(?!\d)")
 _IDENTIFIER_TAIL = re.compile(r"[A-Za-z0-9_.-]*$")
 _LETTER = re.compile(r"[A-Za-z]")
 
@@ -158,29 +156,8 @@ def _in_decimal(text: str, start: int, end: int) -> bool:
     )
 
 
-def _valid_tax_id(pattern_text: str) -> bool:
-    """The VKN checksum, as python-stdnum's stdnum.tr.vkn computes it."""
-    digits = [int(character) for character in pattern_text]
-    if len(digits) != 10 or len(set(digits)) == 1:
-        return False
-    checksum = 0
-    for index, digit in enumerate(digits[:9]):
-        adjusted = (digit + 9 - index) % 10
-        if adjusted:
-            # A term that is 0 mod 9 counts as 9.
-            checksum += (adjusted * 2 ** (9 - index)) % 9 or 9
-    return digits[-1] == (10 - checksum % 10) % 10
-
-
-def _tax_id_after_tax_word(text: str, start: int, end: int) -> bool:
-    """Ten digits with a valid checksum after a tax word, which the tax-ID rule always takes."""
-    match = _TEN_DIGITS.match(text, start)
-    return (
-        match is not None
-        and match.end() == end
-        and _valid_tax_id(match.group())
-        and bool(_TAX_WORD.search(text, max(0, start - 24), start))
-    )
+def after_tax_word(text: str, start: int) -> bool:
+    return bool(_TAX_WORD.search(text, max(0, start - 24), start))
 
 
 def _glued_to_identifier(text: str, start: int) -> bool:
@@ -194,7 +171,6 @@ def _glued_to_identifier(text: str, start: int) -> bool:
 class ShimPhoneRecognizer(PhoneRecognizer):
     """A digit run is a phone unless something marks it as another kind of number.
 
-    A valid tax ID after a tax word is left to the tax-ID rule when that type is enabled.
     Recall first: a masked order number is restored in the answer, a missed phone
     number reaches the provider.
     """
@@ -225,12 +201,10 @@ class ShimPhoneRecognizer(PhoneRecognizer):
     ) -> list[RecognizerResult]:
         # Presidio annotates the argument as NlpArtifacts but defaults it to None.
         artifacts = cast(NlpArtifacts, nlp_artifacts)
-        tax_ids = "TR_VKN" in entities
         return [
             result
             for result in super().analyze(text, entities, artifacts)
             if self._is_phone(text, result.start, result.end)
-            and not (tax_ids and _tax_id_after_tax_word(text, result.start, result.end))
         ]
 
     def _is_phone(self, text: str, start: int, end: int) -> bool:
@@ -430,8 +404,8 @@ class ShimTurkishTaxIdRecognizer(PatternRecognizer):
 
     About one ten-digit number in ten passes the checksum, so an invoice number, a
     timestamp or a decimal fraction would be masked; a tax word in front overrules.
-    A phone the phone rule claims on the same span outranks a tax ID in the scrubber;
-    after a tax word the phone rule leaves the span to this one.
+    The scrubber gives a span the phone rule also claims to the phone, unless a tax
+    word is in front.
     """
 
     COUNTRY_CODE = "tr"
@@ -442,7 +416,7 @@ class ShimTurkishTaxIdRecognizer(PatternRecognizer):
             supported_entity="TR_VKN",
             supported_language=_LANGUAGE,
             context=["vergi", "vkn", "tax", "vergi kimlik", "vergi numarası"],
-            patterns=[Pattern("Turkish tax ID", _TEN_DIGITS.pattern, 0.4)],
+            patterns=[Pattern("Turkish tax ID", r"(?<!\d)\d{10}(?!\d)", 0.4)],
         )
 
     def analyze(
@@ -459,15 +433,23 @@ class ShimTurkishTaxIdRecognizer(PatternRecognizer):
         ]
 
     def _is_tax_id(self, text: str, start: int, end: int) -> bool:
-        window = max(0, start - 24)
-        return bool(_TAX_WORD.search(text, window, start)) or not (
+        return after_tax_word(text, start) or not (
             _in_decimal(text, start, end)
             or _glued_to_identifier(text, start)
-            or _NOT_ID_WORD.search(text, window, start)
+            or _NOT_ID_WORD.search(text, max(0, start - 24), start)
         )
 
     def validate_result(self, pattern_text: str) -> bool:
-        return _valid_tax_id(pattern_text)
+        digits = [int(character) for character in pattern_text]
+        if len(digits) != 10 or len(set(digits)) == 1:
+            return False
+        checksum = 0
+        for index, digit in enumerate(digits[:9]):
+            adjusted = (digit + 9 - index) % 10
+            if adjusted:
+                # python-stdnum's stdnum.tr.vkn: a term that is 0 mod 9 counts as 9.
+                checksum += (adjusted * 2 ** (9 - index)) % 9 or 9
+        return digits[-1] == (10 - checksum % 10) % 10
 
 
 class ShimTurkishPlateRecognizer(PatternRecognizer):

@@ -103,6 +103,18 @@ def test_a_valid_tax_id_is_masked_whichever_rule_claims_it(
     assert phone == "mask" or any(key.startswith("<TR_VKN_") for key in mapping)
 
 
+def test_a_stronger_phone_action_wins_over_a_tax_word(
+    scrubber: PIIScrubberService,
+) -> None:
+    actions = effective_entity_actions(
+        overrides={"PHONE_NUMBER": "block", "TR_VKN": "monitor"}
+    )
+
+    assert [
+        finding["type"] for finding in scrubber.analyze("Vergi no 4540536920", actions)
+    ] == ["PHONE_NUMBER"]
+
+
 def test_a_tax_id_with_a_wrong_check_digit_is_left_alone(
     scrubber: PIIScrubberService,
 ) -> None:
