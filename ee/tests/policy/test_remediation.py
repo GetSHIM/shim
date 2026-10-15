@@ -3,13 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import shim_enterprise.api.enterprise_deps as enterprise_deps
 import shim_enterprise.core.database as database
 
 from shim_enterprise.ai_act.models import AIActAuditLog
+from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.compliance.models import ComplianceForwardTarget
 from shim_enterprise.core.config import settings
@@ -32,6 +36,7 @@ from shim_enterprise.tenants.models import (
     Organization,
     OrganizationGatewaySettings,
     ProviderSecret,
+    User,
 )
 
 
@@ -251,6 +256,48 @@ async def test_an_auto_finding_is_fixed_once_and_watched(db) -> None:
     assert [(p["phase"], p["entries"]) for p in intents] == [
         ("applied", ["deployment.disable"])
     ]
+
+
+@pytest.mark.asyncio
+async def test_the_findings_api_serves_the_proof_an_automatic_fix_is_watched_by(
+    db,
+) -> None:
+    tenant = await _tenant(db)
+    await _deployment(db, tenant)
+    await _pass(db, tenant)
+    [row] = await _rows(db, tenant)
+    reader = User(
+        id=uuid4(),
+        organization_id=tenant,
+        email=f"reader-{uuid4().hex}@example.com",
+        role="auditor",
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(reader)
+    await db.flush()
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: reader
+    application.dependency_overrides[database.get_db] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        read = await client.get(f"/api/v1/management/findings/{row.finding_id}")
+
+    assert read.status_code == 200
+    remediation = read.json()["remediation"]
+    assert (remediation["mode"], remediation["proof_after"]) == (
+        "auto",
+        {
+            "metric": "refusals",
+            "window_hours": 24,
+            "baseline": None,
+            "threshold": None,
+            "comparison": "lte",
+        },
+    )
 
 
 @pytest.mark.asyncio
