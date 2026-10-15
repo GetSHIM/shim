@@ -372,3 +372,27 @@ async def test_an_existing_rule_id_can_become_a_change_test(db) -> None:
     # A rule that becomes a test is a new test: its end is checked.
     assert past.status_code == 422, past.text
     assert shadowed.status_code == 200, shadowed.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("match", "field"),
+    [({"share_percent": 150}, "share_percent"), ({"max_requests": 0}, "max_requests")],
+)
+async def test_a_preview_of_an_invalid_change_test_answers_422(
+    db, match, field
+) -> None:
+    # #218 review: the estimator validated the match unguarded, so a preview was a 500.
+    user, _, _ = await _tenant(db, role="admin")
+    await _aliases(db, user.organization_id, {"llama-a": "openai", "llama-b": "openai"})
+
+    response = await _call(
+        db,
+        user,
+        "POST",
+        f"{MANAGEMENT}/rules/preview",
+        json={"rule": _shadow("monitor", **match), "window_days": 7},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["path"] == f"rules[0].match.{field}"

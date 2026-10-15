@@ -50,6 +50,7 @@ forbidden_noncloud_import_roots = [
 "shim.gateway.contracts.errors" = ["ScanAnalysisError"]
 "shim.gateway.contracts.ids" = [
   "ApiKeyId",
+  "CURRENT_REQUEST_ID",
   "ModelId",
   "ProviderId",
   "RequestId",

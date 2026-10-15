@@ -19,6 +19,7 @@ from shim.rules import Rule, RuleSet, RuleSetError, load_rule_set, validate_rule
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import QUERY_CANCELED, bound_statements
+from shim_enterprise.rules.route_triggers import checked_matches
 from shim_enterprise.rules.models import (
     OrganizationRuleSet,
     RuleDefinition,
@@ -259,6 +260,9 @@ async def preview_rule(
             if rule.id != rule_id
         ]
     candidate = checked_set(1, [*others, proposed])
+    # The trigger's own model, before an estimator reads the match.
+    for _ in checked_matches(candidate):
+        pass
     rule = next(rule for rule in candidate.rules if rule.id == rule_id)
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=window_days)

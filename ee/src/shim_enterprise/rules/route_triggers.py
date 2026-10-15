@@ -332,17 +332,28 @@ async def _check_shadow(
             before is None
             # An existing rule id that becomes a test is a new test.
             or before.get("on") != "shadow"
-            or ShadowMatch.model_validate(before) != match
+            or _shadow_or_none(before) != match
         )
         if changed and match.ends_at <= now:
             raise _refused(f"{path}.ends_at", "ends_at is in the past")
+
+
+def _shadow_or_none(match: Mapping[str, Any]) -> ShadowMatch | None:
+    """A stored match from before a check existed may fail it."""
+    try:
+        return ShadowMatch.model_validate(match)
+    except ValidationError:
+        return None
 
 
 def _classify_shadow(
     before: Mapping[str, Any], after: Mapping[str, Any]
 ) -> Literal["tightening", "relaxing", "neutral"]:
     """Only a lower share, fewer copies, a lower cost cap or an earlier end tightens."""
-    old, new = ShadowMatch.model_validate(before), ShadowMatch.model_validate(after)
+    old, new = _shadow_or_none(before), _shadow_or_none(after)
+    if old is None or new is None:
+        # A match this release cannot read: loosening, as an unknown field is.
+        return "relaxing"
     if old == new:
         return "neutral"
     narrowed = (
@@ -386,6 +397,18 @@ async def check_route_triggers(
     release or whose match fails its model or its registry check."""
 
     found: dict[str, list[tuple[int, BaseModel, Mapping[str, Any] | None]]] = {}
+    for index, rule, on, match in checked_matches(rule_set):
+        before = stored.get(rule.id)
+        found.setdefault(on, []).append(
+            (index, match, before.match if before is not None else None)
+        )
+    for on, rules in found.items():
+        await ROUTE_TRIGGER_TABLE[on].check(session, organization_id, rules)
+
+
+def checked_matches(rule_set: RuleSet) -> Iterator[tuple[int, Rule, str, BaseModel]]:
+    """Each route rule with an `on` value, and its match read by that trigger's
+    model; 422 with the field path for an unknown `on` or a match that fails."""
     for index, rule in enumerate(rule_set.rules):
         on = rule.match.get("on") if rule.kind == "route" else None
         if on is None:
@@ -404,12 +427,7 @@ async def check_route_triggers(
                 for part in first["loc"]
             )
             raise _refused(f"rules[{index}].match{path}", first["msg"]) from None
-        before = stored.get(rule.id)
-        found.setdefault(on, []).append(
-            (index, match, before.match if before is not None else None)
-        )
-    for on, rules in found.items():
-        await ROUTE_TRIGGER_TABLE[on].check(session, organization_id, rules)
+        yield index, rule, on, match
 
 
 def route_classifier(
