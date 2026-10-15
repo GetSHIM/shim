@@ -35,6 +35,5 @@ def downgrade() -> None:
         "request_logs",
         sa.Column("tokens_saved", sa.Integer(), server_default="0", nullable=False),
     )
-    # The baseline shape: the old model writes both columns itself.
-    op.alter_column("request_logs", "cost_saved", server_default=None)
-    op.alter_column("request_logs", "tokens_saved", server_default=None)
+    # The defaults stay: during a rollback a v0.4.0 worker still draining writes neither
+    # column, and the older model writes both itself, so they cost it nothing.
