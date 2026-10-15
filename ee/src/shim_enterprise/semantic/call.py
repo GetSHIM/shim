@@ -93,6 +93,13 @@ def _strings(value: Any, *types: str) -> list[str]:
             texts.append(part["text"])
         elif part.get("type") == "tool_result":
             texts += _strings(part.get("content"), "text")
+        elif part.get("type") == "document":
+            # A text document, or what privacy leaves of a scanned one (S62).
+            source = part.get("source")
+            if isinstance(source, Mapping) and source.get("type") == "text":
+                texts += _strings(source.get("data"))
+            elif isinstance(source, Mapping) and source.get("type") == "content":
+                texts += _strings(source.get("content"), "text")
     return texts
 
 

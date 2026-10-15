@@ -90,6 +90,110 @@ def test_request_text_takes_the_text_in_document_order(payload, protocol, text) 
     assert request_text(payload, protocol) == text
 
 
+_PDF = {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0x"}
+_MASKED = "Sözleşme [TR_NATIONAL_ID_1] için"
+
+
+@pytest.mark.parametrize(
+    ("payload", "protocol"),
+    [
+        (
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "a"},
+                            {"type": "image_url", "image_url": {"url": "data:,AA"}},
+                            {"type": "file", "file": {"file_data": "JVBERi0x"}},
+                            {"type": "text", "text": f"[document: s.pdf]\n{_MASKED}"},
+                        ],
+                    }
+                ]
+            },
+            "chat",
+        ),
+        (
+            {
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "a"},
+                            {"type": "input_file", "file_data": "JVBERi0x"},
+                            {
+                                "type": "input_text",
+                                "text": f"[document: s.pdf]\n{_MASKED}",
+                            },
+                        ],
+                    }
+                ]
+            },
+            "responses",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "a"},
+                            {"type": "document", "source": _PDF},
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "content",
+                                    "content": [{"type": "text", "text": "c"}],
+                                },
+                            },
+                            # What privacy leaves of a scanned document (S62, D1).
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "text",
+                                    "media_type": "text/plain",
+                                    "data": _MASKED,
+                                },
+                            },
+                        ],
+                    }
+                ]
+            },
+            "messages",
+        ),
+        (
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": "a"},
+                            {
+                                "inlineData": {
+                                    "mimeType": "application/pdf",
+                                    "data": "JVBERi0x",
+                                }
+                            },
+                            {"text": _MASKED},
+                        ],
+                    }
+                ]
+            },
+            "generate_content",
+        ),
+    ],
+)
+def test_a_document_sent_as_its_text_is_read_and_media_never_is(
+    payload, protocol
+) -> None:
+    text = request_text(payload, protocol)
+
+    assert text.endswith(_MASKED) and text.startswith("a\n")
+    if protocol == "messages":
+        assert text == f"a\nc\n{_MASKED}"
+    assert "JVBERi0x" not in text and "data:" not in text
+
+
 def test_request_text_is_cut_at_the_bound() -> None:
     payload = {"messages": [{"role": "user", "content": "x" * 30_000}]}
 

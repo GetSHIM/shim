@@ -1016,7 +1016,9 @@ With [questions written](#ask-the-archive-your-own-questions) (no archive needed
    `gateway.semantic_check_match` finding. Each marked request waits for its check, at
    most `timeout_ms`. A request whose rules would protect more at the check model than
    at its own target is not checked (`skipped_guard`): scope such rules so they also
-   hold at the check model, or use an internal one.
+   hold at the check model, or use an internal one. The check (and the archive
+   review) reads the request's text after masking, including a document sent as its
+   text; images and documents forwarded as files are never read.
 4. Once the matches look right, send `{"semantic_check": {"warn_header": true}}`:
    matched requests then carry `SEMANTIC_WARN` in `X-Shim-Warnings`.
 
