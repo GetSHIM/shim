@@ -10,6 +10,7 @@ one reviews an item.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 import json
@@ -18,11 +19,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from cryptography.fernet import Fernet
-from sqlalchemy import and_, delete, exists, func, literal, select, update
+from sqlalchemy import delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from shim.gateway.contracts.ids import TenantId
+from shim.gateway.contracts.ids import CURRENT_REQUEST_ID, TenantId
 from shim_enterprise.archive.models import RequestArchive
 from shim_enterprise.billing.models import UsageLedger
 from shim_enterprise.core.config import settings
@@ -52,6 +53,9 @@ STALE_CLAIM = timedelta(minutes=10)
 # at most this long.
 PASS_SECONDS = STALE_CLAIM.total_seconds() / 2
 ITEM_SECONDS = 120
+# An item still failing this long after its first claim (about 144 tries, one per
+# stale claim) is not a temporary refusal: it ends `failed` with its last error code.
+GIVE_UP_AFTER = timedelta(days=1)
 ACTOR = "system:semantic_review"
 
 
@@ -132,6 +136,7 @@ async def review_tenant(
                     questions,
                     target,
                     claim,
+                    now,
                 )
                 SEMANTIC_REVIEWS_TOTAL.labels(status=status).inc()
                 done.add(claim.id)
@@ -142,11 +147,14 @@ async def review_tenant(
         logger.warning("Semantic review pass reached its time bound")
     left = [claim.id for claim in claims if claim.id not in done]
     if left:
-        # Not reviewed in this pass: back to the pool, unclaimed.
+        # Not reviewed in this pass: back to the pool, unclaimed. An item cut off
+        # mid-call keeps its row: its spend counts toward the day's cap.
         async with session_factory() as session:
             await session.execute(
                 delete(SemanticReview).where(
-                    SemanticReview.id.in_(left), SemanticReview.status == "pending"
+                    SemanticReview.id.in_(left),
+                    SemanticReview.status == "pending",
+                    SemanticReview.cost_usd.is_(None),
                 )
             )
             await session.commit()
@@ -229,7 +237,10 @@ async def _claim(
             .where(SemanticReview.id.in_(stale))
             .values(claimed_at=now)
             .returning(
-                SemanticReview.id, SemanticReview.archive_id, SemanticReview.request_id
+                SemanticReview.id,
+                SemanticReview.archive_id,
+                SemanticReview.request_id,
+                SemanticReview.created_at,
             )
         )
     ).all()
@@ -275,11 +286,15 @@ async def _claim(
             )
             .on_conflict_do_nothing()
             .returning(
-                SemanticReview.id, SemanticReview.archive_id, SemanticReview.request_id
+                SemanticReview.id,
+                SemanticReview.archive_id,
+                SemanticReview.request_id,
+                SemanticReview.created_at,
             )
         )
     ).all()
-    claims = [*reclaimed, *inserted]
+    # Fresh items first: an item that keeps failing never ends a pass before them.
+    claims = [*inserted, *reclaimed]
     if claims:
         await _audit_scan(
             session,
@@ -341,10 +356,14 @@ async def _review_item(
     questions: list[dict[str, Any]],
     target: SemanticTarget,
     claim: Any,
+    now: datetime,
 ) -> str:
     """The item's new status; `pending` after a temporary refusal, which the next
     pass that re-claims it tries again."""
     values: dict[str, Any] = {"completed_at": datetime.now(timezone.utc)}
+    # The call's request id lands here even when the call is cut off.
+    context = contextvars.copy_context()
+    context.run(CURRENT_REQUEST_ID.set, None)
     try:
         async with session_factory() as session:
             archive = await session.get(RequestArchive, claim.archive_id)
@@ -367,6 +386,7 @@ async def _review_item(
                         text=text,
                         questions=questions,
                         tag=REVIEW_TAG,
+                        context=context,
                     )
                 values |= {
                     "status": "pending" if result.retryable else result.outcome,
@@ -376,24 +396,71 @@ async def _review_item(
                 }
     except TimeoutError:
         values |= {"status": "pending", "error_code": "TIMEOUT"}
+    except asyncio.CancelledError:
+        # The pass's bound: the call may already be billed.
+        await _store(session_factory, organization_id, claim, context, {})
+        raise
     except Exception as exc:
         logger.warning("Semantic review item failed type=%s", type(exc).__name__)
         values |= {"status": "pending", "error_code": "INTERNAL"}
     if values["status"] == "pending":
         values["completed_at"] = None
-    async with session_factory() as session:
-        if values.get("review_request_id"):
-            values["cost_usd"] = await session.scalar(
-                select(func.sum(UsageLedger.cost_usd)).where(
-                    and_(
-                        UsageLedger.organization_id == organization_id,
-                        UsageLedger.request_id == values["review_request_id"],
-                        UsageLedger.event_type == "spend_settlement",
-                    )
-                )
-            )
-        await session.execute(
-            update(SemanticReview).where(SemanticReview.id == claim.id).values(**values)
-        )
-        await session.commit()
+        if claim.created_at <= now - GIVE_UP_AFTER:
+            values |= {"status": "failed", "completed_at": datetime.now(timezone.utc)}
+    await _store(session_factory, organization_id, claim, context, values)
     return values["status"]
+
+
+async def _store(
+    session_factory: async_sessionmaker,
+    organization_id: UUID,
+    claim: Any,
+    context: contextvars.Context,
+    values: dict[str, Any],
+) -> None:
+    """The item's new values, with the call's spend added to what earlier tries spent."""
+    async with session_factory() as session:
+        request_id = values.get("review_request_id") or context.get(CURRENT_REQUEST_ID)
+        spent = await _call_spend(session, organization_id, request_id)
+        if spent is not None:
+            values = {
+                **values,
+                "cost_usd": func.coalesce(SemanticReview.cost_usd, 0) + spent,
+            }
+        if values:
+            await session.execute(
+                update(SemanticReview)
+                .where(SemanticReview.id == claim.id)
+                .values(**values)
+            )
+            await session.commit()
+
+
+async def _call_spend(
+    session: AsyncSession, organization_id: UUID, request_id: str | None
+) -> Decimal | None:
+    """A review call's settled spend; refunded, none; cut off before either, its
+    reservation, the upper bound the gateway held for it."""
+    if request_id is None:
+        return None
+    totals: dict[str, Decimal] = {
+        event_type: total
+        for event_type, total in (
+            await session.execute(
+                select(UsageLedger.event_type, func.sum(UsageLedger.cost_usd))
+                .where(
+                    UsageLedger.organization_id == organization_id,
+                    UsageLedger.request_id == request_id,
+                    UsageLedger.event_type.in_(
+                        ("spend_settlement", "spend_refund", "spend_reservation")
+                    ),
+                )
+                .group_by(UsageLedger.event_type)
+            )
+        ).tuples()
+    }
+    if "spend_settlement" in totals:
+        return totals["spend_settlement"]
+    if "spend_refund" in totals:
+        return None
+    return totals.get("spend_reservation")

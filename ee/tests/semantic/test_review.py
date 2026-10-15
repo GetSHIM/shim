@@ -29,7 +29,9 @@ from shim_enterprise.semantic.models import (
     OrganizationSemanticQuestions,
     SemanticReview,
 )
+from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
 from shim.gateway.usage import UsageLimitExceeded
+from shim_enterprise.billing.models import UsageLedger
 from shim_enterprise.semantic import review as review_module
 from shim_enterprise.semantic.review import STALE_CLAIM, review_once, review_tenant
 from shim_enterprise.tenants.gateway_settings import (
@@ -75,6 +77,9 @@ class _Kernel:
 
     async def execute(self, invocation):
         self.texts.append(invocation.payload["messages"][1]["content"])
+        if self.ids:
+            # As the kernel does once the request is prepared.
+            CURRENT_REQUEST_ID.set(self.ids[len(self.texts) - 1])
         await asyncio.sleep(self.delay)
         if self.error is not None:
             raise self.error
@@ -639,3 +644,113 @@ async def test_each_tenant_claims_at_its_own_time(db, monkeypatch) -> None:
     await review_once(_Kernel(), _factory(db))
 
     assert claimed and claimed[0] >= before
+
+
+@pytest.mark.asyncio
+async def test_an_item_that_keeps_failing_never_heads_the_batch_and_ends_failed(
+    db,
+) -> None:
+    # #217 review: a deterministic failure stayed pending and, re-claimed, ended
+    # every pass it headed before any fresh item ran.
+    user, _, _, review, archived = await _setup(db, items=3)
+    archived[0].masked_payload = b"not a token"
+    await db.flush()
+    kernel = _Kernel(match=False)
+
+    await review_tenant(kernel, _factory(db), user.organization_id, review, NOW)
+    later = NOW + STALE_CLAIM + timedelta(seconds=1)
+    await review_tenant(kernel, _factory(db), user.organization_id, review, later)
+
+    rows = {row.archive_id: row for row in await _reviews(db, user.organization_id)}
+    assert (rows[archived[0].id].status, rows[archived[0].id].error_code) == (
+        "pending",
+        "INTERNAL",
+    )
+    assert {rows[item.id].status for item in archived[1:]} == {"clear"}
+
+    await review_tenant(
+        kernel,
+        _factory(db),
+        user.organization_id,
+        review,
+        NOW + review_module.GIVE_UP_AFTER + STALE_CLAIM,
+    )
+
+    [row] = [
+        row
+        for row in await _reviews(db, user.organization_id)
+        if row.archive_id == archived[0].id
+    ]
+    assert (row.status, row.error_code) == ("failed", "INTERNAL")
+
+
+def _reserved(db, key, usd: str) -> str:
+    """A review call cut off after its spend reservation, before any settlement."""
+    request_id = _request(db, key, None, settled=False)
+    db.add(
+        UsageLedger(
+            request_id=request_id,
+            organization_id=key.organization_id,
+            api_key_id=key.id,
+            requested_model="denetci",
+            provider="openai",
+            provider_model="denetci-upstream",
+            event_type="spend_reservation",
+            idempotency_key=f"{request_id}:spend:reservation",
+            estimated=True,
+            cost_usd=Decimal(usd),
+        )
+    )
+    return request_id
+
+
+@pytest.mark.asyncio
+async def test_a_call_cut_off_by_the_item_bound_counts_its_reserved_spend(
+    db, monkeypatch
+) -> None:
+    # #217 review: a timed-out call wrote no cost, so the daily cap never saw it.
+    user, key, _, review, _ = await _setup(db, items=2)
+    ids = [_reserved(db, key, "0.5"), _request(db, key, None, cost="6")]
+    await db.flush()
+    monkeypatch.setattr(review_module, "ITEM_SECONDS", 0.2)
+
+    await review_tenant(
+        _Kernel(delay=5, ids=ids), _factory(db), user.organization_id, review, NOW
+    )
+
+    [row] = await _reviews(db, user.organization_id)
+    assert (row.status, row.error_code, row.cost_usd) == (
+        "pending",
+        "TIMEOUT",
+        Decimal("0.5"),
+    )
+    # Tried again on a re-claim: its spend adds up, it never replaces the first.
+    await review_tenant(
+        _Kernel(ids=ids[1:]),
+        _factory(db),
+        user.organization_id,
+        review,
+        NOW + STALE_CLAIM + timedelta(seconds=1),
+    )
+    assert sum(
+        row.cost_usd or 0 for row in await _reviews(db, user.organization_id)
+    ) == Decimal("6.5")
+
+
+@pytest.mark.asyncio
+async def test_a_call_cut_off_by_the_pass_bound_keeps_its_spend_in_the_cap(
+    db, monkeypatch
+) -> None:
+    user, key, _, review, _ = await _setup(db, items=3)
+    ids = [_reserved(db, key, "0.5")]
+    await db.flush()
+    monkeypatch.setattr(review_module, "PASS_SECONDS", 0.2)
+
+    await review_tenant(
+        _Kernel(delay=5, ids=ids), _factory(db), user.organization_id, review, NOW
+    )
+
+    # The cut-off item keeps its row and its spend; the untouched rest go back.
+    [row] = await _reviews(db, user.organization_id)
+    assert (row.status, row.cost_usd) == ("pending", Decimal("0.5"))
+    assert await review_module._spent(db, user.organization_id, NOW) == Decimal("0.5")

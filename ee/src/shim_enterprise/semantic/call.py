@@ -4,6 +4,7 @@ the tenant's own model through shim, as an ordinary request with its own cost.""
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -276,6 +277,7 @@ async def run_semantic_call(
     text: str,
     questions: Sequence[Mapping[str, Any]],
     tag: str,
+    context: contextvars.Context | None = None,
 ) -> SemanticResult:
     """The call as an ordinary request of `api_key_id`: its limits, privacy, rules,
     budgets and ledger apply; the answer text is dropped after validation."""
@@ -305,8 +307,9 @@ async def run_semantic_call(
 
     try:
         # Its own task: the call's context variables, its request id among them,
-        # never become the caller's. Cancelling the caller cancels it.
-        response = await asyncio.create_task(execute())
+        # never become the caller's. Cancelling the caller cancels it. `context`, when
+        # given, is the one it runs in, so the caller can read its request id after.
+        response = await asyncio.create_task(execute(), context=context)
     except Exception as error:
         return SemanticResult(
             "failed",

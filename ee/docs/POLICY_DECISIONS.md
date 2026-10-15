@@ -396,9 +396,11 @@ internal at run time (an edited deployment, or one labelled internal outside
 ends within five minutes, half the age at which another process may claim its items
 again, and each call within two; a temporary refusal (a 401 such as an inactive key,
 a 408, a 429 or a usage limit, a 5xx, a timeout) leaves the item `pending`, ends the
-pass and returns the unreviewed claims, so the item is tried again on a later pass
-and never becomes a permanent `failed`. A refusal of the content itself, such as
-`RULE_BLOCKED`, is final. A claim left at an older question revision is claimed again
+pass and returns the unreviewed claims, so the item is tried again on a later pass,
+after the pass's fresh items. An item still failing a day after its first claim ends
+`failed` with its last error code. A call cut off by either bound still counts toward
+the day's cost cap: its settled spend, or, before settlement, the spend the gateway
+reserved for it. A refusal of the content itself, such as `RULE_BLOCKED`, is final. A claim left at an older question revision is claimed again
 at the current one.
 Each call is an ordinary request of the review key, tagged `shim:semantic_review`:
 its limits, privacy, rules, budgets and ledger apply, it has its own cost, and it is
