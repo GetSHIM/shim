@@ -11,6 +11,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Use the Anthropic SDK](#use-the-anthropic-sdk)
 - [Use the Gemini SDK](#use-the-gemini-sdk)
 - [Send embeddings through shim](#send-embeddings-through-shim)
+- [Use Azure OpenAI](#use-azure-openai)
 - [Tag requests and read their cost](#tag-requests-and-read-their-cost)
 - [Scan text before you send it](#scan-text-before-you-send-it)
 - [Choose what happens to each data type](#choose-what-happens-to-each-data-type)
@@ -479,8 +480,8 @@ loses it.
 
 PDF, Word and text files can be read and checked like message text instead. Install
 the extra for PDFs (`pip install 'shim-gateway[documents]'`, which adds pypdf; the
-gateway logs a warning at start when the setting is on without it), then set
-`SHIM_DOCUMENTS`:
+community and enterprise images have it; the gateway logs a warning at start when
+the setting is on without it), then set `SHIM_DOCUMENTS`:
 
 | `SHIM_DOCUMENTS` | An inline PDF, `.docx`, or text file (`text/plain`, `text/markdown`, `text/csv`, `application/json`) |
 | --- | --- |
@@ -1022,7 +1023,7 @@ Send images no larger than the size the provider would resize them to anyway, so
 requests are smaller and an image the provider refused for its byte size may fit.
 
 1. Install the extra (`pip install 'shim-gateway[images]'`, which adds Pillow; the
-   enterprise image has it). Without it the gateway logs a warning at start and the
+   community and enterprise images have it). Without it the gateway logs a warning at start and the
    setting stays off.
 2. Set `SHIM_IMAGE_DOWNSCALE=on` (and let images through, see
    [choose what happens to each data type](#choose-what-happens-to-each-data-type)).

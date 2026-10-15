@@ -238,7 +238,7 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
   forwards it unchanged and unscanned; the usage event counts such parts.
   PDF, Word and text files are read and checked like message text when
   `SHIM_DOCUMENTS` (enterprise: `documents`) is `scan` or `scan_and_convert`;
-  PDFs need `shim-gateway[documents]`. Scanned PDFs without a text layer are not
+  PDFs need `shim-gateway[documents]`, which the published image includes. Scanned PDFs without a text layer are not
   read (no OCR).
 - `background=true` Responses requests are not supported.
 - Stored audit evidence, retained records, roles, budgets and tenant rules are

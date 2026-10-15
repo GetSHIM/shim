@@ -23,6 +23,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Cap tools, documents and history](#cap-tools-documents-and-history)
 - [Stay under the price tier](#stay-under-the-price-tier)
 - [Pin a parameter](#pin-a-parameter)
+- [Send simple requests to a cheaper model](#send-simple-requests-to-a-cheaper-model)
 - [Preview a rule before you enforce it](#preview-a-rule-before-you-enforce-it)
 - [Import AIUC rules](#import-aiuc-rules)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
@@ -30,17 +31,19 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
 - [Export and verify the audit trail](#export-and-verify-the-audit-trail)
 - [Archive audit evidence to a write-once bucket](#archive-audit-evidence-to-a-write-once-bucket)
-- [Ask the archive your own questions](#ask-the-archive-your-own-questions)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
+- [Ask the archive your own questions](#ask-the-archive-your-own-questions)
+- [Mark an endpoint for a live semantic check](#mark-an-endpoint-for-a-live-semantic-check)
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Register an Azure OpenAI deployment](#register-an-azure-openai-deployment)
 - [Use Amazon Bedrock](#use-amazon-bedrock)
 - [Connect Bedrock with an AWS role](#connect-bedrock-with-an-aws-role)
 - [Lock Bedrock to EU regions](#lock-bedrock-to-eu-regions)
-- [See team costs on the AWS bill](#see-team-costs-on-the-aws-bill)
-- [How busy is our GPU?](#how-busy-is-our-gpu)
+- [See what each lever saved](#see-what-each-lever-saved)
 - [Allocate hardware cost to teams](#allocate-hardware-cost-to-teams)
 - [Read the capacity forecast](#read-the-capacity-forecast)
+- [How busy is our GPU?](#how-busy-is-our-gpu)
+- [See team costs on the AWS bill](#see-team-costs-on-the-aws-bill)
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [Give an agent a recommender key](#give-an-agent-a-recommender-key)
 - [Let Claude Code read findings and draft plans](#let-claude-code-read-findings-and-draft-plans)
@@ -301,7 +304,7 @@ forwarded body are in [decision evidence](POLICY_DECISIONS.md#management-change-
 ## Change the gateway settings
 
 Turn the gateway's own switches on or off for your tenant. Every switch is off by
-default; privacy switches stay under [privacy settings](#change-the-privacy-settings).
+default except the `agent_loop` count; privacy switches stay under [privacy settings](#change-the-privacy-settings).
 
 1. Read them with `GET /api/v1/management/gateway-settings` (`settings.read`:
    every built-in role): `settings` with every field, `revision` (0 until the first change),
