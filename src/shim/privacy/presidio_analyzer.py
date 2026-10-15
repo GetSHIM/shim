@@ -30,6 +30,7 @@ from presidio_analyzer.predefined_recognizers import (
     TrNationalIdRecognizer,
     UsSsnRecognizer,
 )
+import tldextract
 
 from shim.rules.content import turkish_fold
 
@@ -47,6 +48,13 @@ _LOCAL_PART = (
 )
 
 
+# The Public Suffix List bundled with tldextract, read once: no download and no disk cache.
+# Presidio's default extractor fetches publicsuffix.org on first use, with no timeout,
+# which a gateway with egress closed must never do. A suffix added after the snapshot
+# (2025-04-07 in tldextract 5.3.1, still the one 5.4.0 ships) is not yet a domain.
+_DOMAINS = tldextract.TLDExtract(cache_dir=None, suffix_list_urls=())
+
+
 class ShimEmailRecognizer(EmailRecognizer):
     PATTERNS = [
         Pattern(
@@ -58,7 +66,8 @@ class ShimEmailRecognizer(EmailRecognizer):
 
     @lru_cache(maxsize=4096)
     def _validate_domain(self, domain: str) -> bool:
-        return bool(super().validate_result(f"shim@{domain}"))
+        # Presidio's own check, on the bundled list.
+        return _DOMAINS(f"shim@{domain}").fqdn != ""
 
     def validate_result(self, pattern_text: str) -> bool:
         _, separator, domain = pattern_text.rpartition("@")

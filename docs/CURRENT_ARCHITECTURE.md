@@ -150,6 +150,12 @@ Community mode requires no external state service. Process loss can discard
 rate, circuit, continuation, and local-event state. Missing referenced privacy
 state fails closed. Unknown catalog prices remain nullable rather than guessed.
 
+Detection opens no connection and writes nothing to disk, so it runs with egress
+closed. Email domains are checked against the Public Suffix List bundled with the
+pinned `tldextract` (snapshot of 2025-04-07), never downloaded; a suffix added after
+the snapshot is not yet a domain. `tests/community/test_application.py` audits a cold
+process's sockets for a chat request and a scan.
+
 `SHIM_API_KEY` is optional on loopback and required for a non-loopback bind.
 Browser CORS is disabled in keyless mode. Provider credentials resolve from an
 invocation header first and the matching environment variable second.

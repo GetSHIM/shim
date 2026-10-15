@@ -17,6 +17,8 @@ dependencies = [
   "pydantic-settings>=2.1,<3",
   "presidio-analyzer==2.2.364",
   "phonenumbers==9.0.34",
+  # Email domains are checked against the Public Suffix List bundled with this version.
+  "tldextract==5.3.1",
   # Tenant rule patterns need per-search timeouts; presidio already installs it.
   "regex==2026.7.19",
   "python-json-logger>=4.2,<5",

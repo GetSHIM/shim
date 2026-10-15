@@ -688,6 +688,85 @@ assert loaded == [], loaded
     assert result.returncode == 0, result.stderr
 
 
+# A fresh process, as a fresh container is: an earlier test in this one may already have
+# loaded tldextract's suffix list. Every socket the process tries to open is recorded and
+# refused, so a regression fails here without reaching the network.
+_NO_EGRESS_SCRIPT = """
+import asyncio, json, sys
+import httpx
+from shim.application import create_community_app
+from shim.core.community_config import CommunitySettings
+
+opened = []
+
+def audit(event, args):
+    if event in ("socket.connect", "socket.getaddrinfo"):
+        opened.append((event, repr(args[1] if event == "socket.connect" else args[:2])))
+        raise OSError("egress refused by the test")
+
+sys.addaudithook(audit)
+EMAIL = "alice@example.com"
+sent = []
+
+async def upstream(request):
+    sent.append(json.loads(request.content)["messages"][0]["content"])
+    return httpx.Response(200, json={
+        "id": "chatcmpl_egress", "object": "chat.completion", "created": 1,
+        "model": "gpt-5.6-luna",
+        "choices": [{"index": 0, "finish_reason": "stop",
+                     "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    })
+
+async def main(path):
+    application = create_community_app(
+        CommunitySettings(
+            OPENAI_BASE_URL="https://upstream.test/v1", BACKEND_CORS_ORIGINS=[],
+            SHIM_API_KEY="shim-gateway-key-123", _env_file=None,
+        ),
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(upstream)),
+    )
+    headers = {"authorization": "Bearer shim-gateway-key-123", "x-provider-key": "sk-x"}
+    body = (
+        {"text": f"Contact {EMAIL}"} if path == "/v1/scan" else
+        {"model": "gpt-5.6-luna", "messages": [{"role": "user", "content": f"Contact {EMAIL}"}]}
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://shim.test"
+        ) as client:
+            response = await client.post(path, headers=headers, json=body)
+    assert response.status_code == 200, response.text
+    if path == "/v1/scan":
+        assert response.json()["entity_types"] == ["EMAIL_ADDRESS"], response.text
+    else:
+        assert len(sent) == 1 and EMAIL not in sent[0], sent
+    assert opened == [], opened
+
+asyncio.run(main(sys.argv[1]))
+"""
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/scan"])
+def test_an_email_is_masked_without_any_network_call_from_a_cold_process(
+    path: str, tmp_path: Path
+) -> None:
+    cache = tmp_path / "tldextract-cache"
+    environment = {**os.environ, "TLDEXTRACT_CACHE": str(cache)}
+
+    result = subprocess.run(
+        [sys.executable, "-c", _NO_EGRESS_SCRIPT, path],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not cache.exists()
+
+
 @pytest.mark.parametrize("host", ["localhost", "127.23.45.67", "::1"])
 def test_cli_serves_loopback_without_a_gateway_key(monkeypatch, host: str) -> None:
     run = Mock()
