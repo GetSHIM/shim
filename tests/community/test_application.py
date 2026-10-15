@@ -248,15 +248,20 @@ _DISGUISED = {
     "spaced-card": " ".join(_CARD),
     "spaced-iban": " ".join(_IBAN),
     "spaced-phone": " ".join(_PHONE),
-    "reversed-override-tckn": f"‮{_TCKN[::-1]}‬",
-    "reversed-override-card": f"‮{_CARD[::-1]}‬",
-    "reversed-override-iban": f"‮{_IBAN[::-1]}‬",
-    "reversed-override-phone": f"‮{_PHONE[::-1]}‬",
-    "reversed-override-email": f"‮{_EMAIL[::-1]}‬",
-    "override-unclosed-email": f"‮{_EMAIL[::-1]}",
+    "reversed-override-tckn": f"\u202e{_TCKN[::-1]}\u202c",
+    "reversed-override-card": f"\u202e{_CARD[::-1]}\u202c",
+    "reversed-override-iban": f"\u202e{_IBAN[::-1]}\u202c",
+    "reversed-override-phone": f"\u202e{_PHONE[::-1]}\u202c",
+    "reversed-override-email": f"\u202e{_EMAIL[::-1]}\u202c",
+    "override-unclosed-email": f"\u202e{_EMAIL[::-1]}",
+    # Stored in order with an override inside, and stored with a part reversed.
+    "override-inside-tckn": f"{_TCKN[:4]}\u202e{_TCKN[4:8]}\u202c{_TCKN[8:]}",
+    "reversed-part-of-tckn": f"{_TCKN[:7]}\u202e{_TCKN[7:][::-1]}\u202c",
     "email-broken-after-at": _EMAIL.replace("@", "@\n"),
-    "acute-on-email-letters": "".join(c + "́" if c.isalnum() else c for c in _EMAIL),
-    "acute-on-iban-letters": "".join(c + "́" for c in _IBAN),
+    "acute-on-email-letters": "".join(
+        c + "\u0301" if c.isalnum() else c for c in _EMAIL
+    ),
+    "acute-on-iban-letters": "".join(c + "\u0301" for c in _IBAN),
     "hyphen-every-third-iban": _every_third(_IBAN),
     "hyphen-every-third-card": _every_third(_CARD),
 }
@@ -297,11 +302,10 @@ async def test_disguised_identifiers_never_reach_the_provider(shown: str) -> Non
 
     assert response.status_code == 200, response.text
     [upstream_text] = sent
-    # Every character of the value is masked; only the direction controls stay.
-    controls = "".join(c for c in shown if c in "‮‬")
-    assert (
-        re.sub(r"<[A-Z_]+_[0-9a-f]{32}>", "", upstream_text)
-        == f"Müşteri bilgisi: {controls} teşekkürler."
+    # Every character of the value is masked; direction controls may stay.
+    masked = re.sub(r"<[A-Z_]+_[0-9a-f]{32}>", "", upstream_text)
+    assert masked.translate({0x202E: None, 0x202C: None}) == (
+        "Müşteri bilgisi:  teşekkürler."
     ), upstream_text
     assert response.json()["choices"][0]["message"]["content"] == prompt
 

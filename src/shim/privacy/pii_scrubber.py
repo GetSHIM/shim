@@ -25,7 +25,7 @@ from shim.rules.model import ACTION_RANK
 _INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
 # A right-to-left override shows the characters after it reversed, up to a pop or the
 # end of the line.
-_OVERRIDE, _OVERRIDE_ENDS = "\u202e", "\u202c\n\r\u2029"
+_OVERRIDE, _POP, _LINE_ENDS = "\u202e", "\u202c", "\n\r\u2029"
 # Separators inside an identifier, dropped for detection: "1 0 0 0 0 0 0 0 1 4 6" and
 # "+ 9 0 5 3 2 ..." (a character per word), "TR3-300-061-005-..." (hyphenated digit
 # groups) and a line break after an email's @. A run is not glued to a letter or a
@@ -196,33 +196,52 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
     decoded, spans = _decode_with_spans(text)
     visible_characters: list[str] = []
     visible_spans: list[_SourceSpan] = []
-    # Where the characters an override reverses start, and the override's own span.
-    override: tuple[int, _SourceSpan] | None = None
+    # The current line's start, its override segments, and the open one's start.
+    line = 0
+    segments: list[tuple[int, int]] = []
+    override: int | None = None
 
-    def show_reversed() -> None:
-        # The characters as stored and, after a line break, as shown: the logical
-        # order is what a model reads, the shown order what a person copies.
-        assert override is not None
-        start, span = override
-        shown = visible_characters[start:][::-1]
-        shown_spans = visible_spans[start:][::-1]
-        if shown:
-            visible_characters.extend(["\n", *shown])
-            visible_spans.extend([span, *shown_spans])
+    def close_override() -> None:
+        nonlocal override
+        if override is not None and len(visible_characters) > override:
+            segments.append((override, len(visible_characters)))
+        override = None
+
+    def show_line() -> None:
+        # A line with an override is read as stored, the order a model reads, and
+        # then, after a blank line, as shown, the order a person copies. Each order
+        # keeps an identifier the override sits inside whole.
+        close_override()
+        if not segments:
+            return
+        shown = visible_characters[line:]
+        shown_spans = visible_spans[line:]
+        for start, end in segments:
+            shown[start - line : end - line] = shown[start - line : end - line][::-1]
+            shown_spans[start - line : end - line] = shown_spans[
+                start - line : end - line
+            ][::-1]
+        visible_characters.extend(["\n", "\n", *shown])
+        visible_spans.extend([shown_spans[-1], shown_spans[-1], *shown_spans])
+        segments.clear()
 
     for character, span in zip(decoded, spans):
-        if override is not None and character in _OVERRIDE_ENDS:
-            show_reversed()
-            override = None
-            if character == _OVERRIDE_ENDS[0]:
-                continue
+        if character in _LINE_ENDS:
+            show_line()
+            visible_characters.append(character)
+            visible_spans.append(span)
+            line = len(visible_characters)
+            continue
+        if character == _POP and override is not None:
+            close_override()
+            continue
         # Neither a mark nor an invisible character.
         if character.isascii():
             visible_characters.append(character)
             visible_spans.append(span)
             continue
         if character == _OVERRIDE and override is None:
-            override = (len(visible_characters), span)
+            override = len(visible_characters)
             continue
         # A mark or an invisible character on a digit or an ASCII character (an accent,
         # a variation selector, a keycap, a joiner) would split an identifier: it is
@@ -241,8 +260,7 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
         if not _INVISIBLE.fullmatch(character):
             visible_characters.append(character)
             visible_spans.append(span)
-    if override is not None:
-        show_reversed()
+    show_line()
     normalized, normalized_spans = _normalize_with_spans(
         "".join(visible_characters), visible_spans
     )

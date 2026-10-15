@@ -1382,7 +1382,9 @@ def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -
         ("kart 4111-1111-1111-1111", "kart 4111111111111111"),
         ("a@\nexample.com", "a@example.com"),
         ("a@\r\nexample.com", "a@example.com"),
-        ("\u202e64100000001\u202c ok", "64100000001\n10000000146 ok"),
+        ("\u202e64100000001\u202c ok", "64100000001 ok\n\n10000000146 ok"),
+        ("1000\u202e0000\u202c146\nx", "10000000146\n\n10000000146\nx"),
+        ("1000000\u202e6410\u202c", "10000006410\n\n10000000146"),
         ("a\u0301li@e\u0301xample.com", "ali@example.com"),
         # Left alone: under ten digits, groups of mixed sizes, a word glued on.
         ("seri 1 2 3 4 5 6 7 8 9 10", "seri 1 2 3 4 5 6 7 8 9 10"),
