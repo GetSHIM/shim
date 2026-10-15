@@ -123,7 +123,7 @@ class FindingRemediation(_Model):
 
     mode: Mode
     max_mode: Mode
-    # Open objects until E42 and E56 produce them; null from every producer today.
+    # Open objects: the enterprise ladder fills action from suggest, proof_after in auto.
     action: dict[str, Any] | None
     reversible: bool
     blast_radius: SubjectKind

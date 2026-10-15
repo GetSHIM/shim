@@ -50,7 +50,7 @@ reopens a closed one as `new`. The OCSF export keeps every field it had; its
 | `evidence` | Up to 50 references `{"kind", "id"}`: `request`, `ledger_row`, `audit_row`, `finding`, `policy_version`, `cli_session` |
 | `measurements` | Up to 32 finite numbers by name (`^[a-z][a-z0-9_]{0,63}$`) |
 | `impact` | `requests`, `tokens`, `usd` (a fixed-point string), `risk_class` (`privacy`, `cost`, `reliability`, `quality`); each may be `null` |
-| `remediation` | `mode` and `max_mode` (`observe`, `suggest`, `auto`; `mode` never above `max_mode`), `action` and `proof_after` (objects, `null` until a later release defines and fills them), `reversible`, `blast_radius` (a subject kind) and `text` (`{"en", "tr"}`) |
+| `remediation` | `mode` and `max_mode` (`observe`, `suggest`, `auto`; `mode` never above `max_mode`), `action` and `proof_after` (open objects or `null`; the enterprise gateway fills `action` from `suggest` up and `proof_after` in `auto`, see [modes](../ee/docs/FINDINGS.md#modes)), `reversible`, `blast_radius` (a subject kind) and `text` (`{"en", "tr"}`) |
 | `playbook` | A repository-relative doc and anchor, such as `ee/docs/FINDINGS.md#gatewayretry_storm`, readable offline |
 | `resolved_at`, `resolved_by` | When and by whom it was resolved (a user id, or `system` when it resolved itself), or `null`; optional |
 

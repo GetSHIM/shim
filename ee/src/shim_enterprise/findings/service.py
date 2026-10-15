@@ -3364,7 +3364,9 @@ def finding_from_row(row: Finding) -> FindingV1:
                 action=None if mode == "observe" else row.remediation.get("action"),
                 reversible=bool(row.remediation.get("reversible", spec.REVERSIBLE)),
                 blast_radius=spec.BLAST_RADIUS,
-                proof_after=None,
+                proof_after=row.remediation.get("proof_after")
+                if mode == "auto"
+                else None,
                 text=FindingText(**remediation_text(row.rule_id, row.evidence)),
             ),
             playbook=row.remediation.get("doc") or spec.PLAYBOOK,
