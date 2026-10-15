@@ -5005,7 +5005,7 @@ async def test_an_unscannable_document_is_refused_or_counted() -> None:
     assert line["media_unscanned"] == 1
 
 
-def _raw_pdf(*objects: bytes, catalog: bytes = b"") -> bytes:
+def _raw_pdf(*objects: bytes, catalog: bytes = b"", trailer: bytes = b"") -> bytes:
     """A PDF whose first object is the catalog, its second the page tree."""
     body = [b"<< /Type /Catalog /Pages 2 0 R %s>>" % catalog, *objects]
     out = bytearray(b"%PDF-1.4\n")
@@ -5016,8 +5016,9 @@ def _raw_pdf(*objects: bytes, catalog: bytes = b"") -> bytes:
     xref = len(out)
     out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(body) + 1)
     out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
-    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+    out += b"trailer\n<< /Size %d /Root 1 0 R %s>>\nstartxref\n%d\n%%%%EOF\n" % (
         len(body) + 1,
+        trailer,
         xref,
     )
     return bytes(out)
@@ -5173,6 +5174,37 @@ async def test_a_value_in_a_pdf_form_field_is_scanned() -> None:
     assert response.headers["x-shim-error-code"] == "PII_BLOCKED"
     assert "EMAIL_ADDRESS" in response.text
     assert "10000000146" not in response.text and "ayse" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_annotation_and_information_values_behind_references_are_masked() -> None:
+    # #207 review: values behind indirect references. pypdf 6.20.1's IndirectObject
+    # iterates and prints as its target; this pins that across a pypdf upgrade.
+    text = b"BT /F1 12 Tf 72 720 Td (Rapor hazir, ekip onayladi.) Tj ET"
+    pdf = _raw_pdf(
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> /Annots 6 0 R >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(text), text),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"[7 0 R]",
+        b"<< /Type /Annot /Subtype /FreeText /Rect [0 0 10 10] /Contents 8 0 R >>",
+        b"(Not: TCKN 12345678950)",
+        b"<< /Author 10 0 R >>",
+        b"(Kimlik 28765432164)",
+        trailer=b"/Info 9 0 R ",
+    )
+
+    response, [call], [line] = await _call_with_media(
+        "messages", base64.b64encode(pdf).decode(), SHIM_DOCUMENTS="scan_and_convert"
+    )
+
+    assert response.status_code == 200, response.text
+    sent = _media_sent("messages", call)["source"]["data"]
+    assert "Rapor hazir" in sent
+    assert "12345678950" not in sent and "28765432164" not in sent
+    assert "IndirectObject" not in sent
+    assert line["document_entities"] == {"TR_NATIONAL_ID": 2}
 
 
 @pytest.mark.asyncio
