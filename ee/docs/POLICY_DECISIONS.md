@@ -1101,9 +1101,11 @@ outcome and analyzer rates of routed rows beside the rest of `from`, and the mat
 change tests). Every value is an id, label, count, sum, ratio or percentile read from
 `request_lifecycle`, `usage_ledger` and `request_logs`; `title` and `note` are the
 admin's own words. Savings reuse the tokens the serving model billed, priced at each
-side's deployment price, else its upstream model's catalog price, else `unpriced`;
-an output-token adjustment by tokens per character applies when both models have at
-least 30 eligible answers in the language.
+side's deployment price, else the exact catalog price of its `price_model` (or
+upstream model), else `unpriced`, with the helper the Savings page uses, so the two
+agree; an output-token adjustment by tokens per character applies when both models
+have at least 30 eligible answers in the language, matched by price-book entry as the
+language-cost read groups them. Live traffic counts requests by that same pricing model.
 
 The PDF is stored with its facts object, the file's SHA-256 and the facts' SHA-256
 (`json.dumps(facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`). In

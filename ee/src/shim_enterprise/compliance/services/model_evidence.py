@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, ModelPrice
 from shim.rules import Rule, RuleSet
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
+from shim_enterprise.billing.savings import estimate_route_saving, model_prices
 from shim_enterprise.compliance.reporting import (
     build_pdf,
     evidence_table,
@@ -98,53 +99,62 @@ async def _deployment(
     )
 
 
-async def route_price(
-    session: AsyncSession, tenant_id: UUID, name: str, provider: str
-) -> ModelPrice | None:
-    """A registry alias by its deployment price, else the catalog price of its upstream
-    model (or of the name), else None."""
-    deployment = await _deployment(session, tenant_id, name)
-    if deployment is not None and deployment.input_price_per_million is not None:
-        return ModelPrice(
-            deployment.input_price_per_million,
-            deployment.output_price_per_million or Decimal(0),
-        )
-    model = deployment.upstream_model if deployment is not None else name
-    if DEFAULT_PRICE_BOOK.supports(model, provider):
-        return DEFAULT_PRICE_BOOK.resolve(model, provider)
-    return None
+def _pricing_model(deployment: ModelDeployment | None, name: str) -> str:
+    """The model a request to `name` settles as: what lifecycle `provider_model` holds."""
+    if deployment is None:
+        return name
+    return deployment.price_model or deployment.upstream_model
+
+
+def _book_entry(model: str, provider: str | None) -> str | None:
+    """The price-book entry E46 groups a settled model under: the longest equal or
+    "-"-extended entry, as `language_cost` matches it."""
+    normalized = model.strip().casefold()
+    return max(
+        (
+            entry
+            for entry in DEFAULT_PRICE_BOOK.provider_prices.get(provider or "", {})
+            if normalized == entry or normalized.startswith(f"{entry}-")
+        ),
+        key=len,
+        default=None,
+    )
 
 
 async def _models(
     session: AsyncSession, tenant_id: UUID, names: Sequence[str]
 ) -> list[dict[str, Any]]:
+    """Each model priced as S65's savings read prices it."""
+    prices = await model_prices(session, tenant_id, names)
     models = []
     for name in names:
         deployment = await _deployment(session, tenant_id, name)
-        provider = deployment.provider if deployment is not None else _provider(name)
-        upstream = deployment.upstream_model if deployment is not None else name
-        if deployment is not None and deployment.input_price_per_million is not None:
+        price = prices[name]
+        if price is None:
+            source = "unpriced"
+        elif deployment is not None and deployment.input_price_per_million is not None:
             source = "deployment"
-            prices = (
-                deployment.input_price_per_million,
-                deployment.output_price_per_million,
-            )
-        elif provider is not None and DEFAULT_PRICE_BOOK.supports(upstream, provider):
-            source = "catalog"
-            price = DEFAULT_PRICE_BOOK.resolve(upstream, provider)
-            prices = (price.input_per_million, price.output_per_million)
         else:
-            source, prices = "unpriced", (None, None)
+            source = "catalog"
         models.append(
             {
                 "name": name,
-                "provider": provider,
-                "upstream_model": upstream,
+                "provider": deployment.provider
+                if deployment is not None
+                else _provider(name),
+                "upstream_model": deployment.upstream_model
+                if deployment is not None
+                else name,
+                "pricing_model": _pricing_model(deployment, name),
                 "deployment_kind": deployment.deployment_kind
                 if deployment is not None
                 else "external",
-                "input_per_million": None if prices[0] is None else str(prices[0]),
-                "output_per_million": None if prices[1] is None else str(prices[1]),
+                "input_per_million": None
+                if price is None
+                else str(price.input_per_million),
+                "output_per_million": None
+                if price is None
+                else str(price.output_per_million),
                 "price_source": source,
             }
         )
@@ -366,10 +376,15 @@ async def _savings(
         group["by_language"][row.language] = (
             group["by_language"].get(row.language, 0) + row.completion
         )
+    prices = await model_prices(
+        session, tenant_id, {name for key in groups for name in key[:2] if name}
+    )
     priced = []
     for (source, target, provider), group in sorted(groups.items()):
-        at_from = await route_price(session, tenant_id, source, provider)
-        at_to = await route_price(session, tenant_id, target, provider)
+        at_from, at_to = prices.get(source), prices.get(target)
+        saving = estimate_route_saving(
+            at_from, at_to, group["prompt"], group["completion"]
+        )
         item: dict[str, Any] = {
             "from": source,
             "to": target,
@@ -377,17 +392,17 @@ async def _savings(
             "tokens": {"prompt": group["prompt"], "completion": group["completion"]},
             "actual_usd": money(group["actual"]),
         }
-        if at_from is None or at_to is None:
+        if saving is None or at_from is None or at_to is None:
             priced.append({**item, "priced": False})
             continue
-        from_cost = at_from.cost(group["prompt"], group["completion"])
-        to_cost = at_to.cost(group["prompt"], group["completion"])
         difference = "savings_usd" if outcome == "routed" else "potential_savings_usd"
         item |= {
             "priced": True,
-            "cost_at_from_usd": money(from_cost),
-            "cost_at_to_usd": money(to_cost),
-            difference: money(from_cost - to_cost),
+            "cost_at_from_usd": money(
+                at_from.cost(group["prompt"], group["completion"])
+            ),
+            "cost_at_to_usd": money(at_to.cost(group["prompt"], group["completion"])),
+            difference: money(saving),
         }
         adjusted, reason = await _adjusted(
             session, tenant_id, source, target, provider, group, at_from, ratios
@@ -414,7 +429,7 @@ async def _adjusted(
     models = []
     for name in (source, target):
         deployment = await _deployment(session, tenant_id, name)
-        models.append(deployment.upstream_model if deployment is not None else name)
+        models.append(_book_entry(_pricing_model(deployment, name), provider))
     completion = Decimal(0)
     for language, tokens in group["by_language"].items():
         if language not in ("tr", "en"):
@@ -596,7 +611,10 @@ async def collect(
     if kind == "model_selection":
         names = [sources["current"], *sources["candidates"]]
         models = await _models(session, tenant_id, names)
-        served = [model["upstream_model"] for model in models]
+        served = [model["pricing_model"] for model in models]
+        entries = {
+            _book_entry(model["pricing_model"], model["provider"]) for model in models
+        }
         sections["models"] = models
         sections["change_tests"] = tests
         sections["canaries"] = canaries
@@ -616,7 +634,7 @@ async def collect(
                 "requests": ratio[1],
             }
             for (model, language), ratio in sorted(ratios.items())
-            if model in served
+            if model in entries
         ]
         sections["language_cost"] = measured or NOT_RECORDED
     else:

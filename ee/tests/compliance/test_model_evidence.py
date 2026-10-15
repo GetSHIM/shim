@@ -11,21 +11,20 @@ import json
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from ee.tests.gateway.test_attempts import _deployment, origins  # noqa: F401
 from ee.tests.observability.test_tasks import _request, _tenant
 from ee.tests.rules.test_rules_resource import MANAGEMENT, _call
-from shim.billing.pricing import DEFAULT_PRICE_BOOK
 from shim.rules import validate_rule_set
 from shim_enterprise.ai_act.audit_writer import write_audit_row
 from shim_enterprise.ai_act.bundle import build_audit_bundle
+from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.compliance.models import ModelEvidenceFile
 from shim_enterprise.compliance.services import model_evidence
 from shim_enterprise.compliance.services.model_evidence import (
     collect,
     facts_digest,
-    route_price,
     routing_section,
     story,
 )
@@ -166,7 +165,7 @@ async def test_route_repricing_matches_s65_fixture(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_unpriced_target_and_an_alias_priced_by_its_catalog_model(db) -> None:
+async def test_an_unpriced_target_is_not_repriced(db) -> None:
     user, key, _ = await _tenant(db)
     await _priced(db, key, to_price=False)
     for _ in range(10):
@@ -174,18 +173,44 @@ async def test_an_unpriced_target_and_an_alias_priced_by_its_catalog_model(db) -
     await db.flush()
 
     [unpriced] = (await _routing(db, user))["savings"]
-    catalog = DEFAULT_PRICE_BOOK.models("openai")[0]
-    await _deployment(db, key, "cheap_catalog", upstream_model=catalog)
-    price = await route_price(db, user.organization_id, "cheap_catalog", "openai")
 
     assert unpriced["priced"] is False and "savings_usd" not in unpriced
-    assert price is not None
-    assert price.cost(10_000, 2_000) == DEFAULT_PRICE_BOOK.resolve(
-        catalog, "openai"
-    ).cost(10_000, 2_000)
-    assert (
-        await route_price(db, user.organization_id, "nothing-known", "openai") is None
+
+
+@pytest.mark.asyncio
+async def test_an_alias_is_priced_and_served_by_its_price_model_as_s65_does(
+    db,
+) -> None:
+    user, key, _ = await _tenant(db)
+    # No deployment prices: strong bills as its price model, cheap as its upstream.
+    await _deployment(db, key, "strong", price_model="gpt-4o-mini")
+    await _deployment(db, key, "cheap", upstream_model="gpt-4.1-nano")
+    for index in range(10):
+        _routed(db, key, conversation=index)
+    served = _request(
+        db, key, None, model="strong", started_at=NOW - timedelta(hours=1)
     )
+    await db.flush()
+    await db.execute(
+        update(RequestLifecycle)
+        .where(RequestLifecycle.request_id == served)
+        .values(provider_model="gpt-4o-mini")
+    )
+
+    [saving] = (await _routing(db, user))["savings"]
+    sections = (await _model_selection(db, user))["sections"]
+
+    # 10,000 prompt and 2,000 completion tokens at 0.15/0.60 and 0.10/0.40 per million.
+    assert (
+        saving["cost_at_from_usd"],
+        saving["cost_at_to_usd"],
+        saving["savings_usd"],
+    ) == ("0.0027000000", "0.0018000000", "0.0009000000")
+    assert [
+        (model["price_source"], model["input_per_million"])
+        for model in sections["models"]
+    ] == [("catalog", "0.15"), ("catalog", "0.1")]
+    assert [row["model"] for row in sections["live_traffic"]] == ["gpt-4o-mini"]
 
 
 @pytest.mark.asyncio
@@ -258,11 +283,24 @@ async def test_the_language_adjustment_needs_thirty_answers_per_model(
 ) -> None:
     user, key, _ = await _tenant(db)
     await _priced(db, key)
+    # E46 keys a settled dated snapshot by its price-book entry.
+    for alias, upstream in (
+        ("strong", "gpt-4o-mini-2024-07-18"),
+        ("cheap", "gpt-4.1-nano"),
+    ):
+        await db.execute(
+            update(ModelDeployment)
+            .where(
+                ModelDeployment.organization_id == user.organization_id,
+                ModelDeployment.alias == alias,
+            )
+            .values(upstream_model=upstream)
+        )
     _routed(db, key, language="tr")
     await db.flush()
     ratios = {
-        ("strong-upstream", "tr"): (300.0, eligible),
-        ("model-the-catalog-does-not-know", "tr"): (200.0, 30),
+        ("gpt-4o-mini", "tr"): (300.0, eligible),
+        ("gpt-4.1-nano", "tr"): (200.0, 30),
     }
     rules = validate_rule_set({"revision": 1, "rules": [_route()]})
 
