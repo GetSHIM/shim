@@ -5331,7 +5331,9 @@ async def test_an_image_decode_stops_at_its_deadline(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert slow._value.get() == before + 2
-    assert not line.get("transforms_applied")
+    [entry] = line["transforms_applied"]
+    assert (entry["id"], entry["items"]) == ("image_downscale", 0)
+    assert entry["skipped"] == {"too_slow": 2, "too_large": 1}
     assert (
         json.loads(call.content)["messages"][0]["content"][0]["source"]["data"]
         == _palette_bomb()

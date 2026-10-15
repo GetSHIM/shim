@@ -7,6 +7,7 @@
 - [README](README.md): what shim does, the quickstart and the settings that matter first
 - [Cookbook](docs/COOKBOOK.md): SDK setup, embeddings, Azure OpenAI, tags and cost, scan, privacy actions, documents and images, errors and retries, warnings, answer analysis, cost levers, streaming, observability, LiteLLM and Portkey in front of shim
 - [Finding schema](docs/FINDINGS_SCHEMA.md): the versioned JSON shape of every finding
+- [v0.4.1 release notes](docs/releases/v0.4.1.md): the embeddings fix with transforms on, and skipped images in the downscale record
 - [v0.4.0 release notes](docs/releases/v0.4.0.md): breaking changes, migrations, rollback and new settings
 - [Current architecture](docs/CURRENT_ARCHITECTURE.md): the request path, product boundaries, error codes and contracts
 - [Developer guide](DEVELOPER_GUIDE.md): where code lives, runtime invariants and the required gates

@@ -178,6 +178,21 @@ def test_image_downscale_measures_bytes_only() -> None:
     }
 
 
+def test_images_that_were_only_skipped_save_nothing() -> None:
+    entry = {
+        "id": "image_downscale",
+        "version": 1,
+        "before_chars": 0,
+        "after_chars": 0,
+        "items": 0,
+        "before_bytes": 0,
+        "after_bytes": 0,
+        "skipped": {"too_large": 1},
+    }
+
+    assert request_savings(_prepared(transforms=(entry,)), _usage()) is None
+
+
 def test_cleared_thinking_is_measured_with_a_gross_estimate() -> None:
     saved = request_savings(_prepared(["anthropic_clear_thinking"]), _usage(), 15_000)
 

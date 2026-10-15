@@ -26,7 +26,7 @@ from shim.gateway.kernel.result import PreparedInference, ProviderTarget
 from shim.gateway.media import classify_media
 from shim.gateway.pipeline.transform_band import TransformBandStage
 from shim.gateway.request_policy import BandSettings, RequestPolicyContext
-from shim.observability.metrics import IMAGE_DOWNSCALE_TOTAL
+from shim.observability.metrics import IMAGE_DOWNSCALE_TOTAL, TRANSFORMS_TOTAL
 
 
 def _gradient(width: int, height: int, mode: str = "RGB") -> Image.Image:
@@ -130,6 +130,14 @@ def _entry(prepared: PreparedInference) -> dict[str, Any] | None:
     return found[0] if found else None
 
 
+def _skipped(prepared: PreparedInference) -> dict[str, int]:
+    """The reasons recorded for a request whose images were all left alone."""
+    entry = _entry(prepared)
+    assert entry is not None and (entry["items"], entry["images"]) == (0, [])
+    assert entry["before_chars"] == entry["after_chars"] == 0
+    return entry["skipped"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("data", "mime", "model", "size"),
@@ -219,12 +227,16 @@ def _rotated() -> bytes:
 )
 async def test_an_image_left_alone_says_why(data, reason) -> None:
     before = IMAGE_DOWNSCALE_TOTAL.labels(outcome=reason)._value.get()
+    unchanged = TRANSFORMS_TOTAL.labels(transform="image_downscale", result="unchanged")
+    counted = unchanged._value.get()
     prepared = _prepared("messages", [_anthropic_image(data)])
 
     done = await _run(prepared)
 
-    assert done.payload == prepared.payload and _entry(done) is None
+    assert done.payload == prepared.payload and _skipped(done) == {reason: 1}
     assert IMAGE_DOWNSCALE_TOTAL.labels(outcome=reason)._value.get() == before + 1
+    # Recorded, but nothing was applied.
+    assert unchanged._value.get() == counted + 1
 
 
 @pytest.mark.parametrize(
@@ -279,7 +291,8 @@ async def test_clients_that_rely_on_the_original_frame_are_left_alone() -> None:
         ),
     ):
         done = await _run(prepared)
-        assert done.payload == prepared.payload and _entry(done) is None
+        assert done.payload == prepared.payload
+        assert _skipped(done) == {"client_opt_out": 1}
 
 
 @pytest.mark.asyncio
@@ -300,6 +313,9 @@ async def test_unknown_models_and_unlisted_deployments_are_left_alone() -> None:
     for prepared in (unknown, deployment):
         done = await _run(prepared)
         assert done.payload == prepared.payload
+    assert _skipped(await _run(unknown)) == {"unknown_model": 1}
+    # An unlisted deployment is never looked at, so nothing is skipped.
+    assert _entry(await _run(deployment)) is None
 
 
 @pytest.mark.asyncio
@@ -312,7 +328,8 @@ async def test_too_many_pixels_are_never_decoded(monkeypatch) -> None:
     monkeypatch.setattr(isolation, "run", fail)
     prepared = _prepared("messages", [_anthropic_image(JPEG)])
 
-    assert (await _run(prepared)).payload == prepared.payload
+    done = await _run(prepared)
+    assert done.payload == prepared.payload and _skipped(done) == {"too_large": 1}
 
 
 @pytest.mark.asyncio
@@ -327,7 +344,7 @@ async def test_a_result_that_is_not_smaller_keeps_the_original(monkeypatch) -> N
 
     done = await _run(prepared)
 
-    assert done.payload == prepared.payload and _entry(done) is None
+    assert done.payload == prepared.payload and _skipped(done) == {"not_smaller": 1}
 
 
 @pytest.mark.asyncio
@@ -468,7 +485,7 @@ async def test_base64_that_does_not_decode_leaves_the_request_alone() -> None:
 
     done = await _run(prepared)
 
-    assert done.payload == prepared.payload and _entry(done) is None
+    assert done.payload == prepared.payload and _skipped(done) == {"corrupt": 1}
 
 
 def test_a_jpeg_comment_is_not_carried_over() -> None:

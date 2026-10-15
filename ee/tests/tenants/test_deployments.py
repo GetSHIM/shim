@@ -170,7 +170,7 @@ async def _deployments(db, key):
 
 
 @asynccontextmanager
-async def _gateway(db, key, handler, rules=None):
+async def _gateway(db, key, handler, rules=None, policy=None):
     await db.commit()
     factory = async_sessionmaker(db.bind, expire_on_commit=False)
     resolver = DeploymentResolver(factory)
@@ -190,7 +190,7 @@ async def _gateway(db, key, handler, rules=None):
             app.state.model_catalog = resolver.catalog
             kernel = app.state.gateway_service.kernel
             app.state.gateway_service = EnterpriseGatewayService(kernel, AsyncMock())
-            kernel.policy_resolver = SimpleNamespace(
+            kernel.policy_resolver = policy or SimpleNamespace(
                 resolve=AsyncMock(
                     return_value=ResolvedRequestPolicy(
                         tenant_id=key.organization_id,
@@ -218,7 +218,9 @@ async def _gateway(db, key, handler, rules=None):
                     provider, store, factory
                 )
                 execution.circuit_for = lambda prepared: circuits.setdefault(
-                    urlsplit(prepared.target.base_url).hostname,
+                    urlsplit(prepared.target.base_url).hostname
+                    if prepared.target
+                    else "catalog",
                     InMemoryCircuitBreaker(failure_threshold=1),
                 )
             async with httpx.AsyncClient(
@@ -2363,3 +2365,113 @@ async def test_an_alias_without_a_lane_is_never_serialized_by_the_resolver(
     hosts, decisions, _ = await _routed(db, test_api_key, _rules(other), "x" * 2_000)
 
     assert (hosts, decisions, dumps) == (["a.internal"], [None], [])
+
+
+# Every settings and transform switch a tenant can PATCH, turned on.
+EVERY_TRANSFORM = {
+    "provider_cache": {
+        "anthropic_auto_cache": "5m",
+        "openai_prompt_cache_key": "tenant",
+    },
+    "tool_search": {"mode": "regex", "min_tools": 2},
+    "thinking_history": {
+        "anthropic_keep_turns": 1,
+        "openai_reasoning_context": "current_turn",
+    },
+    "image_detail": {"openai": "low", "gemini": "low"},
+    "transforms": {"json_compaction": "on", "image_downscale": "on"},
+}
+SPACED_JSON = '{ "city": "Ankara", "items": [ 1, 2, 3 ], "note": "kept as sent" }'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body", "sent"),
+    [
+        (
+            "/v1/embeddings",
+            {"model": "text-embedding-3-small", "input": SPACED_JSON},
+            ("input",),
+        ),
+        (
+            "/v1beta/models/gemini-embedding-001:embedContent",
+            {"content": {"parts": [{"text": SPACED_JSON}]}},
+            ("content",),
+        ),
+        (
+            "/v1beta/models/gemini-embedding-001:batchEmbedContents",
+            {"requests": [{"content": {"parts": [{"text": SPACED_JSON}]}}]},
+            ("requests", 0, "content"),
+        ),
+    ],
+    ids=["embeddings", "embed-content", "batch-embed-contents"],
+)
+async def test_embeddings_with_every_tenant_transform_on_pass_through_untouched(
+    db, test_api_key, path, body, sent
+):
+    from shim_enterprise.tenants.gateway_settings import GatewaySettings
+    from shim_enterprise.tenants.policy import (
+        ResolvedTenantSettings,
+        TenantRequestPolicyResolver,
+    )
+
+    for provider in ("openai", "google"):
+        db.add(
+            ProviderSecret(
+                organization_id=test_api_key.organization_id,
+                provider=provider,
+                secret_ref=f"reference-{provider[0]}",
+                secret_backend="fernet",
+                secret_version="v2",
+                masked_key="masked",
+            )
+        )
+    tenant = ResolvedTenantSettings(
+        tenant_id=test_api_key.organization_id,
+        pii_config=None,
+        tier_definition=None,
+        gateway_settings=GatewaySettings.model_validate(EVERY_TRANSFORM),
+    )
+    resolver = TenantRequestPolicyResolver(
+        SimpleNamespace(resolve=AsyncMock(return_value=tenant)),
+        async_sessionmaker(db.bind, expire_on_commit=False),
+    )
+    seen = []
+
+    def upstream(request):
+        seen.append(json.loads(request.content))
+        if request.url.path.endswith(":batchEmbedContents"):
+            return httpx.Response(200, json={"embeddings": [{"values": [0.5]}]})
+        if request.url.path.endswith(":embedContent"):
+            return httpx.Response(200, json={"embedding": {"values": [0.5]}})
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [{"object": "embedding", "index": 0, "embedding": [0.5]}],
+                "model": "text-embedding-3-small",
+                "usage": {"prompt_tokens": 20, "total_tokens": 20},
+            },
+        )
+
+    async with _gateway(db, test_api_key, upstream, policy=resolver) as (
+        client,
+        _,
+        _,
+    ):
+        response = await client.post(path, json=body)
+
+    assert response.status_code == 200, response.text
+    [upstream_body] = seen
+    expected, received = body, upstream_body
+    for step in sent:
+        expected, received = expected[step], received[step]
+    assert received == expected
+    lifecycle = await db.scalar(
+        select(RequestLifecycle).where(
+            RequestLifecycle.organization_id == test_api_key.organization_id
+        )
+    )
+    assert lifecycle.status == "completed"
+    assert lifecycle.lifecycle_metadata.get("transforms_applied", []) == []
+    assert lifecycle.lifecycle_metadata.get("settings_applied", []) == []

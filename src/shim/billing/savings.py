@@ -196,7 +196,8 @@ def request_savings(
             "tokens": tokens,
             **_money(None if rates is None else tokens * rates[0] / _MILLION),
         }
-    if downscale := transforms.get("image_downscale"):
+    # An entry that only lists skipped images saved nothing.
+    if (downscale := transforms.get("image_downscale")) and downscale["items"]:
         measured["image_downscale"] = {
             "bytes": downscale["before_bytes"] - downscale["after_bytes"]
         }
