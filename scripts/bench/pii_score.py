@@ -27,7 +27,9 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 import time
+import traceback
 import unicodedata
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
@@ -89,6 +91,10 @@ def base_meta(system: str, corpus: Path) -> dict:
 
 
 async def run_shim(cases: list[dict], names: bool) -> tuple[dict, list[dict]]:
+    # A fresh container has no tldextract cache; nor does this run, unless one is given.
+    os.environ.setdefault(
+        "TLDEXTRACT_CACHE", tempfile.mkdtemp(prefix="bench-tldextract-")
+    )
     import shim
     from shim.application import create_community_app
     from shim.core.community_config import CommunitySettings
@@ -99,7 +105,16 @@ async def run_shim(cases: list[dict], names: bool) -> tuple[dict, list[dict]]:
 
     def audit(event: str, args: tuple) -> None:
         if event in SOCKET_EVENTS:
-            sockets.append(f"{event} {args[1:]!r}"[:200])
+            # The target (connect: args[1]; getaddrinfo: host and port) and the frames
+            # outside the standard library and the HTTP stack that led to it.
+            target = args[1] if event == "socket.connect" else args[:2]
+            frames = [
+                f"{Path(f.filename).parent.name}/{Path(f.filename).name}:{f.lineno}"
+                for f in traceback.extract_stack()[:-1]
+                if any(k in f.filename for k in ("/shim/", "presidio", "tldextract"))
+            ]
+            path = frames[:3] + frames[-1:] if len(frames) > 4 else frames
+            sockets.append(f"{event} {target!r} via {' > '.join(path)}"[:400])
 
     upstream: list[bytes] = []
 
@@ -164,6 +179,7 @@ async def run_shim(cases: list[dict], names: bool) -> tuple[dict, list[dict]]:
             "upstream_calls": len(upstream),
             "process_sockets": len(sockets),
             "socket_events": sorted(Counter(sockets).items())[:20],
+            "tldextract_cache": os.environ["TLDEXTRACT_CACHE"],
         },
     }
     return meta, rows
