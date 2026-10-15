@@ -542,7 +542,10 @@ async def test_the_maintenance_worker_expires_overdue_approvals_and_drops_digest
     monkeypatch.setattr(ai_act.settings, "AI_ACT_AUDIT_ANCHOR_ENABLED", False)
     monkeypatch.setattr(ai_act.settings, "OVERSIGHT_ENABLED", False)
     organization, user, _, [key, _] = tenants[0]
-    past = datetime.now(timezone.utc) - timedelta(minutes=1)
+    # Overdue by the database clock, which the expiry reads: a container clock
+    # behind the host's (after the host sleeps) must not decide the test.
+    async with async_engine.connect() as connection:
+        past = await connection.scalar(select(func.now() - timedelta(minutes=1)))
     overdue, waiting, unused, used = _pending(organization.id, key.id, 4)
     overdue["expires_at"] = past
     unused.update(status="approved", decided_by=user.id, use_by=past)
