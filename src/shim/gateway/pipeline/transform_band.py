@@ -3,16 +3,35 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import json
+import logging
 import re
 from typing import Any
 
+from shim.core import isolation
+from shim.gateway.image_rules import (
+    IMAGE_RULES_VERSION,
+    MAX_IMAGE_PIXELS,
+    Unsupported,
+    image_detail,
+    resize,
+    target_size,
+)
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.kernel.stage import TraceValue
-from shim.gateway.pipeline.settings_band import thinking_bound
-from shim.observability.metrics import TRANSFORMS_TOTAL
+from shim.gateway.media import MediaPart, classify_media, split_data_url, value_at
+from shim.gateway.pipeline.settings_band import (
+    provider_target,
+    write_at,
+    thinking_bound,
+)
+from shim.observability.metrics import IMAGE_DOWNSCALE_TOTAL, TRANSFORMS_TOTAL
+
+logger = logging.getLogger(__name__)
 
 JSON_COMPACTION_VERSION = 1
 # shim-cli's MIN_CANDIDATE_CHARS, and the privacy scan's text bound.
@@ -55,6 +74,8 @@ class TransformResult:
     before_chars: int
     after_chars: int
     items: int
+    # A step's own record fields, merged into its transforms_applied entry.
+    extra: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _list(value: object) -> list[Any]:
@@ -179,7 +200,143 @@ def _json_compaction(
     changed = _tool_results(prepared.protocol, payload, compact)
     if changed is payload:
         return None
-    return TransformResult(changed, *sizes)
+    return TransformResult(changed, sizes[0], sizes[1], sizes[2])
+
+
+IMAGE_DOWNSCALE_VERSION = 1
+_MAX_IMAGE_BYTES = 32 * 1024 * 1024
+# Decoded pixels one request may spend, in payload order: two images at the cap.
+MAX_REQUEST_PIXELS = 2 * MAX_IMAGE_PIXELS
+_RECORDED_IMAGES = 64
+# Images whose coordinates or size the client relies on.
+_OPT_OUT_TYPES = frozenset(
+    {"tool_result", "computer_call_output", "computer_screenshot"}
+)
+
+
+class _Untouched(Exception):
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+
+def _inline_images(prepared: PreparedInference) -> bool:
+    return any(
+        part.kind == "image" and part.source == "inline"
+        for part in prepared.media or ()
+    )
+
+
+def _opted_out(payload: Mapping[str, Any], part: MediaPart) -> bool:
+    nodes = [value_at(payload, part.path[:end]) for end in range(1, len(part.path) + 1)]
+    image = nodes[-1]
+    transformations = (
+        image.get("transformations") if isinstance(image, Mapping) else None
+    )
+    return any(
+        isinstance(node, Mapping) and node.get("type") in _OPT_OUT_TYPES
+        for node in nodes
+    ) or (
+        isinstance(transformations, Mapping)
+        and transformations.get("oversized_image") == "error"
+    )
+
+
+def _image_downscale(
+    prepared: PreparedInference, payload: dict[str, Any]
+) -> TransformResult | None:
+    if not _inline_images(prepared) or not provider_target(prepared):
+        return None
+    skipped: Counter[str] = Counter()
+    images: list[dict[str, Any]] = []
+    sizes = [0, 0, 0, 0]
+    pixels = MAX_REQUEST_PIXELS
+    deadline = isolation.request_deadline()
+    for part in classify_media(payload):
+        if part.kind != "image" or part.source != "inline" or part.data_path is None:
+            continue
+        data = value_at(payload, part.data_path)
+        try:
+            if _opted_out(payload, part):
+                raise _Untouched("client_opt_out")
+            if part.dimensions is None:
+                raise _Untouched("unsupported")
+            width, height = part.dimensions
+            detail = image_detail(prepared.protocol, value_at(payload, part.path))
+            target = target_size(
+                str(prepared.provider),
+                prepared.pricing_model,
+                detail if isinstance(detail, str) else None,
+                width,
+                height,
+            )
+            if target is None:
+                raise _Untouched("unknown_model")
+            if target[0] >= width and target[1] >= height:
+                raise _Untouched("below_threshold")
+            if (part.decoded_bytes or 0) > _MAX_IMAGE_BYTES or (
+                width * height > min(MAX_IMAGE_PIXELS, pixels)
+            ):
+                raise _Untouched("too_large")
+            pixels -= width * height
+            try:
+                raw = base64.b64decode(split_data_url(data)[1])
+                smaller, image_format = isolation.run(
+                    resize, raw, target, deadline=deadline
+                )
+            except Unsupported:
+                raise _Untouched("unsupported") from None
+            except TimeoutError:
+                raise _Untouched("too_slow") from None
+            except MemoryError:
+                raise _Untouched("too_large") from None
+            except Exception as error:
+                # A decoder error leaves the image alone; a transform never fails a request.
+                logger.info("Image left unchanged error_type=%s", type(error).__name__)
+                raise _Untouched("corrupt") from None
+            if len(smaller) >= len(raw):
+                raise _Untouched("not_smaller")
+        except _Untouched as untouched:
+            skipped[untouched.reason] += 1
+            IMAGE_DOWNSCALE_TOTAL.labels(outcome=untouched.reason).inc()
+            continue
+        # A data URL keeps its `data:<mime>;base64,` prefix.
+        head = data[: data.index(",") + 1] if data.startswith("data:") else ""
+        replacement = head + base64.b64encode(smaller).decode()
+        payload = write_at(payload, part.data_path, replacement)
+        IMAGE_DOWNSCALE_TOTAL.labels(outcome="downscaled").inc()
+        sizes = [
+            sizes[0] + len(data),
+            sizes[1] + len(replacement),
+            sizes[2] + len(raw),
+            sizes[3] + len(smaller),
+        ]
+        images.append(
+            {
+                "format": image_format,
+                "before": [width, height],
+                "after": list(target),
+                "before_bytes": len(raw),
+                "after_bytes": len(smaller),
+            }
+        )
+    if not images:
+        return None
+    from PIL import __version__ as pillow_version
+
+    return TransformResult(
+        payload,
+        before_chars=sizes[0],
+        after_chars=sizes[1],
+        items=len(images),
+        extra={
+            "rules": IMAGE_RULES_VERSION,
+            "library": f"pillow-{pillow_version}",
+            "before_bytes": sizes[2],
+            "after_bytes": sizes[3],
+            "images": images[:_RECORDED_IMAGES],
+            "skipped": dict(skipped),
+        },
+    )
 
 
 def _candidate_chars(prepared: PreparedInference) -> int:
@@ -194,13 +351,14 @@ def _candidate_chars(prepared: PreparedInference) -> int:
     return total
 
 
-# (id, version, protocols, apply). A step copies on write along the path of each
+# (id, version, protocols, on, apply). A step copies on write along the path of each
 # string it changes and returns None when it changed nothing.
 STEPS: tuple[
     tuple[
         str,
         int,
         frozenset[str],
+        Callable[[PreparedInference], bool],
         Callable[[PreparedInference, dict[str, Any]], TransformResult | None],
     ],
     ...,
@@ -209,15 +367,26 @@ STEPS: tuple[
         "json_compaction",
         JSON_COMPACTION_VERSION,
         frozenset({"chat", "responses", "messages", "generate_content"}),
+        lambda prepared: prepared.band.json_compaction,
         _json_compaction,
+    ),
+    (
+        "image_downscale",
+        IMAGE_DOWNSCALE_VERSION,
+        frozenset({"chat", "responses", "messages"}),
+        # Only requests with an image to shrink count, skipped or not.
+        lambda prepared: prepared.band.image_downscale and _inline_images(prepared),
+        _image_downscale,
     ),
 )
 
 
 def _apply(prepared: PreparedInference) -> PreparedInference:
-    payload, applied = prepared.payload, []
-    for step_id, version, protocols, apply in STEPS:
-        if prepared.protocol not in protocols:
+    # Documents the privacy stage turned into text come first.
+    payload = prepared.payload
+    applied = list(prepared.privacy.conversions if prepared.privacy else ())
+    for step_id, version, protocols, on, apply in STEPS:
+        if prepared.protocol not in protocols or not on(prepared):
             continue
         # A changed earlier turn invalidates every later Anthropic thinking block.
         # OpenAI's encrypted reasoning items were not checked live: skipped alike.
@@ -236,6 +405,8 @@ def _apply(prepared: PreparedInference) -> PreparedInference:
                 policy={"id": step_id, "version": version},
             )
             TRANSFORMS_TOTAL.labels(transform=step_id, result="skipped").inc()
+            if step_id == "image_downscale":
+                IMAGE_DOWNSCALE_TOTAL.labels(outcome="thinking_bound").inc()
             continue
         result = apply(prepared, payload)
         TRANSFORMS_TOTAL.labels(
@@ -251,6 +422,7 @@ def _apply(prepared: PreparedInference) -> PreparedInference:
                 "before_chars": result.before_chars,
                 "after_chars": result.after_chars,
                 "items": result.items,
+                **result.extra,
             }
         )
     return replace(prepared, payload=payload, transforms_applied=tuple(applied))
@@ -260,7 +432,10 @@ class TransformBandStage:
     name = "transform_band"
 
     async def run(self, value: PreparedInference) -> PreparedInference:
-        if _candidate_chars(value) >= THREAD_CHARS:
+        # Image work always runs off the event loop.
+        if _candidate_chars(value) >= THREAD_CHARS or (
+            value.band.image_downscale and _inline_images(value)
+        ):
             return await asyncio.to_thread(_apply, value)
         return _apply(value)
 

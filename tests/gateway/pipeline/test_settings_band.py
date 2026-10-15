@@ -56,11 +56,19 @@ def _strings(value: object, path: tuple[object, ...] = ()) -> Iterator[tuple]:
             yield from _strings(item, (*path, index))
 
 
+# Structural markers a step may set inside the conversation: image detail levels.
+_MARKERS = frozenset({"detail", "mediaResolution"})
+
+
 def assert_content_untouched(before: dict[str, Any], after: dict[str, Any]) -> None:
     """No band step changes a string of the conversation or of a tool description."""
 
     for field in _CONTENT_FIELDS:
-        assert list(_strings(before.get(field))) == list(_strings(after.get(field)))
+        assert [
+            item for item in _strings(before.get(field)) if not _MARKERS & set(item[0])
+        ] == [
+            item for item in _strings(after.get(field)) if not _MARKERS & set(item[0])
+        ]
     descriptions = [
         [text for path, text in _strings(payload.get("tools")) if "description" in path]
         for payload in (before, after)
@@ -503,6 +511,7 @@ def test_token_counting_never_runs_a_band_step() -> None:
         "tool_search",
         "anthropic_clear_thinking",
         "openai_reasoning_context",
+        "image_detail",
     ]
 
 
@@ -1050,3 +1059,378 @@ async def test_hostile_tool_lists_stay_linear_and_never_raise() -> None:
     assert took < 1
     assert len(_deferred(banded.payload)) == 9_999
     assert banded.payload["tools"][1]["defer_loading"] is True
+
+
+_PNG = "data:image/png;base64,iVBORw0KGgo="
+
+
+def _chat_image(**image_url: Any) -> dict[str, Any]:
+    return {"type": "image_url", "image_url": {"url": _PNG, **image_url}}
+
+
+def _input_image(**fields: Any) -> dict[str, Any]:
+    return {"type": "input_image", "image_url": _PNG, **fields}
+
+
+def _gemini_image(**fields: Any) -> dict[str, Any]:
+    return {"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}, **fields}
+
+
+def _imaged(
+    protocol: str, *parts: dict[str, Any], detail: dict[str, Any], **fields: Any
+) -> PreparedInference:
+    from shim.gateway.media import classify_media
+
+    content: dict[str, Any] = {
+        "chat": {"messages": [{"role": "user", "content": [*parts]}]},
+        "responses": {"input": [{"role": "user", "content": [*parts]}]},
+        "generate_content": {"contents": [{"role": "user", "parts": [*parts]}]},
+    }[protocol]
+    prepared = _cached(protocol, band={"image_detail": detail}, **content, **fields)
+    return replace(prepared, media=classify_media(prepared.payload))
+
+
+def _image_verdicts(banded: PreparedInference) -> list[str]:
+    return [
+        verdict.reason_code
+        for verdict in banded.policy_verdicts
+        if verdict.rule_id == "settings.image_detail"
+    ]
+
+
+def _levels(protocol: str, payload: dict[str, Any]) -> list[object]:
+    if protocol == "chat":
+        return [
+            part["image_url"].get("detail")
+            for part in payload["messages"][0]["content"]
+        ]
+    if protocol == "responses":
+        return [part.get("detail") for part in payload["input"][0]["content"]]
+    return [part.get("mediaResolution") for part in payload["contents"][0]["parts"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "part", "model", "setting", "level"),
+    [
+        ("chat", _chat_image(), "gpt-4o", "low", "low"),
+        ("chat", _chat_image(detail="auto"), "gpt-4o-2024-08-06", "low", "low"),
+        ("responses", _input_image(), "gpt-4.1", "low", "low"),
+        ("responses", _input_image(detail="auto"), "gpt-5.5", "high", "high"),
+        ("chat", _chat_image(), "gpt-6-astra", "high", "high"),
+        (
+            "generate_content",
+            _gemini_image(),
+            "gemini-3.5-flash",
+            "low",
+            {"level": "MEDIA_RESOLUTION_LOW"},
+        ),
+        (
+            "generate_content",
+            _gemini_image(),
+            "gemini-3.1-pro-preview",
+            "medium",
+            {"level": "MEDIA_RESOLUTION_MEDIUM"},
+        ),
+    ],
+)
+async def test_image_detail_fills_a_level_the_client_left_unset(
+    protocol, part, model, setting, level
+) -> None:
+    provider = "gemini" if protocol == "generate_content" else "openai"
+    prepared = _imaged(protocol, part, detail={provider: setting}, model=model)
+
+    banded = await _band(prepared)
+
+    assert _levels(protocol, banded.payload) == [level]
+    assert banded.settings_applied == ({"id": "image_detail", "version": 1},)
+    assert _image_verdicts(banded) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "part"),
+    [
+        ("chat", _chat_image(detail="low")),
+        ("chat", _chat_image(detail="high")),
+        ("chat", _chat_image(detail="original")),
+        ("responses", _input_image(detail="high")),
+        (
+            "generate_content",
+            _gemini_image(mediaResolution={"level": "MEDIA_RESOLUTION_HIGH"}),
+        ),
+    ],
+)
+async def test_a_client_choice_is_never_changed(protocol, part) -> None:
+    google = protocol == "generate_content"
+    prepared = _imaged(
+        protocol,
+        part,
+        detail={"gemini" if google else "openai": "low"},
+        model="gemini-3.5-flash" if google else "gpt-4o",
+    )
+
+    banded = await _band(prepared)
+
+    assert banded.payload == prepared.payload and banded.settings_applied == ()
+    assert _image_verdicts(banded) == ["SETTING_CLIENT_OWNED"]
+
+
+@pytest.mark.asyncio
+async def test_a_request_wide_gemini_resolution_is_the_clients_choice() -> None:
+    prepared = _imaged(
+        "generate_content",
+        _gemini_image(),
+        detail={"gemini": "low"},
+        generationConfig={"mediaResolution": "MEDIA_RESOLUTION_HIGH"},
+    )
+
+    banded = await _band(prepared)
+
+    assert banded.payload == prepared.payload
+    assert _image_verdicts(banded) == ["SETTING_CLIENT_OWNED"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "model", "setting"),
+    [
+        ("chat", "gpt-5.4", "low"),
+        ("chat", "gpt-4o", "high"),
+        ("chat", "gpt-4.1-nano", "low"),
+        ("chat", "gpt-4.1-mini", "low"),
+        ("generate_content", "gemini-2.5-flash", "low"),
+    ],
+)
+async def test_a_level_that_does_not_lower_the_budget_is_not_applied(
+    protocol, model, setting
+) -> None:
+    google = protocol == "generate_content"
+    part = _gemini_image() if google else _chat_image()
+    prepared = _imaged(
+        protocol, part, detail={"gemini" if google else "openai": setting}, model=model
+    )
+
+    banded = await _band(prepared)
+
+    assert banded.payload == prepared.payload and banded.settings_applied == ()
+    assert _image_verdicts(banded) == ["SETTING_MODEL_UNSUPPORTED"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("listed", "changed"), [((), False), (("gpt-4o-images",), True)]
+)
+async def test_a_registry_target_only_when_listed(listed, changed) -> None:
+    prepared = _imaged(
+        "chat",
+        _chat_image(),
+        detail={"openai": "low"},
+        model="gpt-4o-images",
+    )
+    prepared = replace(
+        prepared,
+        target=replace(_TARGET, upstream_model="gpt-4o"),
+        band=prepared.band.model_copy(update={"provider_cache_deployments": listed}),
+    )
+
+    banded = await _band(prepared)
+
+    assert _levels("chat", banded.payload) == (["low"] if changed else [None])
+    assert _image_verdicts(banded) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("models", "changed"), [((), True), (("gpt-4o",), True), (("gpt-5.5",), False)]
+)
+async def test_the_model_list_narrows_the_setting(models, changed) -> None:
+    prepared = _imaged(
+        "chat",
+        _chat_image(),
+        detail={"openai": "low", "models": models},
+        model="gpt-4o",
+    )
+
+    banded = await _band(prepared)
+
+    assert _levels("chat", banded.payload) == (["low"] if changed else [None])
+
+
+@pytest.mark.asyncio
+async def test_only_eligible_image_parts_change() -> None:
+    prepared = _imaged(
+        "responses",
+        _input_image(),
+        _input_image(detail="high"),
+        {"type": "input_image", "file_id": "file-1"},
+        {
+            "type": "input_image",
+            "image_url": "https://images.test/a.png",
+            "detail": "auto",
+        },
+        {"type": "input_file", "file_id": "file-2", "filename": "a.pdf"},
+        detail={"openai": "low"},
+        model="gpt-4o",
+    )
+
+    banded = await _band(prepared)
+
+    assert _levels("responses", banded.payload) == ["low", "high", "low", "low", None]
+
+
+@pytest.mark.asyncio
+async def test_computer_use_screenshots_and_other_shapes_are_never_touched() -> None:
+    from shim.gateway.media import classify_media
+
+    screenshot = {
+        "type": "computer_call_output",
+        "call_id": "c",
+        "output": {"type": "computer_screenshot", "image_url": _PNG},
+    }
+    inside = {
+        "type": "computer_call_output",
+        "call_id": "d",
+        "output": [_input_image()],
+    }
+    prepared = _cached(
+        "responses",
+        band={"image_detail": {"openai": "low"}},
+        model="gpt-4o",
+        input=[screenshot, inside],
+    )
+    prepared = replace(prepared, media=classify_media(prepared.payload))
+    pdf = _imaged(
+        "generate_content",
+        {"inlineData": {"mimeType": "application/pdf", "data": "JVBERi0="}},
+        detail={"gemini": "low"},
+    )
+    anthropic = _cached(
+        "messages",
+        band={"image_detail": {"openai": "low", "gemini": "low"}},
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "AA",
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+
+    for case in (
+        prepared,
+        pdf,
+        replace(anthropic, media=classify_media(anthropic.payload)),
+    ):
+        banded = await _band(case)
+        assert banded.payload == case.payload and banded.settings_applied == ()
+        assert _image_verdicts(banded) == []
+
+
+@pytest.mark.asyncio
+async def test_replayed_reasoning_keeps_the_images_as_they_were() -> None:
+    prepared = _imaged(
+        "responses", _input_image(), detail={"openai": "low"}, model="gpt-4o"
+    )
+    prepared = replace(
+        prepared,
+        payload={
+            **prepared.payload,
+            "input": [
+                {"type": "reasoning", "id": "rs_1", "encrypted_content": "x"},
+                *prepared.payload["input"],
+            ],
+        },
+    )
+
+    banded = await _band(prepared)
+
+    assert banded.payload == prepared.payload
+    assert _image_verdicts(banded) == ["SETTING_THINKING_BOUND"]
+
+
+@pytest.mark.asyncio
+async def test_a_text_request_is_never_walked(monkeypatch) -> None:
+    import shim.gateway.pipeline.settings_band as band
+
+    def fail(_payload):
+        raise AssertionError("walked")
+
+    monkeypatch.setattr(band, "classify_media", fail)
+    prepared = replace(
+        _cached("chat", band={"image_detail": {"openai": "low"}}, model="gpt-4o"),
+        media=(),
+    )
+
+    banded = await _band(prepared)
+
+    assert banded.settings_applied == ()
+
+
+@pytest.mark.asyncio
+async def test_the_same_request_gets_the_same_bytes_every_time() -> None:
+    first, second = [
+        await _band(
+            _imaged(
+                "chat",
+                _chat_image(),
+                _chat_image(),
+                detail={"openai": "low"},
+                model="gpt-4o",
+            )
+        )
+        for _ in range(2)
+    ]
+
+    assert json.dumps(first.payload, separators=(",", ":")) == json.dumps(
+        second.payload, separators=(",", ":")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_detail_of_another_type_is_the_clients_and_never_fails() -> None:
+    for detail in (["low"], {"level": "low"}):
+        prepared = _imaged(
+            "chat", _chat_image(detail=detail), detail={"openai": "low"}, model="gpt-4o"
+        )
+
+        banded = await _band(prepared)
+
+        assert banded.payload == prepared.payload
+        assert _image_verdicts(banded) == ["SETTING_CLIENT_OWNED"]
+
+
+@pytest.mark.asyncio
+async def test_a_gemini_function_response_image_gets_no_resolution() -> None:
+    from google.genai import types
+
+    returned = {
+        "functionResponse": {
+            "name": "screenshot",
+            "response": {"ok": True},
+            "parts": [_gemini_image()],
+        }
+    }
+    prepared = _imaged(
+        "generate_content",
+        _gemini_image(),
+        returned,
+        detail={"gemini": "low"},
+        model="gemini-3.5-flash",
+    )
+
+    banded = await _band(prepared)
+
+    parts = banded.payload["contents"][0]["parts"]
+    assert parts[0]["mediaResolution"] == {"level": "MEDIA_RESOLUTION_LOW"}
+    assert parts[1] == returned
+    # The SDK forbids any field but inline or file data in a function response part.
+    types.Content.model_validate(banded.payload["contents"][0])

@@ -1391,6 +1391,15 @@ crypto = [
 ]
 
 [[package]]
+name = "pypdf"
+version = "6.20.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e2/c1/da25a099164cf4b210d63b957c902ad687139f4b8c12c20aec7953a4a266/pypdf-6.20.1.tar.gz", hash = "sha256:28f5a9d2fdc2749264612d94e6a58de54c11d730d9f0cabf8ad34117c4942b45", size = 7075352, upload-time = "2026-10-12T16:14:24.784Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/f8/4cbd09988b4b158260b7e0df38bf16f19e998bf0e257a18661a8da04280e/pypdf-6.20.1-py3-none-any.whl", hash = "sha256:aa5a55ddcffdc5e5ab291d5decb23f6383f4e56f8e3263dc39af41fff03885ad", size = 402665, upload-time = "2026-10-12T16:14:22.556Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1682,9 +1691,11 @@ dependencies = [
     { name = "httpx" },
     { name = "itsdangerous" },
     { name = "joserfc" },
+    { name = "pillow" },
     { name = "prometheus-client" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "pypdf" },
     { name = "pyyaml" },
     { name = "redis" },
     { name = "reportlab" },
@@ -1722,9 +1733,11 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "itsdangerous", specifier = ">=2.2,<3" },
     { name = "joserfc", specifier = ">=1.6,<2" },
+    { name = "pillow", specifier = ">=12.3,<13" },
     { name = "prometheus-client", specifier = ">=0.25,<1" },
     { name = "pydantic", specifier = ">=2.13,<3" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.12,<3" },
+    { name = "pypdf", specifier = "==6.20.1" },
     { name = "pyyaml", specifier = ">=6.0.2,<7" },
     { name = "redis", specifier = ">=5.0.1,<9" },
     { name = "reportlab", specifier = ">=5,<6" },
@@ -1760,6 +1773,14 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+documents = [
+    { name = "pypdf" },
+]
+images = [
+    { name = "pillow" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -1780,16 +1801,19 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.43,<2" },
     { name = "opentelemetry-sdk", specifier = ">=1.43,<2" },
     { name = "phonenumbers", specifier = "==9.0.34" },
+    { name = "pillow", marker = "extra == 'images'", specifier = "==12.3.0" },
     { name = "presidio-analyzer", specifier = "==2.2.364" },
     { name = "prometheus-client", specifier = ">=0.25,<1" },
     { name = "pydantic", specifier = ">=2.13,<3" },
     { name = "pydantic-settings", specifier = ">=2.1,<3" },
+    { name = "pypdf", marker = "extra == 'documents'", specifier = "==6.20.1" },
     { name = "python-json-logger", specifier = ">=4.2,<5" },
     { name = "regex", specifier = "==2026.7.19" },
     { name = "sentry-sdk", specifier = ">=2.48,<3" },
     { name = "starlette", specifier = ">=1.3,<2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27,<1" },
 ]
+provides-extras = ["documents", "images"]
 
 [package.metadata.requires-dev]
 dev = [

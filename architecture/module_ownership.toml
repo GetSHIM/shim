@@ -33,7 +33,8 @@ forbidden_noncloud_import_roots = [
 "shim.api.v1.responses" = ["router"]
 "shim.billing.attribution" = ["CostAttribution", "UNTAGGED", "normalize_attribution"]
 "shim.billing.lifecycle" = ["load_lifecycle"]
-"shim.billing.pricing" = ["DATE_SUFFIX", "DEFAULT_PRICE_BOOK", "compute_cost_usd"]
+"shim.billing.pricing" = ["DATE_SUFFIX", "DEFAULT_PRICE_BOOK", "ModelPrice", "compute_cost_usd"]
+"shim.billing.savings" = ["LEVERS", "Method", "usd"]
 "shim.core.circuit_breaker" = ["validate_circuit_limits"]
 "shim.core.community_config" = ["AZURE_DEPLOYMENT_NAME", "CommunitySettings"]
 "shim.core.http" = ["install_http_middleware"]
@@ -49,6 +50,7 @@ forbidden_noncloud_import_roots = [
 "shim.gateway.contracts.errors" = ["ScanAnalysisError"]
 "shim.gateway.contracts.ids" = [
   "ApiKeyId",
+  "CURRENT_REQUEST_ID",
   "ModelId",
   "ProviderId",
   "RequestId",
@@ -71,12 +73,16 @@ forbidden_noncloud_import_roots = [
   "AttemptOutcome",
   "AttemptReason",
   "Target",
+  "guarded",
+  "protects_less",
   "skip_attempt",
 ]
 "shim.gateway.kernel.gateway_kernel" = ["GatewayKernel"]
 "shim.gateway.kernel.result" = ["AdmissionState", "PreparedInference", "ProviderTarget", "ResponseWarning", "UNSPECIFIED_PROVIDER_MODEL"]
+"shim.gateway.kernel.shadow" = ["ShadowCandidate", "ShadowObservation", "ShadowSelection"]
+"shim.gateway.pipeline.analysis" = ["AnalysisContext", "run_analyzers"]
 "shim.gateway.pipeline.anthropic_execution" = ["AnthropicExecution"]
-"shim.gateway.pipeline.authenticate" = ["GatewayRequestMetadata"]
+"shim.gateway.pipeline.authenticate" = ["GatewayInvocation", "GatewayRequestMetadata"]
 "shim.gateway.pipeline.google_execution" = ["GoogleExecution"]
 "shim.gateway.pipeline.openai_execution" = ["OpenAIExecution"]
 "shim.gateway.pipeline.privacy" = ["ScanPrivacyOutcome", "ScanPrivacyStage"]
@@ -84,12 +90,15 @@ forbidden_noncloud_import_roots = [
 "shim.gateway.request_policy" = [
   "AgentLoop",
   "BandSettings",
+  "ImageDetailSettings",
   "RequestPolicyContext",
   "ResolvedRequestPolicy",
   "TaskCaps",
 ]
 "shim.gateway.streaming.finalization" = ["StreamFinalization"]
+"shim.gateway.streaming.meter" = ["answer_text"]
 "shim.gateway.usage" = ["UsageAuditPersistenceError", "UsageFailureReason", "UsageLimitExceeded", "system_prompt_hash"]
+"shim.jsonschema_subset" = ["check"]
 "shim.observability.logging" = [
   "configure_error_reporting",
   "configure_logging",
@@ -102,6 +111,7 @@ forbidden_noncloud_import_roots = [
 ]
 "shim.privacy.classification" = ["content_ref"]
 "shim.privacy.continuation" = ["PrivacyContinuationUnavailableError"]
+"shim.privacy.documents" = ["pdf_reader_version"]
 "shim.privacy.pii_scrubber" = ["PIIScrubberService"]
 "shim.privacy.policies" = [
   "EntityAction",
@@ -113,6 +123,7 @@ forbidden_noncloud_import_roots = [
 "shim.rules" = ["ACTION_RANK", "KINDS", "LIMITS", "Rule", "RuleScope", "RuleSet", "RuleSetError", "count_rule_matches", "in_scope", "load_rule_set", "match_records", "validate_rule_set"]
 "shim.rules.approval" = ["ApprovalDecision", "ApprovalRequest"]
 "shim.rules.content" = ["turkish_fold"]
+"shim.rules.evaluate" = ["record_rule_verdicts"]
 "shim.rules.route" = ["conversation_id", "owned", "route_reason", "start_view"]
 "shim.secrets.azure" = ["EntraClientCredential", "EntraTokenCache"]
 "shim.secrets.credentials" = ["EphemeralProviderCredential"]
@@ -170,11 +181,13 @@ public = [
   "src/shim/billing/attribution.py",
   "src/shim/billing/lifecycle.py",
   "src/shim/billing/pricing.py",
+  "src/shim/billing/savings.py",
   "src/shim/cli.py",
   "src/shim/core/__init__.py",
   "src/shim/core/circuit_breaker.py",
   "src/shim/core/community_config.py",
   "src/shim/core/http.py",
+  "src/shim/core/isolation.py",
   "src/shim/core/middleware.py",
   "src/shim/core/single_flight.py",
   "src/shim/findings/__init__.py",
@@ -196,6 +209,7 @@ public = [
   "src/shim/gateway/contracts/ids.py",
   "src/shim/gateway/contracts/inference.py",
   "src/shim/gateway/contracts/principal.py",
+  "src/shim/gateway/image_rules.py",
   "src/shim/gateway/kernel/__init__.py",
   "src/shim/gateway/kernel/attempts.py",
   "src/shim/gateway/kernel/gateway_kernel.py",
@@ -204,6 +218,7 @@ public = [
   "src/shim/gateway/kernel/shadow.py",
   "src/shim/gateway/kernel/stage.py",
   "src/shim/gateway/local_auth.py",
+  "src/shim/gateway/media.py",
   "src/shim/gateway/pipeline/__init__.py",
   "src/shim/gateway/pipeline/admission.py",
   "src/shim/gateway/pipeline/analysis.py",
@@ -233,6 +248,7 @@ public = [
   "src/shim/privacy/classification.py",
   "src/shim/privacy/continuation.py",
   "src/shim/privacy/deanonymizer.py",
+  "src/shim/privacy/documents.py",
   "src/shim/privacy/injection.py",
   "src/shim/privacy/pii_scrubber.py",
   "src/shim/privacy/policies.py",
@@ -261,6 +277,7 @@ public = [
   "tests/billing/test_model_catalog_sync.py",
   "tests/billing/test_model_lifecycle.py",
   "tests/billing/test_pricing.py",
+  "tests/billing/test_savings.py",
   "tests/community/test_application.py",
   "tests/community/test_community_scan.py",
   "tests/community/test_gemini.py",
@@ -268,6 +285,7 @@ public = [
   "tests/community/test_models.py",
   "tests/community/test_responses.py",
   "tests/core/test_config.py",
+  "tests/core/test_isolation.py",
   "tests/findings/test_model.py",
   "tests/findings/test_schema_file.py",
   "tests/gateway/analysis/test_language.py",
@@ -285,11 +303,13 @@ public = [
   "tests/gateway/pipeline/test_admission_catalog.py",
   "tests/gateway/pipeline/test_analysis.py",
   "tests/gateway/pipeline/test_authenticate.py",
+  "tests/gateway/pipeline/test_image_downscale.py",
   "tests/gateway/pipeline/test_settings_band.py",
   "tests/gateway/pipeline/test_transform_band.py",
   "tests/gateway/privacy/test_boundary_types.py",
   "tests/gateway/privacy/test_continuation.py",
   "tests/gateway/privacy/test_detection_corpus.py",
+  "tests/gateway/privacy/test_documents.py",
   "tests/gateway/privacy/test_injection.py",
   "tests/gateway/privacy/test_injection_corpus.py",
   "tests/gateway/privacy/test_person_corpus.py",
@@ -303,6 +323,8 @@ public = [
   "tests/gateway/test_anthropic_sdk_transport.py",
   "tests/gateway/test_concurrency.py",
   "tests/gateway/test_google_sdk_transport.py",
+  "tests/gateway/test_image_rules.py",
+  "tests/gateway/test_media.py",
   "tests/gateway/test_openai_sdk_transport.py",
   "tests/gateway/test_provider_error_fidelity.py",
   "tests/gateway/test_request_policy.py",
@@ -344,6 +366,7 @@ enterprise = [
   "ee/alembic/versions/73669c9be04c_add_record_sets.py",
   "ee/alembic/versions/79a194bca40f_add_request_archive.py",
   "ee/alembic/versions/7e3fb2338f03_add_readiness_declarations.py",
+  "ee/alembic/versions/9d8bdbc80b0e_add_model_evidence_files.py",
   "ee/alembic/versions/a0b7b834770b_add_hardware_cost_and_capacity.py",
   "ee/alembic/versions/a61706150d6c_add_incidents.py",
   "ee/alembic/versions/a7d3e5f1c2b4_add_bedrock_regions_and_cost_tags.py",
@@ -352,6 +375,7 @@ enterprise = [
   "ee/alembic/versions/b6102c005b0c_add_organization_rule_sets.py",
   "ee/alembic/versions/b93eaf9b1386_add_request_approvals.py",
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
+  "ee/alembic/versions/c6bf1ec40802_add_semantic_review.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
   "ee/alembic/versions/c9ed4e82b922_add_azure_openai_deployments.py",
   "ee/alembic/versions/d34c574e0cc8_add_embeddings_monitor_types.py",
@@ -359,6 +383,7 @@ enterprise = [
   "ee/alembic/versions/de7150dd2f7a_tenant_level_forward_targets.py",
   "ee/alembic/versions/e248b23a6fe1_add_aws_role_credentials.py",
   "ee/alembic/versions/e76342d08c22_add_rule_previews_and_definitions.py",
+  "ee/alembic/versions/e8cb8fb75cb0_drop_request_log_saving_columns.py",
   "ee/alembic/versions/ea4e658a2648_normalize_budget_scope_values.py",
   "ee/alembic/versions/ea548dcbea1b_add_inference_metrics_hourly.py",
   "ee/alembic/versions/eb9c14b64226_add_aws_bedrock_deployments.py",
@@ -434,6 +459,7 @@ enterprise = [
   "ee/src/shim_enterprise/billing/models.py",
   "ee/src/shim_enterprise/billing/quota.py",
   "ee/src/shim_enterprise/billing/read_models.py",
+  "ee/src/shim_enterprise/billing/savings.py",
   "ee/src/shim_enterprise/billing/spend.py",
   "ee/src/shim_enterprise/cache/__init__.py",
   "ee/src/shim_enterprise/cache/circuit_breaker.py",
@@ -448,6 +474,7 @@ enterprise = [
   "ee/src/shim_enterprise/compliance/api.py",
   "ee/src/shim_enterprise/compliance/classification.py",
   "ee/src/shim_enterprise/compliance/health.py",
+  "ee/src/shim_enterprise/compliance/model_evidence_api.py",
   "ee/src/shim_enterprise/compliance/models.py",
   "ee/src/shim_enterprise/compliance/normalized.py",
   "ee/src/shim_enterprise/compliance/ratelimit.py",
@@ -456,6 +483,7 @@ enterprise = [
   "ee/src/shim_enterprise/compliance/services/__init__.py",
   "ee/src/shim_enterprise/compliance/services/forwarder.py",
   "ee/src/shim_enterprise/compliance/services/ingest.py",
+  "ee/src/shim_enterprise/compliance/services/model_evidence.py",
   "ee/src/shim_enterprise/compliance/services/monthly_evidence.py",
   "ee/src/shim_enterprise/compliance/services/report.py",
   "ee/src/shim_enterprise/compliance/services/scan.py",
@@ -478,10 +506,12 @@ enterprise = [
   "ee/src/shim_enterprise/gateway/api/__init__.py",
   "ee/src/shim_enterprise/gateway/api/enterprise_errors.py",
   "ee/src/shim_enterprise/gateway/attempts.py",
+  "ee/src/shim_enterprise/gateway/change_test.py",
   "ee/src/shim_enterprise/gateway/contracts/__init__.py",
   "ee/src/shim_enterprise/gateway/contracts/audit.py",
   "ee/src/shim_enterprise/gateway/contracts/enterprise_errors.py",
   "ee/src/shim_enterprise/gateway/contracts/enterprise_scan.py",
+  "ee/src/shim_enterprise/gateway/fallback.py",
   "ee/src/shim_enterprise/gateway/kernel/__init__.py",
   "ee/src/shim_enterprise/gateway/kernel/scan_pipeline.py",
   "ee/src/shim_enterprise/gateway/pipeline/__init__.py",
@@ -530,12 +560,15 @@ enterprise = [
   "ee/src/shim_enterprise/rules/__init__.py",
   "ee/src/shim_enterprise/rules/aiuc.py",
   "ee/src/shim_enterprise/rules/api.py",
+  "ee/src/shim_enterprise/rules/canaries.py",
+  "ee/src/shim_enterprise/rules/change_tests.py",
   "ee/src/shim_enterprise/rules/changes.py",
   "ee/src/shim_enterprise/rules/estimators.py",
   "ee/src/shim_enterprise/rules/models.py",
   "ee/src/shim_enterprise/rules/preview.py",
   "ee/src/shim_enterprise/rules/proposals.py",
   "ee/src/shim_enterprise/rules/resource.py",
+  "ee/src/shim_enterprise/rules/route_triggers.py",
   "ee/src/shim_enterprise/secrets/__init__.py",
   "ee/src/shim_enterprise/secrets/aws_secrets_manager.py",
   "ee/src/shim_enterprise/secrets/azure_key_vault.py",
@@ -545,6 +578,13 @@ enterprise = [
   "ee/src/shim_enterprise/secrets/references.py",
   "ee/src/shim_enterprise/secrets/store.py",
   "ee/src/shim_enterprise/secrets/vault.py",
+  "ee/src/shim_enterprise/semantic/__init__.py",
+  "ee/src/shim_enterprise/semantic/api.py",
+  "ee/src/shim_enterprise/semantic/call.py",
+  "ee/src/shim_enterprise/semantic/live.py",
+  "ee/src/shim_enterprise/semantic/models.py",
+  "ee/src/shim_enterprise/semantic/questions.py",
+  "ee/src/shim_enterprise/semantic/review.py",
   "ee/src/shim_enterprise/services/__init__.py",
   "ee/src/shim_enterprise/services/gateway/__init__.py",
   "ee/src/shim_enterprise/services/gateway/enterprise.py",
@@ -597,6 +637,7 @@ enterprise = [
   "ee/tests/cache/test_redis_index.py",
   "ee/tests/compliance/test_compliance_scan.py",
   "ee/tests/compliance/test_incidents.py",
+  "ee/tests/compliance/test_model_evidence.py",
   "ee/tests/compliance/test_monthly_evidence.py",
   "ee/tests/compliance/test_openai_adapter.py",
   "ee/tests/compliance/test_report.py",
@@ -615,21 +656,28 @@ enterprise = [
   "ee/tests/findings/test_findings.py",
   "ee/tests/findings/test_quality_signals.py",
   "ee/tests/findings/test_waste_signals.py",
+  "ee/tests/gateway/api/test_change_tests.py",
   "ee/tests/gateway/api/test_deps.py",
   "ee/tests/gateway/api/test_enterprise_errors.py",
   "ee/tests/gateway/api/test_management.py",
   "ee/tests/gateway/api/test_management_overview.py",
   "ee/tests/gateway/api/test_permission_matrix.py",
+  "ee/tests/gateway/api/test_savings_route.py",
   "ee/tests/gateway/api/test_scan_endpoint.py",
   "ee/tests/gateway/api/test_service_account_agents.py",
   "ee/tests/gateway/cache/test_loop_detection.py",
   "ee/tests/gateway/cache/test_task_counters.py",
   "ee/tests/gateway/kernel/test_accounting_coordinator.py",
+  "ee/tests/gateway/kernel/test_semantic_pre_check.py",
   "ee/tests/gateway/pipeline/test_decisions.py",
   "ee/tests/gateway/pipeline/test_scan.py",
   "ee/tests/gateway/pipeline/test_scan_recovery.py",
   "ee/tests/gateway/privacy/test_chain_store.py",
   "ee/tests/gateway/test_attempts.py",
+  "ee/tests/gateway/test_canary.py",
+  "ee/tests/gateway/test_change_test.py",
+  "ee/tests/gateway/test_fallback.py",
+  "ee/tests/gateway/test_long_lane.py",
   "ee/tests/mcp/test_mcp_api.py",
   "ee/tests/mcp/test_protocol.py",
   "ee/tests/mcp/test_tools_contract.py",
@@ -650,10 +698,12 @@ enterprise = [
   "ee/tests/policy/test_remediation.py",
   "ee/tests/policy/test_remediations_api.py",
   "ee/tests/rules/test_aiuc_import.py",
+  "ee/tests/rules/test_canaries.py",
   "ee/tests/rules/test_estimators.py",
   "ee/tests/rules/test_preview.py",
   "ee/tests/rules/test_proposal_data.py",
   "ee/tests/rules/test_proposals.py",
+  "ee/tests/rules/test_route_triggers.py",
   "ee/tests/rules/test_rule_sets.py",
   "ee/tests/rules/test_rules_resource.py",
   "ee/tests/scripts/test_hash_record_set.py",
@@ -665,6 +715,11 @@ enterprise = [
   "ee/tests/secrets/test_references.py",
   "ee/tests/secrets/test_store.py",
   "ee/tests/secrets/test_vault.py",
+  "ee/tests/semantic/test_call.py",
+  "ee/tests/semantic/test_live.py",
+  "ee/tests/semantic/test_questions.py",
+  "ee/tests/semantic/test_review.py",
+  "ee/tests/semantic/test_settings.py",
   "ee/tests/shared_results/test_api.py",
   "ee/tests/tenants/test_capacity_forecast.py",
   "ee/tests/tenants/test_deployments.py",

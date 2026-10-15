@@ -393,6 +393,10 @@ def _accept(
     return ContentHit(start, end, owners) if owners else None
 
 
+# The kinds the privacy stage searches the text for.
+CONTENT_KINDS = frozenset({"term", "pattern", "record_set"})
+
+
 @dataclass(slots=True)
 class ContentRules:
     """One request's term, pattern and record_set rules in scope, and what they found."""
@@ -500,9 +504,7 @@ def content_rules(
     if rule_set is None:
         return None
     rules = tuple(
-        rule
-        for rule in rule_set.rules
-        if rule.kind in {"term", "pattern", "record_set"} and in_scope(rule)
+        rule for rule in rule_set.rules if rule.kind in CONTENT_KINDS and in_scope(rule)
     )
     return (
         ContentRules(rule_set, rules, record_sets=record_sets or {}) if rules else None

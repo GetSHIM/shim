@@ -74,6 +74,9 @@ class CommunitySettings(BaseSettings):
     SHIM_RESPONSE_ANALYSIS: Annotated[list[str], NoDecode] = Field(default_factory=list)
     PII_EMBEDDINGS_MONITOR: Annotated[list[str], NoDecode] = Field(default_factory=list)
     SHIM_INJECTION_MARKERS: Literal["off", "count", "warn"] = "off"
+    SHIM_MEDIA_INPUTS: Literal["block", "allow"] = "block"
+    SHIM_DOCUMENTS: Literal["as_media", "scan", "scan_and_convert"] = "as_media"
+    SHIM_DOCUMENT_FORMAT: Literal["native", "by_provider"] = "native"
     SHIM_PRICE_TIER_WARNING: Literal["off", "on"] = "off"
     SHIM_TRACE_PARENT: Literal["ignore", "honor"] = "ignore"
     SHIM_TASK_MAX_CALLS: int | None = Field(default=None, ge=1, le=100_000)
@@ -93,6 +96,13 @@ class CommunitySettings(BaseSettings):
     SHIM_ANTHROPIC_KEEP_THINKING_TURNS: int = Field(default=0, ge=0, le=8)
     SHIM_OPENAI_REASONING_CONTEXT: Literal["off", "current_turn"] = "off"
     SHIM_JSON_COMPACTION: Literal["off", "on"] = "off"
+    SHIM_IMAGE_DOWNSCALE: Literal["off", "on"] = "off"
+    SHIM_IMAGE_DETAIL_OPENAI: Literal["off", "low", "high"] = "off"
+    SHIM_IMAGE_DETAIL_GEMINI: Literal["off", "low", "medium"] = "off"
+    SHIM_IMAGE_DETAIL_MODELS: Annotated[
+        list[Annotated[str, StringConstraints(min_length=1, max_length=128)]],
+        NoDecode,
+    ] = Field(default_factory=list, max_length=100)
     # Tokens one provider target may run at once in this process; unset is no limit.
     SHIM_CONCURRENCY_TOKEN_LIMIT: int | None = Field(default=None, ge=1, le=100_000_000)
     SHIM_CONCURRENCY_MAX_WAIT_MS: int = Field(default=0, ge=0, le=60_000)
@@ -139,6 +149,7 @@ class CommunitySettings(BaseSettings):
         "SHIM_RESPONSE_ANALYSIS",
         "PII_EMBEDDINGS_MONITOR",
         "SHIM_TOOL_SEARCH_KEEP_LOADED",
+        "SHIM_IMAGE_DETAIL_MODELS",
         mode="before",
     )
     @classmethod

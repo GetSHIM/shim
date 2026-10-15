@@ -1597,3 +1597,34 @@ def test_nothing_is_kept_without_keep_answer() -> None:
 
     assert stream_meter.answer_text == stream_meter.scan_text == []
     assert stream_meter.kept_tool_calls() == ()
+
+
+@pytest.mark.parametrize(("flag", "expected"), [(True, 15000), (False, None)])
+def test_cleared_tokens_are_read_from_message_delta_only_with_the_flag(
+    flag, expected
+) -> None:
+    stream_meter = StreamMeter(
+        provider="anthropic",
+        requested_model="claude-haiku-4-5",
+        prompt_tokens_estimated=5,
+        clear_thinking=flag,
+    )
+    edits = {
+        "applied_edits": [
+            {"type": "clear_thinking_20251015", "cleared_input_tokens": 15000}
+        ]
+    }
+    stream_meter.observe_sse(
+        b'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,'
+        b'"delta":{"type":"text_delta","text":"ok"},"context_management":'
+        + json.dumps({"applied_edits": [{"cleared_input_tokens": 9}]}).encode()
+        + b"}\n\n"
+    )
+    stream_meter.observe_sse(
+        b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+        b'"usage":{"output_tokens":1},"context_management":'
+        + json.dumps(edits).encode()
+        + b"}\n\n"
+    )
+
+    assert stream_meter.cleared_input_tokens == expected

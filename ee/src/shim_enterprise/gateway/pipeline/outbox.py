@@ -223,6 +223,12 @@ _DIAGNOSTIC_FIELDS = (
     "blocked_entities",
     "bulk_disclosure",
     "injection_markers",
+    "media_parts",
+    "media_unscanned",
+    "media_images",
+    "media_images_truncated",
+    "documents",
+    "document_entities",
     "restore_withheld",
     "rule_matches",
     "rule_matches_truncated",
@@ -236,6 +242,7 @@ _DIAGNOSTIC_FIELDS = (
     "shadow_of",
     "approval_id",
     "request_archive",
+    "semantic_check",
 )
 
 

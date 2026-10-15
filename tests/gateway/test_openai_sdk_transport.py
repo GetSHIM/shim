@@ -188,6 +188,47 @@ async def test_responses_nonstream_uses_sdk_key_and_restores_native_output(
 
 
 @pytest.mark.asyncio
+async def test_a_responses_answer_carries_only_the_fields_the_provider_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client replays the output items as input; OpenAI refuses a `status: null`
+    on a reasoning item it never sent ("Unknown parameter: 'input[1].status'")."""
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    sent = _response("resp_replay")
+    sent["output"] = [
+        {"id": "rs_1", "type": "reasoning", "summary": [], "content": []},
+        {
+            "id": "fc_1",
+            "type": "function_call",
+            "status": "completed",
+            "arguments": "{}",
+            "call_id": "call_1",
+            "name": "rows",
+        },
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=sent)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _execution(http, SimpleNamespace(save=AsyncMock())).execute(
+            invocation=SimpleNamespace(
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-a"),
+            ),
+            prepared=_prepared(
+                {"model": "gpt-5.6-luna", "input": "hi", "store": False},
+                tenant="11111111-1111-1111-1111-111111111111",
+            ),
+            provider_start_callback=AsyncMock(),
+        )
+
+    assert isinstance(result, ProviderNonStream)
+    assert result.payload["output"] == sent["output"]
+    assert set(result.payload) == set(sent)
+
+
+@pytest.mark.asyncio
 async def test_sdk_forwards_future_body_fields_and_only_feature_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2481,3 +2522,303 @@ async def test_tool_search_and_reasoning_context_reach_openai_and_come_back(
         ]
     ) == _native(_SEARCH_ITEMS)
     assert items[-1]["response"]["reasoning"]["context"] == "current_turn"
+
+
+def _pdf(text: str) -> bytes:
+    """A one-page PDF whose text layer is `text`."""
+    body = b"BT /F1 12 Tf 72 720 Td (%s) Tj ET" % text.encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 6\n0000000000 65535 f \n"
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    return bytes(
+        out + b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_pdf_file_reaches_openai_through_the_sdk() -> None:
+    import base64
+
+    from openai import AsyncOpenAI
+
+    data = base64.b64encode(_pdf("Rapor hazir, ekip onayladi.")).decode()
+    file = {
+        "type": "file",
+        "file": {
+            "filename": "rapor.pdf",
+            "file_data": f"data:application/pdf;base64,{data}",
+        },
+    }
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-5-nano",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    events = StringIO()
+    app = create_community_app(
+        CommunitySettings(
+            _env_file=None,
+            SHIM_API_KEY=_EMBEDDING_KEY,
+            SHIM_DOCUMENTS="scan",
+            # Monitor only: a tenant that masks gets the PDF as text (D1).
+            PII_ENTITY_ACTIONS=json.dumps(dict.fromkeys(DEFAULT_ACTIONS, "monitor")),
+        ),
+        http_client=outbound,
+        event_stream=events,
+    )
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            client = AsyncOpenAI(
+                base_url="http://shim.test/v1",
+                api_key=_EMBEDDING_KEY,
+                http_client=inbound,
+                max_retries=0,
+            )
+            await client.chat.completions.create(
+                model="gpt-5-nano",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [file, {"type": "text", "text": "Ozetle"}],
+                    }
+                ],
+                extra_headers={"x-provider-key": "sk-upstream"},
+            )
+
+    [sent] = seen
+    assert sent["messages"][0]["content"][0] == file
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+    assert line["documents"]["native"] == 1
+
+
+_IMAGE_URL = "data:image/png;base64,iVBORw0KGgo="
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("protocol", ["chat", "responses"])
+async def test_image_detail_reaches_openai_through_the_sdk(protocol, stream) -> None:
+    seen: list[dict] = []
+    chat = protocol == "chat"
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if not stream:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": "gpt-4o",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+                if chat
+                else _response("resp_image"),
+            )
+        events = (
+            'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"gpt-4o",'
+            '"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+            'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"gpt-4o",'
+            '"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n'
+            "data: [DONE]\n\n"
+            if chat
+            else "event: response.completed\ndata: "
+            + json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": _response("resp_image"),
+                    "sequence_number": 0,
+                }
+            )
+            + "\n\n"
+        )
+        return httpx.Response(
+            200, text=events, headers={"content-type": "text/event-stream"}
+        )
+
+    part = (
+        {"type": "image_url", "image_url": {"url": _IMAGE_URL}}
+        if chat
+        else {"type": "input_image", "image_url": _IMAGE_URL, "detail": "auto"}
+    )
+    body = (
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": [part]}]}
+        if chat
+        else {"model": "gpt-4o", "input": [{"role": "user", "content": [part]}]}
+    )
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_community_app(
+        CommunitySettings(
+            _env_file=None,
+            SHIM_API_KEY=_EMBEDDING_KEY,
+            SHIM_MEDIA_INPUTS="allow",
+            SHIM_IMAGE_DETAIL_OPENAI="low",
+        ),
+        http_client=outbound,
+        event_stream=StringIO(),
+    )
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            response = await inbound.post(
+                "/v1/chat/completions" if chat else "/v1/responses",
+                headers={
+                    "authorization": f"Bearer {_EMBEDDING_KEY}",
+                    "x-provider-key": "sk-up",
+                },
+                json={**body, "stream": stream},
+            )
+            await response.aread()
+
+    assert response.status_code == 200
+    [sent] = seen
+    if chat:
+        assert sent["messages"][0]["content"][0]["image_url"] == {
+            "url": _IMAGE_URL,
+            "detail": "low",
+        }
+    else:
+        assert sent["input"][0]["content"][0]["detail"] == "low"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_downscaled_image_reaches_openai_through_the_sdk(stream) -> None:
+    import base64
+    from io import BytesIO
+
+    from openai import AsyncOpenAI
+    from PIL import Image
+
+    output = BytesIO()
+    Image.linear_gradient("L").resize((4000, 3000)).convert("RGB").save(
+        output, format="JPEG", quality=95
+    )
+    url = f"data:image/jpeg;base64,{base64.b64encode(output.getvalue()).decode()}"
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if stream:
+            return httpx.Response(
+                200,
+                text='data: {"id":"c","object":"chat.completion.chunk","created":0,'
+                '"model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"ok"},'
+                '"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_community_app(
+        CommunitySettings(
+            _env_file=None,
+            SHIM_API_KEY=_EMBEDDING_KEY,
+            SHIM_MEDIA_INPUTS="allow",
+            SHIM_IMAGE_DOWNSCALE="on",
+        ),
+        http_client=outbound,
+        event_stream=StringIO(),
+    )
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            client = AsyncOpenAI(
+                base_url="http://shim.test/v1",
+                api_key=_EMBEDDING_KEY,
+                http_client=inbound,
+                max_retries=0,
+            )
+            created = await client.chat.completions.create(
+                model="gpt-5.4",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": url}}],
+                    }
+                ],
+                stream=stream,
+                extra_headers={"x-provider-key": "sk-upstream"},
+            )
+            if stream:
+                async for _ in created:  # type: ignore[union-attr]
+                    pass
+
+    [sent] = seen
+    sent_url = sent["messages"][0]["content"][0]["image_url"]["url"]
+    assert sent_url.startswith("data:image/jpeg;base64,")
+    assert Image.open(BytesIO(base64.b64decode(sent_url.partition(",")[2]))).size == (
+        1824,
+        1368,
+    )

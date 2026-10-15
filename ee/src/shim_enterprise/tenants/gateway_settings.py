@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from collections.abc import Callable, Mapping
+import importlib.util
 import logging
 import re
 from typing import Annotated, Any, Literal
@@ -18,7 +21,8 @@ from pydantic import (
 )
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
-from shim.gateway.request_policy import AgentLoop, TaskCaps
+from shim.gateway.request_policy import AgentLoop, ImageDetailSettings, TaskCaps
+from shim.privacy.documents import pdf_reader_version
 from shim.privacy.policies import effective_entity_actions
 from shim_enterprise.core.config import settings
 
@@ -105,6 +109,119 @@ _Alias = Annotated[
 ]
 
 
+class SemanticReviewSettings(BaseModel):
+    """Archived requests read against the tenant's questions by the tenant's model."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    # A registered, enabled alias the review calls use, and the key they bill to.
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key_id: UUID | None = None
+    max_items_per_hour: int = Field(default=60, ge=1, le=1_000)
+    max_cost_usd_per_day: Decimal = Field(
+        default=Decimal("5"), ge=Decimal("0.01"), le=Decimal("1000")
+    )
+
+    @model_validator(mode="after")
+    def complete_when_on(self) -> SemanticReviewSettings:
+        for field in ("model", "api_key_id"):
+            if self.enabled and getattr(self, field) is None:
+                raise ValueError(f"semantic_review.{field} is required when enabled")
+        return self
+
+
+class SemanticReviewPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key_id: UUID | None = None
+    max_items_per_hour: int | None = Field(default=None, ge=1, le=1_000)
+    max_cost_usd_per_day: Decimal | None = Field(
+        default=None, ge=Decimal("0.01"), le=Decimal("1000")
+    )
+
+
+_Tag = Annotated[
+    str, StringConstraints(min_length=1, max_length=200, pattern=r"^[a-z0-9_.:-]+$")
+]
+CheckEndpoint = Literal["chat", "responses", "messages", "generate_content"]
+CHECK_ENDPOINTS: tuple[CheckEndpoint, ...] = (
+    "chat",
+    "responses",
+    "messages",
+    "generate_content",
+)
+
+
+class SemanticCheckScope(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    api_key_ids: list[UUID] = Field(default=[], max_length=20)
+    tags: list[_Tag] = Field(default=[], max_length=20)
+    models: list[Annotated[str, StringConstraints(min_length=1, max_length=200)]] = (
+        Field(default=[], max_length=20)
+    )
+
+
+class SemanticCheckSettings(BaseModel):
+    """A live check of requests on a narrow, tenant-marked scope; it only warns."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    scope: SemanticCheckScope = SemanticCheckScope()
+    endpoints: list[CheckEndpoint] = Field(
+        default=list(CHECK_ENDPOINTS), min_length=1, max_length=4
+    )
+    question_ids: list[
+        Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,47}$")]
+    ] = Field(default=[], max_length=20)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key_id: UUID | None = None
+    warn_header: bool = False
+    timeout_ms: int = Field(default=3_000, ge=500, le=10_000)
+    max_checks_per_day: int = Field(default=1_000, ge=1, le=100_000)
+
+    @model_validator(mode="after")
+    def narrow_when_on(self) -> SemanticCheckSettings:
+        if not self.enabled:
+            return self
+        for field in ("model", "api_key_id"):
+            if getattr(self, field) is None:
+                raise ValueError(f"semantic_check.{field} is required when enabled")
+        if not any(
+            getattr(self.scope, field) for field in SemanticCheckScope.model_fields
+        ):
+            raise ValueError(
+                "a semantic check needs a narrow scope; it never runs on all traffic"
+            )
+        if self.api_key_id in self.scope.api_key_ids:
+            raise ValueError("the check key cannot be in the check's own scope")
+        return self
+
+
+class SemanticCheckPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    # Replaced whole when sent.
+    scope: SemanticCheckScope | None = None
+    endpoints: list[CheckEndpoint] | None = Field(
+        default=None, min_length=1, max_length=4
+    )
+    question_ids: (
+        list[Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,47}$")]]
+        | None
+    ) = Field(default=None, max_length=20)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key_id: UUID | None = None
+    warn_header: bool | None = None
+    timeout_ms: int | None = Field(default=None, ge=500, le=10_000)
+    max_checks_per_day: int | None = Field(default=None, ge=1, le=100_000)
+
+
 class ProviderCacheSettings(BaseModel):
     """The providers' own prompt-cache discount: two settings band steps (S54)."""
 
@@ -170,12 +287,15 @@ class TransformSettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     json_compaction: Literal["off", "on"] = "off"
+    # Runs only where Pillow is installed (SETTING_AVAILABILITY).
+    image_downscale: Literal["off", "on"] = "off"
 
 
 class TransformPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     json_compaction: Literal["off", "on"] | None = None
+    image_downscale: Literal["off", "on"] | None = None
 
 
 LockMode = Literal["off", "monitor", "enforce"]
@@ -281,6 +401,11 @@ class GatewaySettings(BaseModel):
 
     response_analysis: list[str] = []
     injection_markers: Literal["off", "count", "warn"] = "off"
+    # Images and files: refused while privacy protects anything, or forwarded unscanned.
+    media_inputs: Literal["block", "allow"] = "block"
+    # Read and scan PDF, Word and text files instead of treating them as media.
+    documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media"
+    document_format: Literal["native", "by_provider"] = "native"
     price_tier_warning: bool = False
     model_retiring_warning: Literal["record", "header"] = "record"
     restore_withheld: dict[str, RestoreGrant] = {}
@@ -296,11 +421,15 @@ class GatewaySettings(BaseModel):
     tool_search: ToolSearchSettings = ToolSearchSettings()
     thinking_history: ThinkingHistorySettings = ThinkingHistorySettings()
     transforms: TransformSettings = TransformSettings()
+    # Image detail levels filled in where the client chose none (S63).
+    image_detail: ImageDetailSettings = ImageDetailSettings()
     # Stops new automatic and agent applies; automatic undo keeps running.
     auto_remediation_paused: bool = False
     bedrock_region_lock: BedrockRegionLock = BedrockRegionLock()
     bedrock_attribution: BedrockAttribution = BedrockAttribution()
     inference_metrics: list[InferenceMetricsSource] = Field(default=[], max_length=64)
+    semantic_review: SemanticReviewSettings = SemanticReviewSettings()
+    semantic_check: SemanticCheckSettings = SemanticCheckSettings()
 
     @field_validator("inference_metrics")
     @classmethod
@@ -320,6 +449,9 @@ class GatewaySettingsPatch(BaseModel):
 
     response_analysis: list[str] | None = None
     injection_markers: Literal["off", "count", "warn"] | None = None
+    media_inputs: Literal["block", "allow"] | None = None
+    documents: Literal["as_media", "scan", "scan_and_convert"] | None = None
+    document_format: Literal["native", "by_provider"] | None = None
     price_tier_warning: bool | None = None
     model_retiring_warning: Literal["record", "header"] | None = None
     # Merged into the stored grants type by type; null gives a type back to everyone.
@@ -337,6 +469,7 @@ class GatewaySettingsPatch(BaseModel):
     tool_search: ToolSearchPatch | None = None
     thinking_history: ThinkingHistoryPatch | None = None
     transforms: TransformPatch | None = None
+    image_detail: ImageDetailSettings | None = None
     auto_remediation_paused: bool | None = None
     bedrock_region_lock: BedrockRegionLockPatch | None = None
     bedrock_attribution: BedrockAttributionPatch | None = None
@@ -344,6 +477,8 @@ class GatewaySettingsPatch(BaseModel):
     inference_metrics: list[InferenceMetricsSource] | None = Field(
         default=None, max_length=64
     )
+    semantic_review: SemanticReviewPatch | None = None
+    semantic_check: SemanticCheckPatch | None = None
 
     @field_validator("inference_metrics")
     @classmethod
@@ -466,6 +601,45 @@ def _request_archive(
 _MARKER_LEVELS = ("off", "count", "warn")
 
 
+def _semantic_review(
+    before: SemanticReviewSettings, after: SemanticReviewSettings
+) -> Direction:
+    # Archived content read by a model, or by another one, is relaxing; the caps
+    # and the key that pays change no protection.
+    if (after.enabled and not before.enabled) or (
+        after.enabled and after.model != before.model
+    ):
+        return "relaxing"
+    if before.enabled and not after.enabled:
+        return "tightening"
+    return "neutral"
+
+
+def _widens(before: list[Any], after: list[Any]) -> bool:
+    # An empty list means any value: emptying a list, or adding to a listed one,
+    # lets more requests in.
+    return bool(before) and (not after or not set(after) <= set(before))
+
+
+def _semantic_check(
+    before: SemanticCheckSettings, after: SemanticCheckSettings
+) -> Direction:
+    # Live request text reaching one more model, or more of it, is relaxing.
+    if after.enabled and (
+        not before.enabled
+        or after.model != before.model
+        or any(
+            _widens(getattr(before.scope, field), getattr(after.scope, field))
+            for field in SemanticCheckScope.model_fields
+        )
+        or not set(after.endpoints) <= set(before.endpoints)
+    ):
+        return "relaxing"
+    if before.enabled and not after.enabled:
+        return "tightening"
+    return "neutral"
+
+
 def _marker_direction(before: str, after: str) -> Direction:
     return (
         "relaxing"
@@ -548,6 +722,13 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "finding_modes": _finding_modes,
     "request_archive": _request_archive,
     "injection_markers": _marker_direction,
+    # Forwarded media is not scanned.
+    "media_inputs": toward("allow"),
+    # Under media_inputs allow, as_media forwards documents scan would stop.
+    "documents": toward("as_media"),
+    # by_provider keeps a clean PDF native for Gemini, page images a tenant that hides
+    # values would otherwise get as scanned text.
+    "document_format": toward("by_provider"),
     # A report, not a protection.
     "price_tier_warning": neutral,
     # Where a retirement warning is shown; it is always recorded.
@@ -565,6 +746,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "thinking_history": neutral,
     # Lossless: the model reads the same values in fewer characters.
     "transforms": neutral,
+    # What the provider bills and reads an image at, not what the request may carry.
+    "image_detail": neutral,
     # Pausing stops unattended changes; resuming lets them run again.
     "auto_remediation_paused": toward(False),
     "bedrock_region_lock": _region_lock_direction,
@@ -572,16 +755,31 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "bedrock_attribution": neutral,
     # Reads the tenant's own server; changes no request.
     "inference_metrics": neutral,
+    "semantic_review": _semantic_review,
+    "semantic_check": _semantic_check,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
 SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {
+    "transforms.image_downscale": lambda: (
+        None
+        if importlib.util.find_spec("PIL") is not None
+        else "off, needs shim-gateway[images]"
+    ),
+    "documents.pdf": lambda: (
+        None if pdf_reader_version() is not None else "off, needs pypdf"
+    ),
     "bedrock_attribution": lambda: (
         None
         if settings.AWS_GATEWAY_IDENTITY != "none"
         else "off, needs AWS_GATEWAY_IDENTITY in this installation"
     ),
     "request_archive": lambda: (
+        None
+        if settings.REQUEST_ARCHIVE_ENABLED
+        else "off, needs REQUEST_ARCHIVE_ENABLED in this installation (self-hosted only)"
+    ),
+    "semantic_review": lambda: (
         None
         if settings.REQUEST_ARCHIVE_ENABLED
         else "off, needs REQUEST_ARCHIVE_ENABLED in this installation (self-hosted only)"

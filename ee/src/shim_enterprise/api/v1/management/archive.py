@@ -8,7 +8,15 @@ from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import AwareDatetime, BaseModel, Field
-from sqlalchemy import Text, cast as sql_cast, delete as sql_delete, func, select
+from sqlalchemy import (
+    Text,
+    cast as sql_cast,
+    delete as sql_delete,
+    func,
+    select,
+    true,
+    union_all,
+)
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +24,7 @@ from shim_enterprise.api.enterprise_deps import get_current_user, get_org_owner,
 from shim_enterprise.ai_act.models import AIActAuditLog
 from shim_enterprise.archive.models import RequestArchive
 from shim_enterprise.archive.service import ArchiveUndecryptable, opened
+from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import ApiKey, User
@@ -118,36 +127,64 @@ async def list_content_openings(
     end_at = end or datetime.now(timezone.utc)
     start_at = start or end_at - timedelta(days=30)
     _validate_sync_window(start_at, end_at)
-    filters = [
+    window = (
         AIActAuditLog.organization_id == tenant_id,
-        AIActAuditLog.endpoint == "tenant.request_content_opened",
         AIActAuditLog.created_at >= start_at,
         AIActAuditLog.created_at <= end_at,
-    ]
+    )
+    # A semantic review's scan lists its request ids: one item per request.
+    scanned = func.jsonb_array_elements_text(
+        AIActAuditLog.extra["request_ids"]
+    ).table_valued("value")
+    openings = union_all(
+        select(
+            AIActAuditLog.created_at.label("opened_at"),
+            AIActAuditLog.actor.label("actor"),
+            AIActAuditLog.extra["subject_id"].as_string().label("request_id"),
+            AIActAuditLog.extra["api_key_id"].as_string().label("api_key_id"),
+            AIActAuditLog.id.label("id"),
+        ).where(*window, AIActAuditLog.endpoint == "tenant.request_content_opened"),
+        select(
+            AIActAuditLog.created_at,
+            AIActAuditLog.actor,
+            scanned.c.value,
+            sql_cast(RequestLifecycle.api_key_id, Text),
+            AIActAuditLog.id,
+        )
+        .select_from(AIActAuditLog)
+        .join(scanned, true())
+        .outerjoin(
+            RequestLifecycle,
+            (RequestLifecycle.organization_id == tenant_id)
+            & (RequestLifecycle.request_id == scanned.c.value),
+        )
+        .where(*window, AIActAuditLog.endpoint == "tenant.request_content_scanned"),
+    ).subquery()
+    filters = []
     if "audit.read" not in await user_permissions(session, user):
         filters.append(
-            AIActAuditLog.extra["api_key_id"]
-            .as_string()
-            .in_(
+            openings.c.api_key_id.in_(
                 select(sql_cast(ApiKey.id, Text)).where(
                     ApiKey.organization_id == tenant_id, ApiKey.user_id == user.id
                 )
             )
         )
-    total = await session.scalar(select(func.count()).where(*filters))
-    rows = await session.scalars(
-        select(AIActAuditLog)
+    total = await session.scalar(
+        select(func.count()).select_from(openings).where(*filters)
+    )
+    rows = await session.execute(
+        select(openings)
         .where(*filters)
-        .order_by(AIActAuditLog.created_at.desc(), AIActAuditLog.id)
+        .order_by(openings.c.opened_at.desc(), openings.c.id, openings.c.request_id)
         .limit(limit)
         .offset(offset)
     )
     return ContentOpeningPage(
         items=[
             ContentOpeningView(
-                opened_at=row.created_at,
+                opened_at=row.opened_at,
                 actor_user_id=row.actor,
-                request_id=(row.extra or {}).get("subject_id"),
+                request_id=row.request_id,
             )
             for row in rows
         ],

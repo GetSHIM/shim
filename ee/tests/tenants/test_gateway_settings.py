@@ -113,6 +113,9 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
         "settings": {
             "response_analysis": [],
             "injection_markers": "off",
+            "media_inputs": "block",
+            "documents": "as_media",
+            "document_format": "native",
             "price_tier_warning": False,
             "model_retiring_warning": "record",
             "restore_withheld": {},
@@ -141,7 +144,8 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
                 "anthropic_keep_turns": 0,
                 "openai_reasoning_context": "off",
             },
-            "transforms": {"json_compaction": "off"},
+            "transforms": {"json_compaction": "off", "image_downscale": "off"},
+            "image_detail": {"openai": "off", "gemini": "off", "models": []},
             "auto_remediation_paused": False,
             "bedrock_region_lock": {"mode": "off", "scopes": [], "regions": []},
             "bedrock_attribution": {
@@ -150,6 +154,24 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
                 "unassigned_value": "unassigned",
             },
             "inference_metrics": [],
+            "semantic_review": {
+                "enabled": False,
+                "model": None,
+                "api_key_id": None,
+                "max_items_per_hour": 60,
+                "max_cost_usd_per_day": "5",
+            },
+            "semantic_check": {
+                "enabled": False,
+                "scope": {"api_key_ids": [], "tags": [], "models": []},
+                "endpoints": ["chat", "responses", "messages", "generate_content"],
+                "question_ids": [],
+                "model": None,
+                "api_key_id": None,
+                "warn_header": False,
+                "timeout_ms": 3000,
+                "max_checks_per_day": 1000,
+            },
         },
         "revision": 0,
         "updated_at": None,
@@ -159,6 +181,8 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "bedrock_attribution": "off, needs AWS_GATEWAY_IDENTITY in this "
             "installation",
             "request_archive": "off, needs REQUEST_ARCHIVE_ENABLED in this "
+            "installation (self-hosted only)",
+            "semantic_review": "off, needs REQUEST_ARCHIVE_ENABLED in this "
             "installation (self-hosted only)",
         },
         "request_archive_state": "off",
@@ -1146,3 +1170,195 @@ async def test_json_compaction_round_trips(db, test_org) -> None:
     for bad in ({"json_compaction": True}, {"json_compaction": "yes"}, {"other": "on"}):
         with pytest.raises(ValidationError):
             GatewaySettingsPatch.model_validate({"transforms": bad})
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "classified"),
+    [
+        ("block", "allow", ("relaxing", ["media_inputs"])),
+        ("allow", "block", ("tightening", [])),
+    ],
+)
+def test_allowing_media_relaxes(before, after, classified) -> None:
+    assert GatewaySettings().media_inputs == "block"
+    assert (
+        classify_change(
+            GatewaySettings(media_inputs=before), GatewaySettings(media_inputs=after)
+        )
+        == classified
+    )
+
+
+def test_media_inputs_take_only_block_or_allow() -> None:
+    for value in ("scan", None, True):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate({"media_inputs": value})
+
+
+@pytest.mark.asyncio
+async def test_allowing_media_round_trips_and_is_a_privacy_relaxation(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    allowed = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch(media_inputs="allow"), _request(), admin, db
+    )
+    blocked = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch(media_inputs="block"), _request(), admin, db
+    )
+
+    assert (allowed.settings.media_inputs, blocked.settings.media_inputs) == (
+        "allow",
+        "block",
+    )
+    events = await audit_events(test_org.id)
+    assert [
+        event["extra"]["relaxed"]
+        for event in events
+        if event["endpoint"] == "tenant.privacy_protection_relaxed"
+    ] == [["media_inputs"]]
+    assert not any(
+        event["endpoint"] == "tenant.gateway_protection_relaxed" for event in events
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "before", "after", "direction"),
+    [
+        ("documents", "as_media", "scan", ("tightening", [])),
+        ("documents", "scan", "scan_and_convert", ("tightening", [])),
+        # media_inputs allow then forwards what scan stopped (D3, four-eyes).
+        ("documents", "scan_and_convert", "as_media", ("relaxing", ["documents"])),
+        # Gemini keeps clean PDFs native: page images nobody scanned (D1).
+        (
+            "document_format",
+            "native",
+            "by_provider",
+            ("relaxing", ["document_format"]),
+        ),
+        ("document_format", "by_provider", "native", ("tightening", [])),
+    ],
+)
+def test_document_settings_directions(field, before, after, direction) -> None:
+    assert (
+        classify_change(
+            GatewaySettings(**{field: before}), GatewaySettings(**{field: after})
+        )
+        == direction
+    )
+
+
+@pytest.mark.asyncio
+async def test_document_settings_round_trip(db, test_org) -> None:
+    admin = await _admin(db, test_org.id)
+    view = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch(
+            documents="scan_and_convert", document_format="by_provider"
+        ),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert (view.settings.documents, view.settings.document_format) == (
+        "scan_and_convert",
+        "by_provider",
+    )
+    with pytest.raises(ValidationError):
+        GatewaySettingsPatch.model_validate({"documents": "convert"})
+
+
+@pytest.mark.asyncio
+async def test_without_pypdf_the_settings_say_pdf_is_off(
+    db, test_user_with_org, registry, monkeypatch
+) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "pypdf", None)
+
+    view = await management.configuration.get_gateway_settings(test_user_with_org, db)
+
+    assert view.unavailable["documents.pdf"] == "off, needs pypdf"
+
+
+@pytest.mark.asyncio
+async def test_image_detail_round_trips_merges_and_is_neutral(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    first = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"image_detail": {"openai": "low", "models": ["gpt-4o"]}}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    second = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"image_detail": {"gemini": "medium"}}),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert first.settings.image_detail.model_dump() == {
+        "openai": "low",
+        "gemini": "off",
+        "models": ("gpt-4o",),
+    }
+    assert second.settings.image_detail.model_dump() == {
+        "openai": "low",
+        "gemini": "medium",
+        "models": ("gpt-4o",),
+    }
+    assert classify_change(GatewaySettings(), second.settings) == ("neutral", [])
+    assert not any(
+        event["endpoint"].endswith("_protection_relaxed")
+        for event in await audit_events(test_org.id)
+    )
+    for value in ({"openai": "original"}, {"gemini": "high"}, {"anthropic": "low"}):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate({"image_detail": value})
+
+
+@pytest.mark.asyncio
+async def test_image_downscale_round_trips_in_the_transforms_group_as_neutral(
+    db, test_org
+) -> None:
+    admin = await _admin(db, test_org.id)
+    view = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"transforms": {"image_downscale": "on"}}),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert view.settings.transforms.image_downscale == "on"
+    assert view.settings.transforms.json_compaction == "off"
+    assert classify_change(GatewaySettings(), view.settings) == ("neutral", [])
+    assert "transforms.image_downscale" not in view.unavailable
+
+
+@pytest.mark.asyncio
+async def test_without_pillow_image_downscale_is_unavailable_and_runs_off(
+    db, test_user_with_org, registry, monkeypatch
+) -> None:
+    import importlib.util
+
+    import shim_enterprise.tenants.policy as policy_module
+
+    found = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *args: None if name == "PIL" else found(name, *args),
+    )
+
+    view = await management.configuration.get_gateway_settings(test_user_with_org, db)
+
+    assert view.unavailable["transforms.image_downscale"] == (
+        "off, needs shim-gateway[images]"
+    )
+    assert (
+        policy_module.SETTING_AVAILABILITY["transforms.image_downscale"]() is not None
+    )

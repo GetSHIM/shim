@@ -95,3 +95,26 @@ INFERENCE_SCRAPES_TOTAL = Counter(
     "error, skipped).",
     ("server", "outcome"),
 )
+CHANGE_TEST_SKIPS_TOTAL = Counter(
+    "shim_change_test_skips_total",
+    "Change test copies not made, by reason: cap_requests, cap_cost, "
+    "counter_unavailable, target_not_allowed, target_unavailable.",
+    ("reason",),
+)
+CHANGE_TEST_COMPARISONS_TOTAL = Counter(
+    "shim_change_test_comparisons_total",
+    "Change test comparisons recorded (ok) or dropped (failed).",
+    ("result",),
+)
+SEMANTIC_REVIEWS_TOTAL = Counter(
+    "shim_semantic_reviews_total",
+    "Semantic reviews of archived requests by status: matched, clear, "
+    "invalid_answer, failed, skipped_guard, skipped_empty.",
+    ("status",),
+)
+SEMANTIC_CHECKS_TOTAL = Counter(
+    "shim_semantic_checks_total",
+    "Live semantic checks on marked endpoints by outcome: matched, clear, "
+    "invalid_answer, failed, timeout, skipped_guard, skipped_cap, skipped_empty.",
+    ("outcome",),
+)

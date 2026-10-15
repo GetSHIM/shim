@@ -638,6 +638,7 @@ class DurableAccountingCoordinator:
                                 if prepared.privacy.restore_withheld
                                 else {}
                             ),
+                            **(prepared.privacy.media or {}),
                             **match_records(prepared),
                             # A target chosen after privacy replaces the one reserved.
                             **(
@@ -1119,6 +1120,7 @@ class DurableUsageLifecycle:
                         warnings=tuple(prepared.warnings),
                         shim_latency_ms=terminal.shim_latency_ms,
                         completed_at=terminal.completed_at,
+                        savings=None if usage.savings is None else dict(usage.savings),
                     ),
                 )
         except AuditIntentPersistenceError:
@@ -1172,6 +1174,7 @@ class DurableUsageLifecycle:
                         for verdict in prepared.policy_verdicts
                     ),
                     inflight_share=dict(inflight_share),
+                    savings=None if usage.savings is None else dict(usage.savings),
                 ),
             )
 

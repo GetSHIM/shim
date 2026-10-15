@@ -201,6 +201,20 @@ _RouteOutcomeFilter = Annotated[
     | None,
     Query(description="What a route rule decided at the conversation start."),
 ]
+_SemanticOutcomeFilter = Annotated[
+    Literal[
+        "matched",
+        "clear",
+        "invalid_answer",
+        "failed",
+        "timeout",
+        "skipped_guard",
+        "skipped_cap",
+        "skipped_empty",
+    ]
+    | None,
+    Query(description="What the live semantic check on a marked endpoint found."),
+]
 _SoftRefusalFilter = Annotated[
     bool | None,
     Query(
@@ -291,6 +305,33 @@ class RequestActivityView(BaseModel):
             '{"error": true} when the scan failed; null when the tenant\'s scan was off.'
         ),
     )
+    media_parts: dict[str, int] | None = Field(
+        default=None,
+        description="Images and files the request carried and privacy forwarded, by "
+        "kind; null when it carried none.",
+    )
+    media_unscanned: int | None = Field(
+        default=None,
+        ge=0,
+        description="Of those, the parts forwarded without being scanned.",
+    )
+    media_images: list[list[int]] | None = Field(
+        default=None,
+        description="[width, height, decoded bytes] of each inline image whose header "
+        "was readable, in request order, at most 16; null when there were none.",
+    )
+    media_images_truncated: bool | None = Field(
+        default=None, description="true when the request had more than 16 such images."
+    )
+    documents: dict[str, Any] | None = Field(
+        default=None,
+        description="With document scanning on: documents scanned, converted to text, "
+        "sent as they came, and unscannable by reason; null otherwise.",
+    )
+    document_entities: dict[str, int] | None = Field(
+        default=None,
+        description="Detected values in the documents' text, by entity type.",
+    )
     restore_withheld: dict[str, int] | None = Field(
         default=None,
         description=(
@@ -354,6 +395,12 @@ class RequestActivityView(BaseModel):
         description="The request approval this request created, was refused under "
         "or consumed; null when no approval gate decided it.",
     )
+    savings: dict[str, Any] | None = Field(
+        default=None,
+        description="What the request's levers saved: measured, estimated and "
+        "not_attributed sections by lever; only measured figures are savings; null "
+        "when no lever had a figure.",
+    )
     content_archived: bool = Field(
         default=False,
         description="The self-hosted request archive kept this request's content; "
@@ -364,6 +411,21 @@ class RequestActivityView(BaseModel):
         description=(
             "Results of the after-answer analyzers by name, with their versions; "
             "null when no analyzer ran or the pass has not finished."
+        ),
+    )
+    semantic_check: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "On a request in a marked semantic check's scope: the outcome, the "
+            "matched question ids, the check request and its latency; never text."
+        ),
+    )
+    shadow_comparison: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "On a change-test copy: both answers compared (outcome, schema validity, "
+            "language, length, latency, cost), never their text; null otherwise or "
+            "until the comparison finished."
         ),
     )
 
@@ -443,6 +505,7 @@ async def list_requests(
     attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
     route_outcome: _RouteOutcomeFilter = None,
+    semantic_outcome: _SemanticOutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
     task_id: _TaskIdFilter = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -471,6 +534,7 @@ async def list_requests(
         attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
         route_outcome=route_outcome,
+        semantic_outcome=semantic_outcome,
         soft_refusal=soft_refusal,
         task_id=task_id,
     )
@@ -511,8 +575,17 @@ async def list_requests(
                 content_archived=(row.details or {}).get("request_archive") == "stored",
                 response_entities=response_entities,
                 response_analysis=response_analysis,
+                savings=savings,
+                shadow_comparison=shadow_comparison,
             )
-            for row, cost_usd, response_entities, response_analysis in rows
+            for (
+                row,
+                cost_usd,
+                response_entities,
+                response_analysis,
+                savings,
+                shadow_comparison,
+            ) in rows
         ],
         total=summary.requests,
         limit=limit,
@@ -803,6 +876,7 @@ async def export_requests(
     attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
     route_outcome: _RouteOutcomeFilter = None,
+    semantic_outcome: _SemanticOutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
     task_id: _TaskIdFilter = None,
     user: User = Depends(get_current_user),
@@ -829,6 +903,7 @@ async def export_requests(
         attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
         route_outcome=route_outcome,
+        semantic_outcome=semantic_outcome,
         soft_refusal=soft_refusal,
         task_id=task_id,
     )
@@ -914,13 +989,29 @@ async def export_requests(
                 "route_decision",
                 "shadow_of",
                 "injection_markers",
+                "media_parts",
+                "media_unscanned",
+                "media_images",
+                "media_images_truncated",
+                "documents",
+                "document_entities",
                 "restore_withheld",
                 "approval_id",
                 "content_archived",
+                "savings",
+                "shadow_comparison",
+                "semantic_check",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
-        for row, cost_usd, response_entities, response_analysis in rows:
+        for (
+            row,
+            cost_usd,
+            response_entities,
+            response_analysis,
+            savings,
+            comparison,
+        ) in rows:
             details = row.details or {}
             output.seek(0)
             output.truncate(0)
@@ -975,9 +1066,20 @@ async def export_requests(
                     _json(details.get("route_decision")),
                     details.get("shadow_of"),
                     _json(details.get("injection_markers")),
+                    _json(details.get("media_parts")),
+                    details.get("media_unscanned"),
+                    _json(details.get("media_images")),
+                    details.get("media_images_truncated"),
+                    _json(details.get("documents")),
+                    _json(details.get("document_entities")),
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),
                     details.get("request_archive") == "stored",
+                    json.dumps(savings, sort_keys=True, separators=(",", ":"))
+                    if savings is not None
+                    else None,
+                    _json(comparison),
+                    _json(details.get("semantic_check")),
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -1009,6 +1111,7 @@ async def _request_filters(
     attempt_group_id: str | None = None,
     completion_outcome: CompletionOutcomeFilter | None = None,
     route_outcome: str | None = None,
+    semantic_outcome: str | None = None,
     soft_refusal: bool | None = None,
     task_id: str | None = None,
 ) -> list[Any]:
@@ -1111,6 +1214,12 @@ async def _request_filters(
     if route_outcome is not None:
         filters.append(
             RequestLog.details.contains({"route_decision": {"outcome": route_outcome}})
+        )
+    if semantic_outcome is not None:
+        filters.append(
+            RequestLog.details.contains(
+                {"semantic_check": {"outcome": semantic_outcome}}
+            )
         )
     if task_id is not None:
         filters.append(RequestLog.details["task_id"].as_string() == task_id)
@@ -1287,6 +1396,11 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
             ),
             RequestLifecycle.lifecycle_metadata["response_analysis"].label(
                 "response_analysis"
+            ),
+            RequestLifecycle.lifecycle_metadata["savings"].label("savings"),
+            # Written by the change test after the copy settled.
+            RequestLifecycle.lifecycle_metadata["shadow_comparison"].label(
+                "shadow_comparison"
             ),
         )
         .outerjoin(

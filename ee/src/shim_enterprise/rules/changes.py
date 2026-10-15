@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from shim.rules import ACTION_RANK, Rule, RuleSet
+from shim_enterprise.rules.route_triggers import route_classifier
 
 # Lists where another entry only finds more.
 _ADDITIVE_MATCH_KEYS = frozenset({"terms", "templates", "regexes"})
@@ -29,15 +30,14 @@ def _relaxes(before: Rule | None, after: Rule | None) -> bool:
     if {rule.kind for rule in (before, after) if rule is not None} == {"route"}:
         # A route rule moves requests to another model: enforcing one, or changing
         # an enforced one, is what needs a second look; removing one protects.
-        return (
-            after is not None
-            and after.state == "enforced"
-            and (
-                before is None
-                or before.model_dump(exclude={"name"})
-                != after.model_dump(exclude={"name"})
-            )
-        )
+        if after is None or after.state != "enforced" or before is None:
+            return after is not None and after.state == "enforced"
+        classify = route_classifier(before, after)
+        if classify is not None and before.model_dump(
+            exclude={"name", "match"}
+        ) == after.model_dump(exclude={"name", "match"}):
+            return classify(before.match, after.match) == "relaxing"
+        return before.model_dump(exclude={"name"}) != after.model_dump(exclude={"name"})
     if before is None or before.state != "enforced":
         return False
     if after is None or after.state == "monitor":

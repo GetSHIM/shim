@@ -3607,6 +3607,156 @@
         "title": "ByScopeView",
         "type": "object"
       },
+      "CanarySide": {
+        "properties": {
+          "completion_outcomes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Completion Outcomes",
+            "type": "object"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "cost_usd_per_request": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd Per Request"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "shim_latency_ms_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shim Latency Ms P50"
+          },
+          "shim_latency_ms_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shim Latency Ms P95"
+          },
+          "ttft_ms_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms P50"
+          },
+          "ttft_ms_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms P95"
+          }
+        },
+        "required": [
+          "requests",
+          "completion_outcomes",
+          "failed",
+          "shim_latency_ms_p50",
+          "shim_latency_ms_p95",
+          "ttft_ms_p50",
+          "ttft_ms_p95",
+          "cost_usd",
+          "cost_usd_per_request"
+        ],
+        "title": "CanarySide",
+        "type": "object"
+      },
+      "CanaryView": {
+        "properties": {
+          "candidate": {
+            "$ref": "#/components/schemas/CanarySide"
+          },
+          "from_alias": {
+            "title": "From Alias",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "share_percent": {
+            "title": "Share Percent",
+            "type": "number"
+          },
+          "stable": {
+            "$ref": "#/components/schemas/CanarySide"
+          },
+          "state": {
+            "enum": [
+              "monitor",
+              "enforced"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "to_alias": {
+            "title": "To Alias",
+            "type": "string"
+          },
+          "would_move": {
+            "title": "Would Move",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule_id",
+          "from_alias",
+          "to_alias",
+          "share_percent",
+          "state",
+          "stable",
+          "candidate",
+          "would_move"
+        ],
+        "title": "CanaryView",
+        "type": "object"
+      },
       "CapacityForecast": {
         "properties": {
           "deployments": {
@@ -5412,6 +5562,231 @@
         ],
         "title": "Environment",
         "type": "string"
+      },
+      "EvidenceInput": {
+        "properties": {
+          "canaries": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,47}$",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Canaries",
+            "type": "array"
+          },
+          "candidates": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Candidates",
+            "type": "array"
+          },
+          "change_tests": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,47}$",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Change Tests",
+            "type": "array"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "model_selection",
+              "routing"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "route_rules": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,47}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Route Rules",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "start",
+          "end"
+        ],
+        "title": "EvidenceInput",
+        "type": "object"
+      },
+      "EvidencePage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "EvidencePage",
+        "type": "object"
+      },
+      "EvidenceView": {
+        "properties": {
+          "anchored": {
+            "title": "Anchored",
+            "type": "boolean"
+          },
+          "audit_event_id": {
+            "title": "Audit Event Id",
+            "type": "string"
+          },
+          "facts_sha256": {
+            "title": "Facts Sha256",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "generated_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated By"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/EvidenceWindow"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "window",
+          "sha256",
+          "facts_sha256",
+          "size_bytes",
+          "generated_at",
+          "generated_by",
+          "audit_event_id",
+          "anchored"
+        ],
+        "title": "EvidenceView",
+        "type": "object"
+      },
+      "EvidenceWindow": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "EvidenceWindow",
+        "type": "object"
       },
       "ExecutableCode": {
         "additionalProperties": false,
@@ -7296,6 +7671,25 @@
               "scopes": []
             }
           },
+          "document_format": {
+            "default": "native",
+            "enum": [
+              "native",
+              "by_provider"
+            ],
+            "title": "Document Format",
+            "type": "string"
+          },
+          "documents": {
+            "default": "as_media",
+            "enum": [
+              "as_media",
+              "scan",
+              "scan_and_convert"
+            ],
+            "title": "Documents",
+            "type": "string"
+          },
           "finding_modes": {
             "additionalProperties": {
               "enum": [
@@ -7317,6 +7711,14 @@
             ],
             "title": "Four Eyes",
             "type": "string"
+          },
+          "image_detail": {
+            "$ref": "#/components/schemas/ImageDetailSettings",
+            "default": {
+              "gemini": "off",
+              "models": [],
+              "openai": "off"
+            }
           },
           "inference_metrics": {
             "default": [],
@@ -7345,6 +7747,15 @@
               "warn"
             ],
             "title": "Injection Markers",
+            "type": "string"
+          },
+          "media_inputs": {
+            "default": "block",
+            "enum": [
+              "block",
+              "allow"
+            ],
+            "title": "Media Inputs",
             "type": "string"
           },
           "model_retiring_warning": {
@@ -7392,6 +7803,35 @@
             "title": "Restore Withheld",
             "type": "object"
           },
+          "semantic_check": {
+            "$ref": "#/components/schemas/SemanticCheckSettings",
+            "default": {
+              "enabled": false,
+              "endpoints": [
+                "chat",
+                "responses",
+                "messages",
+                "generate_content"
+              ],
+              "max_checks_per_day": 1000,
+              "question_ids": [],
+              "scope": {
+                "api_key_ids": [],
+                "models": [],
+                "tags": []
+              },
+              "timeout_ms": 3000,
+              "warn_header": false
+            }
+          },
+          "semantic_review": {
+            "$ref": "#/components/schemas/SemanticReviewSettings",
+            "default": {
+              "enabled": false,
+              "max_cost_usd_per_day": "5",
+              "max_items_per_hour": 60
+            }
+          },
           "task_caps": {
             "$ref": "#/components/schemas/TaskCaps-Output",
             "default": {
@@ -7417,6 +7857,7 @@
           "transforms": {
             "$ref": "#/components/schemas/TransformSettings",
             "default": {
+              "image_downscale": "off",
               "json_compaction": "off"
             }
           }
@@ -7468,6 +7909,37 @@
               }
             ]
           },
+          "document_format": {
+            "anyOf": [
+              {
+                "enum": [
+                  "native",
+                  "by_provider"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Format"
+          },
+          "documents": {
+            "anyOf": [
+              {
+                "enum": [
+                  "as_media",
+                  "scan",
+                  "scan_and_convert"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents"
+          },
           "finding_modes": {
             "anyOf": [
               {
@@ -7501,6 +7973,16 @@
               }
             ],
             "title": "Four Eyes"
+          },
+          "image_detail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageDetailSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "inference_metrics": {
             "anyOf": [
@@ -7548,6 +8030,21 @@
               }
             ],
             "title": "Injection Markers"
+          },
+          "media_inputs": {
+            "anyOf": [
+              {
+                "enum": [
+                  "block",
+                  "allow"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Inputs"
           },
           "model_retiring_warning": {
             "anyOf": [
@@ -7629,6 +8126,26 @@
               }
             ],
             "title": "Restore Withheld"
+          },
+          "semantic_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SemanticCheckPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "semantic_review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SemanticReviewPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "task_caps": {
             "anyOf": [
@@ -8680,6 +9197,45 @@
           "requests"
         ],
         "title": "IdCount",
+        "type": "object"
+      },
+      "ImageDetailSettings": {
+        "additionalProperties": false,
+        "description": "Image detail levels the settings band fills in where the client chose none.",
+        "properties": {
+          "gemini": {
+            "default": "off",
+            "enum": [
+              "off",
+              "low",
+              "medium"
+            ],
+            "title": "Gemini",
+            "type": "string"
+          },
+          "models": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Models",
+            "type": "array"
+          },
+          "openai": {
+            "default": "off",
+            "enum": [
+              "off",
+              "low",
+              "high"
+            ],
+            "title": "Openai",
+            "type": "string"
+          }
+        },
+        "title": "ImageDetailSettings",
         "type": "object"
       },
       "ImageResponseFormat": {
@@ -13953,6 +14509,51 @@
         "title": "ProviderSecretView",
         "type": "object"
       },
+      "QuestionSetPut": {
+        "additionalProperties": false,
+        "properties": {
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticQuestion"
+            },
+            "maxItems": 20,
+            "title": "Questions",
+            "type": "array"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "questions"
+        ],
+        "title": "QuestionSetPut",
+        "type": "object"
+      },
+      "QuestionSetView": {
+        "properties": {
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticQuestion"
+            },
+            "title": "Questions",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "questions"
+        ],
+        "title": "QuestionSetView",
+        "type": "object"
+      },
       "RagRetrievalConfig": {
         "additionalProperties": false,
         "description": "Specifies the context retrieval config.\n\nThis data type is not supported in Gemini API.",
@@ -15246,6 +15847,34 @@
             ],
             "title": "Deployment Kind"
           },
+          "document_entities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Detected values in the documents' text, by entity type.",
+            "title": "Document Entities"
+          },
+          "documents": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With document scanning on: documents scanned, converted to text, sent as they came, and unscannable by reason; null otherwise.",
+            "title": "Documents"
+          },
           "endpoint": {
             "anyOf": [
               {
@@ -15278,6 +15907,64 @@
             ],
             "description": "Tool results and documents carrying each hidden-instruction marker; {\"error\": true} when the scan failed; null when the tenant's scan was off.",
             "title": "Injection Markers"
+          },
+          "media_images": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "[width, height, decoded bytes] of each inline image whose header was readable, in request order, at most 16; null when there were none.",
+            "title": "Media Images"
+          },
+          "media_images_truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "true when the request had more than 16 such images.",
+            "title": "Media Images Truncated"
+          },
+          "media_parts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Images and files the request carried and privacy forwarded, by kind; null when it carried none.",
+            "title": "Media Parts"
+          },
+          "media_unscanned": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Of those, the parts forwarded without being scanned.",
+            "title": "Media Unscanned"
           },
           "model": {
             "anyOf": [
@@ -15466,6 +16153,32 @@
             ],
             "title": "Rule Matches Truncated"
           },
+          "savings": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the request's levers saved: measured, estimated and not_attributed sections by lever; only measured figures are savings; null when no lever had a figure.",
+            "title": "Savings"
+          },
+          "semantic_check": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a request in a marked semantic check's scope: the outcome, the matched question ids, the check request and its latency; never text.",
+            "title": "Semantic Check"
+          },
           "settings_applied": {
             "anyOf": [
               {
@@ -15481,6 +16194,19 @@
             ],
             "description": "Settings band steps that set a provider parameter, by id and version; [] when the band ran and set nothing, null when it did not run.",
             "title": "Settings Applied"
+          },
+          "shadow_comparison": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a change-test copy: both answers compared (outcome, schema validity, language, length, latency, cost), never their text; null otherwise or until the comparison finished.",
+            "title": "Shadow Comparison"
           },
           "shadow_of": {
             "anyOf": [
@@ -16090,6 +16816,29 @@
         "title": "RetrievalConfig",
         "type": "object"
       },
+      "RollbackView": {
+        "properties": {
+          "plan_id": {
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "integer"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "plan_id",
+          "policy_version"
+        ],
+        "title": "RollbackView",
+        "type": "object"
+      },
       "Rule": {
         "additionalProperties": false,
         "properties": {
@@ -16567,6 +17316,119 @@
         "title": "SafetySetting",
         "type": "object"
       },
+      "SavingsLeverView": {
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes"
+          },
+          "chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chars"
+          },
+          "lever": {
+            "title": "Lever",
+            "type": "string"
+          },
+          "method": {
+            "enum": [
+              "measured",
+              "estimated",
+              "not_attributed",
+              "counted"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "requests": {
+            "minimum": 1.0,
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens"
+          },
+          "unpriced": {
+            "default": 0,
+            "description": "Requests of this row whose price was unknown.",
+            "minimum": 0.0,
+            "title": "Unpriced",
+            "type": "integer"
+          },
+          "usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Decimal string; may be negative for the cache.",
+            "title": "Usd"
+          }
+        },
+        "required": [
+          "lever",
+          "method",
+          "requests",
+          "note"
+        ],
+        "title": "SavingsLeverView",
+        "type": "object"
+      },
+      "SavingsView": {
+        "properties": {
+          "levers": {
+            "items": {
+              "$ref": "#/components/schemas/SavingsLeverView"
+            },
+            "title": "Levers",
+            "type": "array"
+          },
+          "measured_usd": {
+            "description": "Only rows whose method is measured; estimates are never added.",
+            "title": "Measured Usd",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/BillingPeriodView"
+          }
+        },
+        "required": [
+          "period",
+          "measured_usd",
+          "levers"
+        ],
+        "title": "SavingsView",
+        "type": "object"
+      },
       "ScanInput": {
         "additionalProperties": false,
         "properties": {
@@ -17022,6 +17884,540 @@
           }
         },
         "title": "SearchTypes",
+        "type": "object"
+      },
+      "SemanticCheckPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "endpoints": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "chat",
+                    "responses",
+                    "messages",
+                    "generate_content"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 4,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoints"
+          },
+          "max_checks_per_day": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Checks Per Day"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "question_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z][a-z0-9_]{0,47}$",
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Ids"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SemanticCheckScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timeout_ms": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 500.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Ms"
+          },
+          "warn_header": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warn Header"
+          }
+        },
+        "title": "SemanticCheckPatch",
+        "type": "object"
+      },
+      "SemanticCheckScope": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "models": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Models",
+            "type": "array"
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[a-z0-9_.:-]+$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "title": "SemanticCheckScope",
+        "type": "object"
+      },
+      "SemanticCheckSettings": {
+        "additionalProperties": false,
+        "description": "A live check of requests on a narrow, tenant-marked scope; it only warns.",
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "endpoints": {
+            "default": [
+              "chat",
+              "responses",
+              "messages",
+              "generate_content"
+            ],
+            "items": {
+              "enum": [
+                "chat",
+                "responses",
+                "messages",
+                "generate_content"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "Endpoints",
+            "type": "array"
+          },
+          "max_checks_per_day": {
+            "default": 1000,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Max Checks Per Day",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "question_ids": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,47}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Question Ids",
+            "type": "array"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/SemanticCheckScope",
+            "default": {
+              "api_key_ids": [],
+              "models": [],
+              "tags": []
+            }
+          },
+          "timeout_ms": {
+            "default": 3000,
+            "maximum": 10000.0,
+            "minimum": 500.0,
+            "title": "Timeout Ms",
+            "type": "integer"
+          },
+          "warn_header": {
+            "default": false,
+            "title": "Warn Header",
+            "type": "boolean"
+          }
+        },
+        "title": "SemanticCheckSettings",
+        "type": "object"
+      },
+      "SemanticQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "examples": {
+            "default": [],
+            "items": {
+              "maxLength": 300,
+              "minLength": 5,
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Examples",
+            "type": "array"
+          },
+          "id": {
+            "pattern": "^[a-z][a-z0-9_]{0,47}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 500,
+            "minLength": 10,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "SemanticQuestion",
+        "type": "object"
+      },
+      "SemanticReviewPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticReviewView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "SemanticReviewPage",
+        "type": "object"
+      },
+      "SemanticReviewPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "max_cost_usd_per_day": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd Per Day"
+          },
+          "max_items_per_hour": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Items Per Hour"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "title": "SemanticReviewPatch",
+        "type": "object"
+      },
+      "SemanticReviewSettings": {
+        "additionalProperties": false,
+        "description": "Archived requests read against the tenant's questions by the tenant's model.",
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_cost_usd_per_day": {
+            "default": "5",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Max Cost Usd Per Day",
+            "type": "string"
+          },
+          "max_items_per_hour": {
+            "default": 60,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Max Items Per Hour",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "title": "SemanticReviewSettings",
+        "type": "object"
+      },
+      "SemanticReviewView": {
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "matched_question_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Matched Question Ids",
+            "type": "array"
+          },
+          "questions_revision": {
+            "title": "Questions Revision",
+            "type": "integer"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "review_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Request Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "api_key_id",
+          "status",
+          "matched_question_ids",
+          "questions_revision",
+          "review_request_id",
+          "cost_usd",
+          "completed_at"
+        ],
+        "title": "SemanticReviewView",
         "type": "object"
       },
       "ServerLoad": {
@@ -19488,6 +20884,21 @@
       "TransformPatch": {
         "additionalProperties": false,
         "properties": {
+          "image_downscale": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "on"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Downscale"
+          },
           "json_compaction": {
             "anyOf": [
               {
@@ -19511,6 +20922,15 @@
         "additionalProperties": false,
         "description": "Transform band steps: lossless content changes, each off by default (S56).",
         "properties": {
+          "image_downscale": {
+            "default": "off",
+            "enum": [
+              "off",
+              "on"
+            ],
+            "title": "Image Downscale",
+            "type": "string"
+          },
           "json_compaction": {
             "default": "off",
             "enum": [
@@ -24544,6 +25964,107 @@
         ]
       }
     },
+    "/api/v1/management/canaries": {
+      "get": {
+        "operationId": "list_canaries_api_v1_management_canaries_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "maximum": 744,
+              "minimum": 1,
+              "title": "Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CanaryView"
+                  },
+                  "title": "Response List Canaries Api V1 Management Canaries Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Canaries",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/management/canaries/{rule_id}/rollback": {
+      "post": {
+        "operationId": "rollback_canary_api_v1_management_canaries__rule_id__rollback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollbackView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rollback Canary",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
     "/api/v1/management/capacity/forecast": {
       "get": {
         "description": "Per internal deployment: the daily busy hour over 56 days, its trend, and\nwhen the trend reaches the entered capacity.",
@@ -24568,6 +26089,169 @@
         "summary": "Capacity Forecast",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/change-tests": {
+      "get": {
+        "operationId": "list_change_tests_api_v1_management_change_tests_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Change Tests Api V1 Management Change Tests Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Change Tests",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/management/change-tests/{rule_id}": {
+      "get": {
+        "operationId": "get_change_test_api_v1_management_change_tests__rule_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "title": "Rule Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Change Test Api V1 Management Change Tests  Rule Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Change Test",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/management/change-tests/{rule_id}/stop": {
+      "post": {
+        "operationId": "stop_change_test_api_v1_management_change_tests__rule_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Stop Change Test Api V1 Management Change Tests  Rule Id  Stop Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Stop Change Test",
+        "tags": [
+          "rules"
         ]
       }
     },
@@ -26482,6 +28166,205 @@
         "summary": "Check Model Deployment Health",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-evidence": {
+      "get": {
+        "operationId": "list_model_evidence_api_v1_management_model_evidence_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidencePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Model Evidence",
+        "tags": [
+          "compliance"
+        ]
+      },
+      "post": {
+        "operationId": "create_model_evidence_api_v1_management_model_evidence_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvidenceInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Model Evidence",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/management/model-evidence/{document_id}": {
+      "get": {
+        "operationId": "download_model_evidence_api_v1_management_model_evidence__document_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/pdf": {}
+            },
+            "description": "The PDF."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Model Evidence",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/management/model-evidence/{document_id}/facts": {
+      "get": {
+        "operationId": "model_evidence_facts_api_v1_management_model_evidence__document_id__facts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Model Evidence Facts Api V1 Management Model Evidence  Document Id  Facts Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Model Evidence Facts",
+        "tags": [
+          "compliance"
         ]
       }
     },
@@ -28770,6 +30653,34 @@
             }
           },
           {
+            "description": "What the live semantic check on a marked endpoint found.",
+            "in": "query",
+            "name": "semantic_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "matched",
+                    "clear",
+                    "invalid_answer",
+                    "failed",
+                    "timeout",
+                    "skipped_guard",
+                    "skipped_cap",
+                    "skipped_empty"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the live semantic check on a marked endpoint found.",
+              "title": "Semantic Outcome"
+            }
+          },
+          {
             "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
             "in": "query",
             "name": "soft_refusal",
@@ -29192,6 +31103,34 @@
               ],
               "description": "What a route rule decided at the conversation start.",
               "title": "Route Outcome"
+            }
+          },
+          {
+            "description": "What the live semantic check on a marked endpoint found.",
+            "in": "query",
+            "name": "semantic_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "matched",
+                    "clear",
+                    "invalid_answer",
+                    "failed",
+                    "timeout",
+                    "skipped_guard",
+                    "skipped_cap",
+                    "skipped_empty"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the live semantic check on a marked endpoint found.",
+              "title": "Semantic Outcome"
             }
           },
           {
@@ -29711,6 +31650,356 @@
         "summary": "Propose Rules",
         "tags": [
           "rules"
+        ]
+      }
+    },
+    "/api/v1/management/savings": {
+      "get": {
+        "operationId": "savings_api_v1_management_savings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Savings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/semantic-check": {
+      "get": {
+        "description": "The marked check: its scope, today's count, and outcomes, latency and cost.",
+        "operationId": "read_semantic_check_api_v1_management_semantic_check_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "maximum": 168,
+              "minimum": 1,
+              "title": "Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Semantic Check Api V1 Management Semantic Check Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Semantic Check",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
+    "/api/v1/management/semantic-questions": {
+      "get": {
+        "operationId": "get_semantic_questions_api_v1_management_semantic_questions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Semantic Questions",
+        "tags": [
+          "rules"
+        ]
+      },
+      "put": {
+        "operationId": "replace_semantic_questions_api_v1_management_semantic_questions_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionSetPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace Semantic Questions",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/management/semantic-reviews": {
+      "get": {
+        "operationId": "list_semantic_reviews_api_v1_management_semantic_reviews_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "matched",
+                    "clear",
+                    "invalid_answer",
+                    "failed",
+                    "skipped_guard",
+                    "skipped_empty"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "request_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Request Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SemanticReviewPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Semantic Reviews",
+        "tags": [
+          "findings"
         ]
       }
     },

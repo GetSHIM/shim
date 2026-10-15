@@ -144,6 +144,8 @@ def _stream_prepared() -> SimpleNamespace:
         admission=SimpleNamespace(estimated_input_tokens=5),
         task_caps=TaskCaps(),
         concurrency_lease=None,
+        settings_applied=None,
+        transforms_applied=None,
     )
 
 

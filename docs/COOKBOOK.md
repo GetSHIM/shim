@@ -23,7 +23,10 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Load tools on demand](#load-tools-on-demand)
 - [Stop paying for old thinking](#stop-paying-for-old-thinking)
 - [Shrink JSON tool results](#shrink-json-tool-results)
+- [Read images at a cheaper detail level](#read-images-at-a-cheaper-detail-level)
+- [Shrink oversized images](#shrink-oversized-images)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
+- [See what each lever saved](#see-what-each-lever-saved)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
 - [Put shim behind Portkey](#put-shim-behind-portkey)
@@ -437,9 +440,82 @@ the stronger action (`block`, then `mask`, then `mask_last4`, then `monitor`), s
 watching one type never sends a value another type masks or blocks.
 A type set to `monitor` or `off` is not checked in provider protocol
 identifiers, and a blocked type found there is refused with `SECRET_BLOCKED` or
-`PII_BLOCKED` like one in content. A gateway where no type is `mask` or `block`
-also accepts images and files it cannot inspect. Enterprise sets the same actions per tenant;
+`PII_BLOCKED` like one in content. Enterprise sets the same actions per tenant;
 see the [enterprise cookbook](../ee/docs/COOKBOOK.md).
+
+Images, PDFs and other files (image, file, document, audio and Gemini inline or
+file data parts) cannot be scanned. With `SHIM_MEDIA_INPUTS=block`, the default,
+a request carrying one is refused with 400 `PRIVACY_POLICY_BLOCKED` ("PII
+scrubbing does not support opaque media inputs.") while any type is `mask`,
+`mask_last4` or `block`. With `SHIM_MEDIA_INPUTS=allow`, or when no type masks or
+blocks, the part reaches the provider byte for byte and unscanned: its base64 or
+data URL is never read, while its file name, title and other text are scanned as
+usual and its URL and file id are checked like any identifier. The usage event
+then carries `media_parts` (parts by kind: `image`, `pdf`, `docx`, `text`,
+`audio`, `video`, `other`), `media_unscanned` (parts forwarded unscanned) and, for
+inline images with a readable header, `media_images`: `[width, height,
+decoded_bytes]` for at most 16 of them, with `media_images_truncated: true`
+beyond. The kind comes from the part type, the declared MIME type, the file name
+and the first bytes; when they disagree it is `other`. shim never fetches a URL
+or a file id.
+
+A request whose media is forwarded is sized by its parts, not its base64: its
+text by bytes, an image with a readable header at what its provider bills for the
+model (read 2026-10-14: Claude its 28 px tiles after its own resize; OpenAI's tile
+families a base plus a price per 512 px tile, `gpt-4o-mini` 2,833 + 5,667; its patch
+families their 32 px patches times 1.2, or 1.62 for `gpt-4.1-mini`), elsewhere
+`ceil(width / 28) × ceil(height / 28)` tokens up to 4,784, another image 1,600, an inline PDF 3,000
+per page object found (up to 1,000 pages, else its decoded bytes / 4), a PDF by URL
+or file id 30,000, a Word or text file its decoded bytes / 4, all parts together
+at most the model's context window; audio, video and other parts stay measured
+by their bytes. The rate limits and the reservation use this estimate; a document
+shim reads adds its text's UTF-8 bytes to the spend reservation once read. The
+provider's reported tokens still settle the request. A `max_input_bytes` request
+limit always measures the body as sent.
+
+Image metadata (EXIF with GPS, XMP, JPEG comments) is a known gap: on an image that
+is forwarded as it came it is neither scanned nor removed; only a downscaled image
+loses it.
+
+PDF, Word and text files can be read and checked like message text instead. Install
+the extra for PDFs (`pip install 'shim-gateway[documents]'`, which adds pypdf; the
+gateway logs a warning at start when the setting is on without it), then set
+`SHIM_DOCUMENTS`:
+
+| `SHIM_DOCUMENTS` | An inline PDF, `.docx`, or text file (`text/plain`, `text/markdown`, `text/csv`, `application/json`) |
+| --- | --- |
+| `as_media` (default) | Follows `SHIM_MEDIA_INPUTS`, as above. |
+| `scan` | Its text is read and scanned with the same actions and rules as message text. Nothing to mask: it is forwarded as it came, except that a PDF goes as its scanned text while any type masks or blocks or a rule hides values (a provider reads a PDF's drawn pages, which hold images and appearances no scan saw). A value to mask: 400 `PII_BLOCKED` (`SECRET_BLOCKED` for `SECRET` and `DB_URI`) naming the types and saying to turn on conversion; no provider call. A type whose action is `block`: refused as for message text. |
+| `scan_and_convert` | The same, except that a document with a value to mask is sent as its masked text, and the answer gets the values back. |
+
+A document shim cannot read (a URL or file id, a PDF without pypdf, an encrypted or
+corrupt file, a PDF without a text layer, over 32 MB decoded, 1,000 pages, 1,000,000
+characters, 4,000,000 characters in one request, a page stream over 4 MB decoded, or
+10 seconds of reading a file and 20 seconds for all of a request's files) is refused
+with 400 `DOCUMENT_UNSCANNABLE` naming the reason while media is refused, and
+forwarded unscanned otherwise. A PDF is read with its form field values,
+annotation texts and document information, in one of two worker processes with 1 GB
+of memory each, so a hostile file never holds the gateway. Two more files may wait
+for a worker; a fifth at the same moment counts as `too_slow`, as does a file whose
+worker was stopped for another file's timeout. Word files are read from
+their body, headers, footers, notes, comments, deleted text, glossary and document
+properties (author, title, custom properties); a `.docx` with more than 1,000 parts,
+a part over 20 MB or 50 MB in all, more than 1,000,000 XML elements, or a DTD in any
+encoding is not read.
+
+`SHIM_DOCUMENT_FORMAT=by_provider` also sends a clean document as text where the
+provider bills that less: PDFs as text to Anthropic and OpenAI, natively to Gemini
+(which does not bill the embedded text, so its pages reach the model unscanned even
+while values are masked), Word files as text everywhere. A document in a Gemini
+function response stays a file: a clean one is sent as it came, one with a value to
+mask is refused with 400 `PII_BLOCKED`. A converted
+document loses its layout, images and figures; the model reads its text only. A
+document sent as text becomes, in Anthropic, a `document` with a `text` source (title,
+context, citations and cache control kept); in chat a `text` part and in Responses an
+`input_text` part, each starting `[document: <file name>]`; in Gemini a `text` part.
+The usage event carries `documents` (scanned, converted, native, unscannable by
+reason) and `document_entities`, and each conversion adds a `document_text` entry to
+`transforms_applied`.
 
 ## Read errors and retry
 
@@ -496,6 +572,8 @@ except openai.APIStatusError as error:
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
 | Body over `MAX_REQUEST_BODY_SIZE` (default 32,000,000 bytes) | 413 `REQUEST_TOO_LARGE` | none |
 | A detected type whose action is `block` | 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` | none: remove the value the message names |
+| With `SHIM_DOCUMENTS=scan`, a document holds a value to mask | 400 `PII_BLOCKED` or `SECRET_BLOCKED`; the message names the types | none: remove the values, or turn on `scan_and_convert` |
+| With document scanning on, a document cannot be read and media is refused | 400 `DOCUMENT_UNSCANNABLE`; the message names the reason | none: send the document's text instead, or ask the admin |
 | An enforced tenant rule blocks (enterprise) | 400 `RULE_BLOCKED`; `X-Shim-Rule-Id` and `error.param` name the rule | none: change the request or ask the tenant admin |
 | An enforced tenant rule needs approval (enterprise) | 403 `APPROVAL_REQUIRED`, `X-Shim-Approval-Id`; `APPROVAL_REJECTED` once refused, `APPROVAL_QUEUE_FULL` without an id | `x-should-retry: false`: after approval, send the same request with `X-Shim-Approval-Id` |
 | The approval store cannot be reached (enterprise) | 503 `APPROVAL_UNAVAILABLE` | `Retry-After: 5` |
@@ -509,7 +587,8 @@ In OpenAI-shaped bodies, `error.param` names which limit refused: `requests`,
 Notes:
 
 - Approximate tokens are the request body's compact JSON size in bytes divided
-  by four, rounded up. A refused amount is not added to the window that refused it,
+  by four, rounded up; forwarded images and files count as estimated tokens
+  instead (see [choose what happens to each data type](#choose-what-happens-to-each-data-type)). A refused amount is not added to the window that refused it,
   and a request larger than the whole limit is refused before any window is
   counted, so it does not use up a request either. A request exactly at the limit
   is admitted.
@@ -898,6 +977,90 @@ compaction at the source from shim-cli. Tool results over 65,536 characters in t
 are compacted off the event loop. `shim_transforms_total{transform, result}` counts
 the step per request.
 
+## Read images at a cheaper detail level
+
+Let OpenAI and Gemini 3 read images at a level that costs fewer image tokens, where your
+app did not choose one. It needs images to pass (`SHIM_MEDIA_INPUTS=allow`, or a
+gateway that masks nothing; see [choose what happens to each data type](#choose-what-happens-to-each-data-type)).
+
+1. Set `SHIM_IMAGE_DETAIL_OPENAI` to `low` or `high` and `SHIM_IMAGE_DETAIL_GEMINI` to
+   `low` or `medium` (both `off` by default).
+2. Optionally name the models it applies to in `SHIM_IMAGE_DETAIL_MODELS`
+   (comma-separated, at most 100, as your app sends them; empty is every model).
+
+A chat `image_url` part without `detail` (or with `"auto"`) gets `detail` set, and so does
+a Responses `input_image`; a Gemini 3 image part gets `"mediaResolution": {"level":
+"MEDIA_RESOLUTION_LOW"}` (or `_MEDIUM`). A level is set only where the provider's own
+table says it lowers the model's default image budget (read 2026-10-08):
+
+| Model family | Default | Levels that lower it |
+| --- | --- | --- |
+| `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-5.1` | 512 px tiles | `low` |
+| `gpt-4.1-mini`, `gpt-5.2` | the same patches at every level | none |
+| `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano` | as `high`; `low` allows more patches | none |
+| `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-6-astra` | as `original` | `low`, `high` |
+| Gemini 3 (`gemini-3*-`) | 1,120 tokens an image | `low` (280), `medium` (560) |
+
+A dated snapshot counts as its family (`gpt-4o-2024-08-06`); any other model is left
+alone with a `settings.image_detail` verdict `SETTING_MODEL_UNSUPPORTED`. `gpt-5.4` is
+never changed because its `low` can cost more than `high`. Anthropic has no detail
+parameter, so its images are never changed. Never changed either: a level your app
+set (`SETTING_CLIENT_OWNED`; a Gemini request-wide `generationConfig.mediaResolution`
+counts), computer-use screenshots, PDFs and other files, and a Responses request
+replaying encrypted reasoning (`SETTING_THINKING_BOUND`). The usage event's
+`settings_applied` lists `image_detail` when a part changed.
+
+Notes: a lower level reads the image at lower resolution, which can cost answer
+quality for small text in images; try one model first with
+`SHIM_IMAGE_DETAIL_MODELS`. The same image gets the same level on every turn, so the
+provider's prompt cache holds; changing the setting changes the cached prefix once.
+Leave it off when `OPENAI_BASE_URL` points at another server.
+
+## Shrink oversized images
+
+Send images no larger than the size the provider would resize them to anyway, so
+requests are smaller and an image the provider refused for its byte size may fit.
+
+1. Install the extra (`pip install 'shim-gateway[images]'`, which adds Pillow; the
+   enterprise image has it). Without it the gateway logs a warning at start and the
+   setting stays off.
+2. Set `SHIM_IMAGE_DOWNSCALE=on` (and let images through, see
+   [choose what happens to each data type](#choose-what-happens-to-each-data-type)).
+
+An inline PNG, JPEG or static WEBP in an Anthropic messages, chat or Responses request
+to a catalog model is reduced to the size the provider's page publishes for that model
+and detail level, and re-encoded in its own format: PNG losslessly, JPEG and WEBP at
+quality 90; EXIF and other metadata are dropped, an ICC profile is kept, and a result
+that is not smaller is discarded. The sizes (read 2026-10-08):
+
+| Provider and model | Size |
+| --- | --- |
+| Claude before 4.7 | at most 1,568 px long edge and 1,568 tokens of 28 px tiles |
+| Claude 4.7 and later | at most 2,576 px and 4,784 tokens |
+| `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-5.1`, `high` or no detail | fit 2,048 px, then the short side 768 px |
+| `gpt-4.1-mini`, `gpt-5.2` | 2,048 px and 6,144 patches of 32 px |
+| `gpt-5.4` family | `low` 2,048 px and 6,144 patches; `high` or none 2,048 px and 2,500; `original` 6,000 px and 10,000 |
+| `gpt-5.5` | `low` 512 px; `high` 2,048 px and 2,500 patches; `original` or none 6,000 px and 10,000 |
+| `gpt-5.6-sol`, `-terra`, `-luna`, `gpt-6-astra` | `low` 512 px; `high` 2,500 patches (2,048 px except `gpt-6-astra`); otherwise 65,535 px |
+
+The token bill does not change: providers bill image tokens from the size after their
+own resize, and this is that size. What it saves is bytes and upload time. Never
+touched: Gemini (no published size), images by URL or file id, GIFs and animated
+WEBP, images at or below the size, images with an EXIF rotation, in an Anthropic
+`tool_result`, marked `transformations.oversized_image: "error"`, computer-use
+screenshots, requests bound to thinking (`TRANSFORM_THINKING_BOUND`), token counts,
+images over 32 MB or 64 megapixels, images past a request's 128 megapixels decoded
+(counted in payload order, `too_large`), and a decode over 10 seconds (`too_slow`). The
+usage event's `transforms_applied` gets an
+`image_downscale` entry with the sizes and bytes before and after and the images
+skipped by reason; `shim_image_downscale_total{outcome}` counts each image.
+
+Notes: the same image gives the same bytes on every turn, so the provider's prompt
+cache holds; a Pillow upgrade changes the output bytes once. Decoding runs in one of
+two worker processes shared with PDF reading, at most two at once per gateway process;
+a 12-megapixel JPEG takes about 150 ms. Leave it off when
+`ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` points at another server.
+
 ## Stream long generations and read usage
 
 Stream long answers without losing exact token accounting.
@@ -940,6 +1103,40 @@ when the request failed. The mapping from provider finish reasons is in
 [diagnostic metadata](../ee/docs/DIAGNOSTIC_METADATA.md). A stream that fails
 after its headers were sent ends with a sanitized terminal event, described in
 [current architecture](CURRENT_ARCHITECTURE.md#native-responses-streams-and-errors).
+
+## See what each lever saved
+
+Learn what the settings you turned on saved on your own traffic, measured apart from
+estimated.
+
+A completed request whose lever had a figure carries `savings` on its usage event:
+
+```json
+{"version":4,"event":"request","request_id":"req_…","savings":{"version":1,"measured":{"provider_cache":{"usd":"-0.0010000000","read_tokens":0,"write_tokens":4000}}}}
+```
+
+| Lever | Measured (saved) | Estimated or not attributed (never add) |
+| --- | --- | --- |
+| In-flight sharing (`SHIM_INFLIGHT_SHARING`) | `usd`: the provider call the shared answer avoided; `tokens` | the same fields under `estimated` when the first request's usage was estimated, not reported |
+| Anthropic breakpoint (`SHIM_ANTHROPIC_AUTO_CACHE`) | `usd`: cache reads at the input rate minus the read rate, less writes above the input rate, at the request's own rates; can be negative | none |
+| OpenAI cache key (`SHIM_OPENAI_PROMPT_CACHE_KEY`) | nothing | `not_attributed`: OpenAI caches without the key |
+| JSON compaction | `chars` removed | `tokens` at four characters a token, and their `usd` |
+| Image downscaling | `bytes` not sent; the token bill is the same | none |
+| Clearing old thinking | `tokens` Anthropic reported clearing | `usd`, gross of the cache rewrite clearing causes |
+
+Image detail, tool search, reasoning context and parameter pins have no figure: the
+providers report no tokens for them, and `settings_applied` already counts them. Sum
+the saved money per lever over a log file:
+
+```console
+jq -s '[.[] | select(.event == "request" and .savings.measured) | .savings.measured
+  | to_entries[] | select(.value.usd != null) | {lever: .key, usd: (.value.usd | tonumber)}]
+  | group_by(.lever) | map({lever: .[0].lever, usd: (map(.usd) | add)})' usage.jsonl
+```
+
+Never add `estimated` or `not_attributed` to that sum. A price the gateway does not know
+gives `"usd": null, "unpriced": true`. Failed and refused requests saved nothing and
+carry no record.
 
 ## Observe the gateway
 
@@ -998,6 +1195,9 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_requests_in_flight` (gauge, provider calls in progress) | `provider` |
 | `shim_response_analysis_total` | `analyzer`, `result` |
 | `shim_injection_markers_total` | `marker` |
+| `shim_media_parts_total` | `kind`, `outcome` (`forwarded`, `blocked`) |
+| `shim_image_downscale_total` | `outcome` (`downscaled`, `below_threshold`, `not_smaller`, `unsupported`, `client_opt_out`, `unknown_model`, `too_large`, `corrupt`, `thinking_bound`) |
+| `shim_documents_total` | `kind`, `outcome` (`scanned`, `converted`, `stopped`, `unscannable`) |
 | `shim_transforms_total` | `transform`, `result` (`applied`, `unchanged`, `skipped`) |
 | `shim_extra_attempts_total` (enterprise tenant rules only) | `reason`, `outcome` (`started`, `skipped`, `not_admitted`) |
 | `shim_shadow_copies_total` (enterprise only) | `outcome` (`sent`, `no_candidate`, `skipped_guard`, `dropped_saturated`, `failed`) |

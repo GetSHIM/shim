@@ -43,10 +43,13 @@ from shim_enterprise.rules.resource import (
     rule_set_row,
     store_rule_set,
 )
+from shim_enterprise.tenants.deployments import internal_origin_approved
 from shim_enterprise.tenants.gateway_settings import (
     SETTING_AVAILABILITY,
     GatewaySettings,
     GatewaySettingsPatch,
+    SemanticCheckSettings,
+    SemanticReviewSettings,
     classify_change,
     restore_relaxed,
     patched,
@@ -54,6 +57,7 @@ from shim_enterprise.tenants.gateway_settings import (
     stored_settings,
     toward,
 )
+from shim_enterprise.semantic.models import OrganizationSemanticQuestions
 from shim_enterprise.tenants.models import (
     ApiKey,
     ModelDeployment,
@@ -665,6 +669,100 @@ class _PrivacyResource:
             )
 
 
+async def _check_semantic_review(
+    session: AsyncSession,
+    tenant_id: UUID,
+    review: SemanticReviewSettings,
+    *,
+    internal: bool = True,
+) -> None:
+    """The review alias is a registered, enabled deployment and its key an active key
+    of this organization that may call it. Archived requests are read only by an
+    internal model on an approved internal origin: the rules that applied to each
+    item are not kept, so no other target can be checked against them."""
+    deployment = await session.scalar(
+        select(ModelDeployment).where(
+            ModelDeployment.organization_id == tenant_id,
+            ModelDeployment.alias == review.model,
+            ModelDeployment.enabled.is_(True),
+        )
+    )
+    if deployment is None:
+        raise HTTPException(
+            422,
+            detail="semantic_review.model is not an enabled deployment of this "
+            "organization",
+        )
+    alias = deployment.alias
+    if internal and not (
+        deployment.deployment_kind == "internal"
+        and internal_origin_approved(deployment.base_url)
+    ):
+        raise HTTPException(
+            422,
+            detail="semantic_review.model must be an internal deployment on an "
+            "approved internal origin",
+        )
+    key = await session.scalar(
+        select(ApiKey).where(
+            ApiKey.organization_id == tenant_id,
+            ApiKey.id == review.api_key_id,
+            ApiKey.is_active.is_(True),
+        )
+    )
+    if key is None:
+        raise HTTPException(
+            422,
+            detail="semantic_review.api_key_id is not an active key of this "
+            "organization",
+        )
+    if key.allowed_models is not None and alias not in key.allowed_models:
+        raise HTTPException(
+            422, detail="semantic_review.api_key_id may not call semantic_review.model"
+        )
+
+
+async def _check_semantic_check(
+    session: AsyncSession, tenant_id: UUID, check: SemanticCheckSettings
+) -> None:
+    """The check model and key as for the review; scoped keys and questions exist."""
+    await _check_semantic_review(
+        session,
+        tenant_id,
+        SemanticReviewSettings(
+            enabled=True, model=check.model, api_key_id=check.api_key_id
+        ),
+        # The live check runs the core guard per request instead.
+        internal=False,
+    )
+    if check.scope.api_key_ids:
+        known = set(
+            await session.scalars(
+                select(ApiKey.id).where(
+                    ApiKey.organization_id == tenant_id,
+                    ApiKey.id.in_(check.scope.api_key_ids),
+                )
+            )
+        )
+        if set(check.scope.api_key_ids) - known:
+            raise HTTPException(
+                422,
+                detail="semantic_check.scope names api_key_ids this organization lacks",
+            )
+    if check.question_ids:
+        questions = await session.scalar(
+            select(OrganizationSemanticQuestions.questions).where(
+                OrganizationSemanticQuestions.organization_id == tenant_id
+            )
+        )
+        current = {question["id"] for question in questions or ()}
+        if set(check.question_ids) - current:
+            raise HTTPException(
+                422,
+                detail="semantic_check.question_ids names a question that is not set",
+            )
+
+
 class _GatewaySettingsResource:
     name = "gateway_settings"
     permission: Permission = "settings.write"
@@ -786,6 +884,12 @@ class _GatewaySettingsResource:
                     422,
                     detail="Bedrock deployments cannot use automatic cache placement yet",
                 )
+        review = after.semantic_review
+        if review.enabled and "semantic_review" in changes:
+            await _check_semantic_review(session, tenant_id, review)
+        check = after.semantic_check
+        if check.enabled and "semantic_check" in changes:
+            await _check_semantic_check(session, tenant_id, check)
         if "inference_metrics" in changes:
             internal = set(
                 await session.scalars(
@@ -867,8 +971,9 @@ class _GatewaySettingsResource:
             },
         )
         _, relaxed = classify_change(previous, current)
-        # Restore permission protects personal data, so it is a privacy relaxation.
-        relaxed = [field for field in relaxed if field != "restore_withheld"]
+        # Restore permission and media scanning protect personal data: privacy relaxations.
+        privacy_fields = {"restore_withheld", "media_inputs"}
+        relaxed = [field for field in relaxed if field not in privacy_fields]
         if relaxed:
             await _audit(
                 session,
@@ -879,6 +984,10 @@ class _GatewaySettingsResource:
             )
         privacy_relaxed = restore_relaxed(
             previous.restore_withheld, current.restore_withheld
+        ) + (
+            ["media_inputs"]
+            if (previous.media_inputs, current.media_inputs) == ("block", "allow")
+            else []
         )
         if privacy_relaxed:
             await _record_privacy_relaxed(

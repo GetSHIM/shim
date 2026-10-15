@@ -35,6 +35,7 @@ from shim_enterprise.rules.preview import (
     preview_rule,
     stored_rules,
 )
+from shim_enterprise.rules.route_triggers import check_route_triggers
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -293,6 +294,7 @@ async def store_rule_set(
                 f"rules[{index}].state",
                 "A new rule starts in state monitor.",
             )
+    await check_route_triggers(session, organization_id, after, stored)
     current = {rule.id: rule for rule in after.rules}
     await _audit(
         session,

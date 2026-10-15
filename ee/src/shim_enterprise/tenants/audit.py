@@ -19,9 +19,14 @@ async def record_management_action(
     subject_id: str,
     *,
     details: dict[str, object] | None = None,
+    event_id: str | None = None,
 ) -> str:
-    """Append non-secret change facts to the caller's transaction; never commit."""
-    event_id = f"management:{uuid4()}"
+    """Append non-secret change facts to the caller's transaction; never commit.
+
+    `event_id` lets a caller name the entry before it exists, as a document that
+    points at its own audit row must.
+    """
+    event_id = event_id or f"management:{uuid4()}"
     await OutboxWriter().append(
         session,
         organization_id=TenantId(user.organization_id),

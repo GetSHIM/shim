@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 import logging
 
 import httpx
@@ -17,6 +18,10 @@ from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shim_enterprise.gateway.attempts import TenantAttemptPolicy
+from shim_enterprise.gateway.change_test import ChangeTestSender
+from shim_enterprise.semantic.live import SemanticPreCheck
+from shim_enterprise.semantic.review import run_review_loop
+from shim_enterprise.gateway.fallback import CanaryFallback, UnavailableFallback
 from shim_enterprise.api.v1.router import gateway_router, management_router
 from shim.api.v1.gemini import router as gemini_router
 from shim.billing.lifecycle import load_lifecycle
@@ -164,9 +169,21 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         ScanExecutionPipeline(scrubber=pii_scrubber),
     )
     await _connect_cache(cache)
+    # Only where tenants may keep archived requests: never in the hosted cloud.
+    review = (
+        asyncio.create_task(
+            run_review_loop(application.state.gateway_service.kernel, AsyncSessionLocal)
+        )
+        if settings.REQUEST_ARCHIVE_ENABLED
+        else None
+    )
     try:
         yield
     finally:
+        if review is not None:
+            review.cancel()
+            with suppress(asyncio.CancelledError):
+                await review
         await application.state.gateway_service.kernel.postprocessor.drain()
         await http_client.aclose()
         google_sync_client.close()
@@ -202,7 +219,12 @@ def _create_gateway_kernel(
     aws_roles = AwsRoles(http_client, AsyncSessionLocal)
     chain_store = RedisPrivacyContinuationStore(cache)
     usage = DurableUsageLifecycle(DurableAccountingCoordinator(), AsyncSessionLocal)
-    return GatewayKernel(
+    circuit_for = {
+        provider: tenant_target_circuit(provider, cache)
+        for provider in ("openai", "anthropic", "google")
+    }
+    semantic_check = SemanticPreCheck(AsyncSessionLocal, cache)
+    kernel = GatewayKernel(
         {
             "openai": OpenAIExecution(
                 credential_resolver=ManagedProviderCredentialResolver(
@@ -214,7 +236,7 @@ def _create_gateway_kernel(
                     ),
                     aws_roles=aws_roles,
                 ),
-                circuit_for=tenant_target_circuit("openai", cache),
+                circuit_for=circuit_for["openai"],
                 settings=settings,
                 chain_store=chain_store,
                 http_client=http_client,
@@ -224,7 +246,7 @@ def _create_gateway_kernel(
                 credential_resolver=ManagedProviderCredentialResolver(
                     "anthropic", secret_store, AsyncSessionLocal, aws_roles=aws_roles
                 ),
-                circuit_for=tenant_target_circuit("anthropic", cache),
+                circuit_for=circuit_for["anthropic"],
                 settings=settings,
                 http_client=http_client,
                 pii_scrubber=pii_scrubber,
@@ -233,7 +255,7 @@ def _create_gateway_kernel(
                 credential_resolver=ManagedProviderCredentialResolver(
                     "google", secret_store, AsyncSessionLocal
                 ),
-                circuit_for=tenant_target_circuit("google", cache),
+                circuit_for=circuit_for["google"],
                 settings=settings,
                 sync_http_client=google_sync_client,
                 http_client=http_client,
@@ -245,7 +267,16 @@ def _create_gateway_kernel(
         prepare_inference=DeploymentResolver(
             AsyncSessionLocal, policy_resolver.policy_service
         ).resolve,
-        attempt_policy=TenantAttemptPolicy(AsyncSessionLocal, strategies=()),
+        attempt_policy=TenantAttemptPolicy(
+            AsyncSessionLocal,
+            # First: it runs whatever a later strategy chooses, and chooses nothing.
+            strategies=(
+                semantic_check,
+                UnavailableFallback(AsyncSessionLocal, circuit_for),
+                CanaryFallback(),
+            ),
+        ),
+        shadow_sender=ChangeTestSender(AsyncSessionLocal, cache),
         shadow_max_in_flight=settings.SHADOW_MAX_IN_FLIGHT,
         rate_limiter=BurstRateLimiter(cache),
         loop_detector=LoopDetectionService(cache),
@@ -264,6 +295,8 @@ def _create_gateway_kernel(
         task_counter=RedisTaskCounter(cache),
         model_lifecycle=load_lifecycle(settings.SHIM_MODEL_LIFECYCLE_FILE),
     )
+    semantic_check.kernel = kernel
+    return kernel
 
 
 async def _connect_cache(

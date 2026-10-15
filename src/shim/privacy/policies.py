@@ -26,6 +26,105 @@ OPAQUE_MEDIA_FIELDS = frozenset(
     {"fileData", "file_data", "inlineData", "inline_data", "input_image_mask"}
 )
 
+# How the privacy stage walks a payload: fields read whole as tool data, fields
+# that carry content, and protocol fields inspected only as identifiers.
+DEEP_PRIVACY_FIELDS = frozenset(
+    {
+        "arguments",
+        "args",
+        "action",
+        "client_metadata",
+        "custom",
+        "environment",
+        "input_examples",
+        "input_schema",
+        "metadata",
+        "operation",
+        "output",
+        "parameters",
+        "parametersJsonSchema",
+        "parameters_json_schema",
+        "response",
+        "result",
+        "responseJsonSchema",
+        "responseSchema",
+        "response_json_schema",
+        "response_schema",
+        "schema",
+        "userLocation",
+        "user_location",
+    }
+)
+PRIVACY_BEARING_FIELDS = frozenset(
+    {
+        "content",
+        "contents",
+        "description",
+        "instructions",
+        "prompt",
+        "prompt_cache_key",
+        "parts",
+        "safety_identifier",
+        "stop",
+        "stopSequences",
+        "stop_sequences",
+        "system",
+        "text",
+        "user",
+        "user_profile_id",
+    }
+)
+_PROTOCOL_FIELDS = frozenset(
+    {
+        "authorization",
+        "cachedContent",
+        "cached_content",
+        "call_id",
+        "container",
+        "conversation",
+        "encrypted_content",
+        "encrypted_stdout",
+        "fingerprint",
+        "headers",
+        "id",
+        "inference_geo",
+        "language",
+        "media_type",
+        "mimeType",
+        "mime_type",
+        "model",
+        "name",
+        "namespace",
+        "previous_response_id",
+        "role",
+        "service_tier",
+        "server_label",
+        "server_name",
+        "signature",
+        "status",
+        "thoughtSignature",
+        "thought_signature",
+        "tool_call_id",
+        "tool_name",
+        "tool_names",
+        "tool_use_id",
+        "type",
+        "url",
+        "uri",
+    }
+)
+OPAQUE_PROTOCOL_FIELDS_BY_TYPE = {
+    "encrypted_code_execution_result": frozenset({"encrypted_stdout"}),
+    "fallback": frozenset({"from", "to", "trigger"}),
+    "redacted_thinking": frozenset({"data"}),
+}
+
+
+def is_protocol_field(key: object) -> bool:
+    return isinstance(key, str) and (
+        key in _PROTOCOL_FIELDS or key.endswith(("_id", "_ids"))
+    )
+
 
 PII_CONFIG_DEFAULTS: Mapping[str, bool] = MappingProxyType(
     {
@@ -152,6 +251,11 @@ class PrivacyOutcome:
     )
     # Types this caller gets back as placeholders (enterprise restore permission).
     restore_withheld: frozenset[str] = frozenset()
+    # media_parts, media_unscanned, media_images and the document records when the
+    # request carried media.
+    media: Mapping[str, Any] | None = None
+    # The document_text transforms the privacy stage applied, for every attempt's record.
+    conversions: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         for name in (

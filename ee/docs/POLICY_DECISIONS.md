@@ -29,7 +29,7 @@ also remains outside tenant decision evidence.
 | `quota.requests_and_tokens` | Atomic request/token reservation passed or was rejected, using the policy loaded under the accounting lock. The combined limit is not attributed to a particular counter when the atomic check cannot distinguish it. |
 | `admission.context` | The request certainly exceeds the model's catalog context window or input limit (`deny`, `MODEL_CONTEXT_EXCEEDED`), before any rate or token capacity is used. The count is the number of whitespace-separated words of the prompt text, a lower bound for the public tokenizers (OpenAI's, and the Llama, Qwen, Mistral and Gemma families), which split on whitespace before merging. Claude's and Gemini's tokenizers are not published; the same bound is assumed for them, not proven. Earlier turns' thinking and reasoning blocks are not counted. The output limit counts against the window for OpenAI models and registry deployments only: Gemini's is separate, and Claude 4.5 and later accept input plus `max_tokens` above the window and stop at it. A request the provider truncates or compacts itself (Responses `truncation: "auto"`, `context_management`, `compaction`, a compaction block) is not checked; `count_tokens` is never checked. Only a model's own catalog entry is used, never a prefix match. Recorded only on a refusal. |
 | `admission.capability` | The catalog says the model lacks tools, structured output or an input modality the request uses (`deny`, `MODEL_CAPABILITY_UNSUPPORTED`). An absent catalog flag is unknown and never refuses; only a model's own catalog entry is used, never a prefix match; OpenAI file parts are not checked (they need not be PDFs, and the catalog's OpenAI `pdf` flag is unreliable); registry deployments are not checked. Recorded only on a refusal. |
-| `privacy.input` | Scrubbing masked data (`mask`, `PII_MASKED`), only monitored values (`allow`, `PII_MONITORED`), found no enabled entity (`allow`, `PII_NOT_DETECTED`), was disabled (`skip`, `PII_DISABLED`), found a type whose action is `block`, in content or in a protocol identifier (`deny`, `SECRET_BLOCKED` when a blocked type is `SECRET` or `DB_URI`, otherwise `PII_BLOCKED`), blocked unsupported content (`deny`, `PRIVACY_POLICY_BLOCKED`), or failed closed. Its policy carries the switches and the effective action of every type, so changing an action changes `policy_version`. |
+| `privacy.input` | Scrubbing masked data (`mask`, `PII_MASKED`), only monitored values (`allow`, `PII_MONITORED`), found no enabled entity (`allow`, `PII_NOT_DETECTED`), was disabled (`skip`, `PII_DISABLED`), found a type whose action is `block`, in content or in a protocol identifier (`deny`, `SECRET_BLOCKED` when a blocked type is `SECRET` or `DB_URI`, otherwise `PII_BLOCKED`), blocked unsupported content (`deny`, `PRIVACY_POLICY_BLOCKED`), stopped a document that holds a value to mask while document conversion is off (`deny`, `DOCUMENT_MASKING_REQUIRED`), refused a document it could not read while media is refused (`deny`, `DOCUMENT_UNSCANNABLE`; the message names the reason: `not_inline`, `needs_pypdf`, `encrypted`, `corrupt`, `too_large`, `too_slow` or `no_text_layer`), or failed closed. Its policy carries the switches and the effective action of every type, so changing an action changes `policy_version`. |
 | `privacy.restore` | Only when the caller's key and team are outside a [restore grant](COOKBOOK.md#show-masked-values-only-to-some-teams): at least one placeholder of a withheld type stays in the answer (`mask`, `RESTORE_WITHHELD`) or none was in the request (`allow`, `RESTORE_NOT_NEEDED`). Its policy carries the sorted withheld types. Absent for every caller a grant does not concern. |
 | `privacy.bulk` | The request carried at least the tenant's `bulk_threshold` of distinct detected values (`allow`, `BULK_DISCLOSURE`); recorded beside `privacy.input`, also when that one denies. Its policy carries the threshold. Absent below the threshold or with the alarm off. |
 | `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap; a tenant that turned customer provider keys off rejects it with `PROVIDER_KEY_NOT_ALLOWED`. |
@@ -212,9 +212,14 @@ and everything after run against the chosen target. A `PUT` refuses with 422
 `RULE_MATCH_INVALID` a `to` that is not a registered alias, or one of another provider
 than a registered `from` alias. A `route` rule with a `match.on` value belongs to
 another feature and is skipped here with no verdict; `on` is one of `unavailable`,
-`capacity`, `format_invalid`, `split`, `degrade`, `size` or `shadow`, and any other
-value is refused with 422. Enforcing a route rule, or changing an enforced one, is a relaxing change for
-[four eyes](#four-eyes); moving it back to monitor or deleting it tightens.
+`capacity`, `format_invalid`, `split`, `degrade`, `size` or `shadow`, any other
+value is refused with 422, and so is a value whose feature this release does not
+have yet (`RULE_MATCH_INVALID` at `match.on`): nothing would evaluate it. Enforcing a route rule, or changing an enforced one, is a relaxing change for
+[four eyes](#four-eyes); moving it back to monitor or deleting it tightens. Changing
+only the `share_percent` of a `split` rule is neutral: its checks already keep both
+aliases on one provider and an internal alias inside. For a `shadow` rule (a change
+test), a match change that only lowers `share_percent`, `max_requests` or
+`max_cost_usd`, or moves `ends_at` earlier, tightens; any other match change relaxes.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:
@@ -255,6 +260,27 @@ at most 32, blocks first) and `rule_matches_truncated`; see
 [diagnostic metadata](DIAGNOSTIC_METADATA.md). Terms and patterns stay in the
 database row and in process memory, never in Redis, a log, a metric or an audit
 event.
+
+### Fallback rules
+
+A `route` rule with `match.on: "unavailable"` ([fallback rule](MODEL_DEPLOYMENTS.md#fallback-rule))
+leaves one `rule.<id>` verdict, stage `rules`, on the row where it decided:
+
+| Decision | Outcome | `reason_code` |
+| --- | --- | --- |
+| took the request to a `to` | `allow` | `FALLBACK_UNHEALTHY`, `FALLBACK_CIRCUIT_OPEN`, `FALLBACK_PROVIDER_ERROR` or `FALLBACK_RATE_LIMITED`, by trigger |
+| no `to` was usable | `skip` | `FALLBACK_NO_CANDIDATE` |
+| state `monitor` | `allow` | `RULE_WOULD_ROUTE` |
+
+When an enforced rule takes over an unhealthy alias, the resolver records
+`deployment.registry` as `skip` with `DEPLOYMENT_UNHEALTHY` instead of `deny`, and
+the request goes on to admission. A monitor rule's verdict for an unhealthy alias is
+on the refusal's audit event (the resolver's refusals have no row); for an open
+circuit or a provider error it is on the failing row. A decision before the call
+also enters `rule_matches` with count 1. Which `to` was refused and why is the
+`gateway.attempt` `skip` verdict (`ATTEMPT_TARGET_NOT_ALLOWED`,
+`ATTEMPT_TARGET_UNAVAILABLE`, `ATTEMPT_WOULD_LEAVE_INTERNAL`, ...); which one served is
+`route_decision` and the `attempt_*` keys.
 
 ### Request approval
 
@@ -341,6 +367,105 @@ the installation does not allow it, the reason under `unavailable`.
 - Turning the archive on or keeping content longer is a loosening change for
   [four eyes](#four-eyes); turning it off or shortening is tightening.
 
+## Semantic review of archived requests
+
+Where the operator runs shim with `REQUEST_ARCHIVE_ENABLED` (self-hosted only; never
+in the hosted cloud), a tenant can have its [archived requests](#request-archive) read
+against its own questions by its own model. The questions are one versioned set
+(`GET` and `PUT /api/v1/management/semantic-questions`, `rules.read` and `rules.write`,
+at most 20, each with an id, a meaning of 10 to 500 characters and up to five
+examples), a managed policy resource: removing or rewriting a question relaxes, adding
+one tightens, so four eyes and one-step restore apply. The questions are confidential
+like rule terms: never in Redis, a log, a metric or an audit event, which carries ids
+only. The switch is the `semantic_review` gateway setting: the review model (an
+enabled `internal` alias of the tenant on an origin in `MODEL_DEPLOYMENT_INTERNAL_ORIGINS`,
+because the rules that applied to each item are not kept, so no other target can be
+checked against them), the gateway key the calls are made with and billed to, and caps
+per hour (1 to 1,000 items) and per day (0.01 to 1,000 USD, read before every call, so
+one call may pass it). Turning it on or changing the model is relaxing.
+
+The gateway process reviews every `SEMANTIC_REVIEW_INTERVAL_SECONDS` (default 60, 5 to
+3,600), at most `SEMANTIC_REVIEW_BATCH` items a pass (default 20, 1 to 200), newest
+first, each archived item once per question revision, never an item the review key
+made. Each claim batch writes an audit intent `tenant.request_content_scanned` with the
+request ids, so the [openings read](#request-archive) shows that a member's request was
+read by `system:semantic_review`. The review decrypts the masked payload only, never
+the values it replaced, and never sees the answer. A review model that is no longer
+internal at run time (an edited deployment, or one labelled internal outside
+`MODEL_DEPLOYMENT_INTERNAL_ORIGINS`) claims nothing until it is again. A tenant's pass
+ends within five minutes, half the age at which another process may claim its items
+again, and each call within two; a temporary refusal (a 401 such as an inactive key,
+a 408, a 429 or a usage limit, a 5xx, a timeout) leaves the item `pending`, ends the
+pass and returns the unreviewed claims, so the item is tried again on a later pass,
+after the pass's fresh items. An item still failing a day after its first claim ends
+`failed` with its last error code. A call cut off by either bound still counts toward
+the day's cost cap: its settled spend, or, before settlement, the spend the gateway
+reserved for it. A refusal of the content itself, such as `RULE_BLOCKED`, is final. A claim left at an older question revision is claimed again
+at the current one.
+Each call is an ordinary request of the review key, tagged `shim:semantic_review`:
+its limits, privacy, rules, budgets and ledger apply, it has its own cost, and it is
+never archived itself. The tag means this only on a request of the configured review
+key; a client that sends it with any other key is archived and checked as usual. The
+request text sits between fence lines with a random marker per call, so the text cannot
+close the fence and add criteria. An OpenAI call carries no output limit (reasoning
+models refuse `max_tokens`, and not every compatible server takes
+`max_completion_tokens`): its strict answer schema bounds the answer where the server
+honours it, and the caps bound the rest. A tenant rule that blocks a word used in a question makes the
+call fail with `RULE_BLOCKED`; scope such a rule to `deployment_kinds: ["external"]`
+with an internal review model, or reword the question.
+
+The model answers only with JSON naming each question and whether the request matches
+it; an answer that is not that exact shape is `invalid_answer`. No explanation is asked
+for or kept. `GET /api/v1/management/semantic-reviews` (`findings.read`, at most 31
+days) lists reviews by status (`matched`, `clear`, `invalid_answer`, `failed`,
+`skipped_guard`, `skipped_empty`, `pending`) with the matched question ids, the review
+request and its cost. Matches only warn: they feed the finding
+[`gateway.semantic_review_match`](FINDINGS.md#gatewaysemantic_review_match) and never
+block, mask, change a rule or decide anything about a request.
+
+## Live semantic check on a marked endpoint
+
+A tenant can have requests on one narrow scope read against its
+[semantic questions](#semantic-review-of-archived-requests) while they happen, before
+the provider call. The switch is the `semantic_check` gateway setting: a scope of gateway
+key ids, tags and models (at most 20 each; at least one list must be non-empty, and every
+non-empty list must hold the request's value, so it never runs on all traffic), the
+endpoints it covers (`chat`, `responses`, `messages`, `generate_content`), optional
+`question_ids`, the check model (an enabled alias of the tenant), the gateway key the calls
+are made with and billed to (never itself in the scope), `warn_header` (default false),
+`timeout_ms` (500 to 10,000, default 3,000) and `max_checks_per_day` (1 to 100,000, default
+1,000, counted per tenant in Redis; without Redis no check runs). Turning it on, changing
+the model, widening a scope list or adding an endpoint is relaxing; turning it off is
+tightening.
+
+The check runs after privacy, so the model reads the masked text, never the values it
+replaced, and never sees the answer. Privacy ran for the request's own target, so the
+check model gets the same core guard as any later change of target (`skipped_guard`):
+an internal request is never sent to a check model that is not internal when anything
+was detected in it, and no request is sent where one of the caller's enforced mask,
+block or approval rules would act and did not at its own target (a rule scoped to the
+caller's key, team or tag and to the check model or its kind). A model labelled
+internal outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` counts as external, as it does for
+the request itself. The request waits at most `timeout_ms` for everything the check
+does, the reads and the counter included (`timeout`, the call is cancelled), then goes
+on unchanged: the check
+never blocks, masks, reroutes or edits a request, and a failure inside it never reaches
+the caller. A match adds `SEMANTIC_WARN` to `X-Shim-Warnings` only when `warn_header` is
+true; otherwise it is only recorded, so a tenant can watch the questions behave before
+callers see anything. Each check is an ordinary request of the check key, tagged
+`shim:semantic_check`: its limits, privacy, rules, budgets and ledger apply, it has its own
+cost, it is never checked or archived itself (the tag counts only with the configured
+check key), and it holds the marked request's admission lease while it runs, so a
+separate check deployment is recommended. Of a request that carried personal data, the
+record keeps the outcome only, never the matched question ids.
+
+The outcome is in the request's [`semantic_check`](DIAGNOSTIC_METADATA.md) record.
+`GET /api/v1/management/semantic-check` (`usage.read`, 1 to 168 hours, default 24) reads
+the switch, the scope sizes, today's count against the cap, outcome counts, latency p50 and
+p95, and the checks' cost. Matches feed the finding
+[`gateway.semantic_check_match`](FINDINGS.md#gatewaysemantic_check_match).
+`shim_semantic_checks_total{outcome}` counts the checks.
+
 ## Imported gateway logs
 
 A tenant can [import a LiteLLM spend log](COOKBOOK.md#import-litellm-spend-logs)
@@ -368,7 +493,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | Event | `extra` details |
 | --- | --- |
 | `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches and of `entity_actions` when they changed |
-| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, `placeholder_mode` when it moved from `random` to `stable`, `bulk_threshold` when it was raised or cleared, `response_scan` when it moved from `count` to `off`, `embeddings_monitor_types.<TYPE>` for a type added to the embeddings-only list, and `rules.<id>` for an enforced tenant rule that was removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
+| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, `placeholder_mode` when it moved from `random` to `stable`, `bulk_threshold` when it was raised or cleared, `response_scan` when it moved from `count` to `off`, `embeddings_monitor_types.<TYPE>` for a type added to the embeddings-only list, `media_inputs` when the gateway setting moved from `block` to `allow`, and `rules.<id>` for an enforced tenant rule that was removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
 | `tenant.rules_updated` | `revision`, and `added`, `changed` and `removed` rules as `id`, `kind`, `action`, `state`, the non-empty `scope` keys, `match_changed` and entry counts (`{"terms": 12}`), and `policy_version`; never a term, pattern, name or match hash |
 | `tenant.rule_previewed` | `rule_id`, `kind`, `basis`, `requests`, `window_days`, `enforce_on_create` |
 | `tenant.rules_imported` | `plan_id` (null when nothing would change), `mapped` and `not_mapped` counts, `source_revision` |
@@ -434,7 +559,7 @@ change them, and a restore can put them back.
 | Resource | Item | Fields | Write paths | Relaxing when |
 | --- | --- | --- | --- | --- |
 | `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan`, `embeddings_monitor_types` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
-| `gateway_settings` | `_` | every gateway settings field | `PATCH /gateway-settings` | a field's direction says so (`four_eyes` turned off, a finding rule moved to `auto`); a field without a direction always; `restore_withheld` records `tenant.privacy_protection_relaxed` |
+| `gateway_settings` | `_` | every gateway settings field | `PATCH /gateway-settings` | a field's direction says so (`four_eyes` turned off, a finding rule moved to `auto`); a field without a direction always; `restore_withheld` and `media_inputs` record `tenant.privacy_protection_relaxed` |
 | `rules` | rule id | the rule without its id | `PUT /rules` | an enforced rule is removed, moved to `monitor`, given a weaker action, a narrower scope, another kind, or a match other than added terms or patterns; the opposite move (a wider scope, a stronger action, enforcing) tightens |
 | `teams` | team id | `name` and the three limits | `POST /teams`, `PUT /teams/{id}` | a limit is raised or removed |
 | `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team or moves to another |
@@ -964,6 +1089,40 @@ An operator can write one file with `ee/scripts/generate_monthly_evidence.py
 the current month as `monthly_partial` (so a test never takes the closed
 month's place), a future month is refused, and so is a period that already has
 a file of that kind.
+
+## Model evidence documents
+
+`POST /api/v1/management/model-evidence` (`compliance.manage`) builds one document over a
+window of at most 31 days that has ended: `model_selection` ("why this model": the
+current model and one to three candidates, with their prices, the listed change tests
+and canaries, the live traffic of their provider models and the measured tokens per
+character by language) or `routing` ("where did requests go and what did it save": per
+route rule its definition, decisions by state, reason and outcome, the routed rows'
+settled tokens priced at both sides, the potential savings of `would_route` rows,
+outcome and analyzer rates of routed rows beside the rest of `from`, and the matching
+change tests). Every value is an id, label, count, sum, ratio or percentile read from
+`request_lifecycle`, `usage_ledger` and `request_logs`; `title` and `note` are the
+admin's own words. Savings reuse the tokens the serving model billed, priced at each
+side's deployment price, else the exact catalog price of its `price_model` (or
+upstream model), else `unpriced`, with the helper the Savings page uses, so the two
+agree; an output-token adjustment by tokens per character applies when both models
+have at least 30 eligible answers in the language, matched by price-book entry as the
+language-cost read groups them. Live traffic counts requests by that same pricing model.
+
+The PDF is stored with its facts object, the file's SHA-256 and the facts' SHA-256
+(`json.dumps(facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`). In
+the same transaction an audit intent `tenant.model_evidence_generated` records both
+digests; the PDF names that entry's id. To verify a document without shim code:
+download it (`GET .../model-evidence/{id}`, audited `tenant.model_evidence_downloaded`),
+compute its SHA-256, export the audit bundle for a window holding `generated_at`, find
+the row whose `request_id` is the document's `audit_event_id`, compare `extra.sha256`,
+and verify the chain with `shim-audit-verify`. `GET .../model-evidence` (`audit.read`)
+lists documents with `anchored` once the chained row exists, and
+`GET .../model-evidence/{id}/facts` returns the facts with `X-Content-SHA256`. Rows are
+never updated or deleted. Every document ends with what it does not prove: no answer
+was reviewed, routed and unrouted requests differ, copies ran later under other load,
+counterfactual tokens are estimates, prices are those in force, the numbers describe
+this window only, and candidates saw masked input.
 
 ## Incidents
 

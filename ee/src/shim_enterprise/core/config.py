@@ -69,6 +69,9 @@ class Settings(CommunitySettings):
     # Self-hosted only: lets tenants keep rule-matched requests, encrypted with
     # ENCRYPTION_KEY, for at most 90 days. The hosted cloud refuses to start with it.
     REQUEST_ARCHIVE_ENABLED: bool = False
+    # The semantic review of archived requests runs only with the archive on.
+    SEMANTIC_REVIEW_INTERVAL_SECONDS: int = Field(default=60, ge=5, le=3_600)
+    SEMANTIC_REVIEW_BATCH: int = Field(default=20, ge=1, le=200)
     SECRET_BACKEND: Literal[
         "fernet",
         "gcp_secret_manager",
