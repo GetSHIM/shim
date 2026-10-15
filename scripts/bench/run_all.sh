@@ -106,7 +106,7 @@ for step in "${steps[@]}"; do
       py scripts.bench.overhead --targets mock litellm litellm-presidio --out "$OUT/overhead.jsonl"
       memory
       down
-      idle; PRESIDIO_WORKERS=4 litellm_up
+      idle; PRESIDIO_WORKERS=2 litellm_up  # 2, not more: one analyzer worker is ~800 MiB
       py scripts.bench.overhead --targets mock litellm litellm-presidio-scaled --out "$OUT/overhead.jsonl"
       memory
       down

@@ -168,8 +168,8 @@ What this says:
 - **Precision: shim masks far less that is not personal data.** 147 false positives
   against 2,394 for LiteLLM's guardrail, which masked every order, invoice, tracking,
   ticket and case number, every date and every timestamp in the corpus.
-- **shim's weak spot is names.** With its defaults, shim masks no person names: the
-  Turkish detector is opt-in and there is no English one. With Turkish names on, it
+- **shim's weak spot is names.** shim has no English person-name detector, and its
+  Turkish one is opt-in, off by default, so with its defaults shim masks no names. With Turkish names on, it
   finds 88.5% of Turkish names at 100% precision on names; English names still pass.
   Presidio's spaCy model finds 95.3% of English and 54.1% of Turkish names, while
   tagging Turkish words as names elsewhere (its precision is 36.8% overall). By the
@@ -302,7 +302,7 @@ sweeps, all kept.
 | `shim-v030` | the released v0.3.0 image |
 | `litellm` | LiteLLM without a guardrail |
 | `litellm-presidio` | LiteLLM with the Presidio guardrail (per request), Presidio as its images ship: one worker per service. **The default.** |
-| `litellm-presidio-scaled` | the same with four workers per Presidio service (`PRESIDIO_WORKERS=4`) |
+| `litellm-presidio-scaled` | the same with **two workers per Presidio service** (`PRESIDIO_WORKERS=2`) |
 
 The detection share is (with detection − without) ÷ (with detection − `mock`), for
 shim against `shim-main-noprivacy` and for LiteLLM against `litellm`.
@@ -310,8 +310,10 @@ shim against `shim-main-noprivacy` and for LiteLLM against `litellm`.
 Every process runs one worker, as each image ships: shim's `shim serve`, LiteLLM's
 `--num_workers 1`, and one gunicorn worker per Presidio service. LiteLLM with its
 guardrail therefore uses three processes to shim's one. The scaled arm gives Presidio
-four workers per service (nine processes in all) so the concurrency-8 numbers are not
-only a measure of Presidio's default; both arms are reported, labelled.
+two workers per service (five processes in all), so the concurrency-8 numbers are not
+only a measure of Presidio's default; both arms are reported, labelled. Two is the most
+the 3.8 GiB Docker VM holds: each analyzer worker loads its own spaCy model, about
+800 MiB.
 
 Results: **pending an idle run.**
 
@@ -461,8 +463,8 @@ print them. The latency steps refuse to start while the load average is above 2.
 - **Not Presidio's best.** Plain Presidio runs with defaults, and LiteLLM's Presidio
   with what the two projects ship. Custom recognizers, a transformer NER model or
   tuned thresholds would score higher, for any system that adds them.
-- **Not English names.** shim does not detect English person names; that column is
-  reported as measured.
+- **Not English names.** shim has no English person-name detector, and its Turkish
+  one is opt-in (`PERSON_NAME_TR`, off by default). Both gaps are reported as measured.
 - **Not production latency.** Latency is one machine, one worker per process and a
   mock provider that answers at once. Network, TLS and the provider's own time are
   not in it. Throughput at higher concurrency or with more workers, streaming, cold

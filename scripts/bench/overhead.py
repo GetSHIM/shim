@@ -44,7 +44,7 @@ TARGETS = {
         LITELLM,
         {"guardrails": ["presidio-pii"]},
     ),
-    # The same request with PRESIDIO_WORKERS=4: four workers per Presidio service.
+    # The same request with PRESIDIO_WORKERS=2: two workers per Presidio service.
     "litellm-presidio-scaled": (
         "http://127.0.0.1:4000",
         LITELLM,
