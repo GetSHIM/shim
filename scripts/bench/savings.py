@@ -42,12 +42,22 @@ HERE = Path(__file__).parent
 CATALOG = json.loads(
     (Path(shim.__file__).parent / "billing/model_catalog.json").read_text()
 )["version"]
-MODELS = {
-    "openai": "gpt-5.6-luna",
-    "openai_images": "gpt-5.4-nano",  # gpt-5.6 models are downscaled only at a set detail.
-    "anthropic": "claude-haiku-5-5",
-    "google": "gemini-3.8-flash",
+# Per role, the models to try in order; the first one the keys reach is used, and the
+# ids used are printed and recorded. The fallbacks support the same levers.
+CANDIDATES = {
+    "openai": ("gpt-5.6-luna", "gpt-5.6-terra"),
+    # gpt-5.6 models are downscaled only at a set detail; the gpt-5.4 family always is.
+    "openai_images": ("gpt-5.4-nano", "gpt-5.4-mini"),
+    "anthropic": ("claude-haiku-5-5", "claude-haiku-4-5"),
+    "google": ("gemini-3.8-flash", "gemini-flash-latest"),
 }
+TOKEN_MODELS = (
+    "gpt-5.6-luna",
+    "claude-haiku-5-5",
+    "claude-sonnet-5-5",
+    "gemini-3.8-flash",
+)
+MODELS = {role: models[0] for role, models in CANDIDATES.items()}
 # Wikimedia Commons originals: (file, URL, SHA-1 from Commons, licence and credit).
 IMAGES = (
     (
@@ -645,6 +655,12 @@ def report(path: Path) -> None:
     print(
         f"Prices: shim model catalog `{CATALOG}`. Medians per request; every request is in {path.name}.\n"
     )
+    for row in rows:
+        if row["lever"] == "meta":
+            print(
+                f"Models used: {row['models']}; token tax: {row['token_models']}; unreachable: {row['unreachable']}\n"
+            )
+    rows = [row for row in rows if row["lever"] != "meta"]
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for row in rows:
         if row["lever"] != "token_tax":
@@ -730,11 +746,57 @@ def read_keys(path: Path) -> dict[str, str]:
     }
 
 
+def provider_of(model: str) -> str:
+    return (
+        "anthropic"
+        if model.startswith("claude")
+        else "google"
+        if model.startswith("gemini")
+        else "openai"
+    )
+
+
+async def reachable(keys: dict[str, str], model: str) -> bool:
+    """The provider lists the model for this key (a free metadata call)."""
+    provider = provider_of(model)
+    if provider not in keys:
+        return False
+    url, headers = {
+        "anthropic": (
+            f"https://api.anthropic.com/v1/models/{model}",
+            {"x-api-key": keys.get("anthropic", ""), "anthropic-version": "2023-06-01"},
+        ),
+        "google": (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}",
+            {"x-goog-api-key": keys.get("google", "")},
+        ),
+        "openai": (
+            f"https://api.openai.com/v1/models/{model}",
+            {"Authorization": f"Bearer {keys.get('openai', '')}"},
+        ),
+    }[provider]
+    async with httpx.AsyncClient(timeout=30) as http:
+        return (await http.get(url, headers=headers)).status_code == 200
+
+
 async def main_async(args: argparse.Namespace) -> None:
     keys = read_keys(args.env)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.touch()
     print(f"{datetime.now(UTC).isoformat(timespec='seconds')} catalog {CATALOG}")
+    for role, candidates in CANDIDATES.items():
+        found = [model for model in candidates if await reachable(keys, model)]
+        if not found:
+            raise SystemExit(
+                f"no {role} model is reachable: tried {', '.join(candidates)}"
+            )
+        MODELS[role] = found[0]
+    token_models = [m for m in args.token_models if await reachable(keys, m)]
+    skipped = sorted(set(args.token_models) - set(token_models))
+    with args.out.open("a", encoding="utf-8") as out:
+        meta = {"models": MODELS, "token_models": token_models, "unreachable": skipped}
+        out.write(json.dumps({"lever": "meta", "catalog": CATALOG, **meta}) + "\n")
+    print(f"models used: {MODELS}; token tax: {token_models}; unreachable: {skipped}")
     run = Runner(keys, args.out, Decimal(str(args.budget_usd)))
     if "json_compaction" in args.levers:
         await json_compaction(run)
@@ -745,7 +807,7 @@ async def main_async(args: argparse.Namespace) -> None:
     if "images" in args.levers:
         await images(run, args.image_cache)
     if "token_tax" in args.levers:
-        await token_tax(keys, args.out, args.token_models)
+        await token_tax(keys, args.out, token_models)
     print(f"spent ${run.spent:.4f} at list prices")
 
 
@@ -766,12 +828,7 @@ def main() -> None:
     parser.add_argument(
         "--token-models",
         nargs="+",
-        default=[
-            MODELS["openai"],
-            MODELS["anthropic"],
-            "claude-sonnet-5-5",
-            MODELS["google"],
-        ],
+        default=list(TOKEN_MODELS),
     )
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()

@@ -106,6 +106,10 @@ for step in "${steps[@]}"; do
       py scripts.bench.overhead --targets mock litellm litellm-presidio --out "$OUT/overhead.jsonl"
       memory
       down
+      idle; PRESIDIO_WORKERS=4 litellm_up
+      py scripts.bench.overhead --targets mock litellm litellm-presidio-scaled --out "$OUT/overhead.jsonl"
+      memory
+      down
       ;;
     savings)
       [[ -n $ENV_FILE ]] || { echo "--savings needs --env <file with the provider keys>" >&2; exit 2; }

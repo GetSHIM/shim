@@ -92,7 +92,8 @@ hashes, UUIDs, ticket and case numbers. They make precision mean something.
 detector. Most Turkish ones are common names and appear in the dictionary shim ships
 (derived from Faker's `tr_TR` data): 44 of 50 male and 32 of 35 female first names, 46
 of 51 surnames. shim has no English name detector, and its Turkish one is off by
-default; both shim configurations are reported.
+default. The headline row is shim with its defaults; a second row has Turkish person
+names on (`PERSON_NAME_TR=mask`). English names are published as measured.
 
 **How each system is scored.** The same 480 texts go to each:
 
@@ -112,11 +113,17 @@ Detections of other types elsewhere (Presidio's `DATE_TIME` or `LOCATION` in pro
 are counted but not scored. **Leaked** means the whole identifier can still be read in
 what reached the provider.
 
-Results: `TBD`
+Results: `TBD`, on corpus sha256 `55b25333a34c5638e58441970c0a05a9aadbf8fc3760db1e96c7aea1a3584dc1`.
 
-| Type | n | shim main | shim main, names on | shim v0.3.0 | Presidio | LiteLLM + Presidio |
+| Type | n | shim (defaults) | shim, Turkish names on | shim v0.3.0 | Presidio | LiteLLM + Presidio |
 | --- | ---: | --- | --- | --- | --- | --- |
 | (precision / recall / F1 per type, hard-negative mask rates, leaked identifiers per type) | | | | | | |
+
+**Found by this benchmark.** Writing the corpus showed that shim's Turkish tax-number
+(VKN) check rejected about 60% of valid numbers: it left out the step of the checksum
+that turns a zero term into 9 whenever a digit equals its position. It rejected
+python-stdnum's own example, `4540536920`. Fixed before v0.4.0 in `fix/vkn-checksum`;
+the v0.3.0 column still has the old check.
 
 ### A2. Evasion resistance
 
@@ -143,7 +150,8 @@ model reads through all of these disguises, so a leak is a real leak.
 shim v0.3.0 is measured too: it leaked identifiers written in other scripts' digits
 and identifiers broken up by combining marks, both fixed in v0.3.1.
 
-Results: `TBD` (leak rate per disguise and type, per system).
+Results: `TBD` (leak rate per disguise and type, per system), on evasion corpus sha256
+`498f01fb8f6de91c5b1bdcd4f086e9686ab068fdd37e21392f018109d0586147`.
 
 ### A3. What leaves the machine
 
@@ -196,14 +204,17 @@ sweeps, all kept.
 | `shim-main-noprivacy` | the same image with every entity type off |
 | `shim-v030` | the released v0.3.0 image |
 | `litellm` | LiteLLM without a guardrail |
-| `litellm-presidio` | LiteLLM with the Presidio guardrail (per request) |
+| `litellm-presidio` | LiteLLM with the Presidio guardrail (per request), Presidio as its images ship: one worker per service. **The default.** |
+| `litellm-presidio-scaled` | the same with four workers per Presidio service (`PRESIDIO_WORKERS=4`) |
 
 The detection share is (with detection − without) ÷ (with detection − `mock`), for
 shim against `shim-main-noprivacy` and for LiteLLM against `litellm`.
 
 Every process runs one worker, as each image ships: shim's `shim serve`, LiteLLM's
 `--num_workers 1`, and one gunicorn worker per Presidio service. LiteLLM with its
-guardrail therefore uses three processes to shim's one.
+guardrail therefore uses three processes to shim's one. The scaled arm gives Presidio
+four workers per service (nine processes in all) so the concurrency-8 numbers are not
+only a measure of Presidio's default; both arms are reported, labelled.
 
 Results: `TBD`
 
@@ -239,8 +250,14 @@ request times a million. Spend is capped at $2 by the script.
 | JSON compaction | `SHIM_JSON_COMPACTION=on` | a 150-order pretty-printed tool result, chat and messages | `gpt-5.6-luna`, `claude-haiku-5-5` |
 | Tool search | `SHIM_TOOL_SEARCH=regex`, `bm25` | a 50-tool agent, three tasks that each need one tool; whether the right tool was called is recorded | `claude-haiku-5-5` (messages), `gpt-5.6-luna` (Responses) |
 | Prompt cache | `SHIM_ANTHROPIC_AUTO_CACHE=5m`, `SHIM_OPENAI_PROMPT_CACHE_KEY=key` | eight requests sharing a 7,000-token system prefix | `claude-haiku-5-5`, `gpt-5.6-luna` |
-| Image downscaling | `SHIM_IMAGE_DOWNSCALE=on` | two photos (12 and 23 MP), a scanned page, two screenshots | `claude-haiku-5-5`, `gpt-5.4-nano` |
-| Image detail | `SHIM_IMAGE_DETAIL_OPENAI=low` | the same images | `gpt-5.6-luna` |
+| Image downscaling: **saves bytes** | `SHIM_IMAGE_DOWNSCALE=on` | two photos (12 and 23 MP), a scanned page, two screenshots | `claude-haiku-5-5`, `gpt-5.4-nano` |
+| Image detail: **saves tokens** | `SHIM_IMAGE_DETAIL_OPENAI=low` | the same images | `gpt-5.6-luna` |
+
+The models are the first choice per role. At run time the script asks each provider
+whether our keys reach the model (a free metadata call) and falls back to the next one
+listed in `CANDIDATES` in the script (`gpt-5.6-terra`, `gpt-5.4-mini`,
+`claude-haiku-4-5`, `gemini-flash-latest`); the exact ids used are printed, recorded in
+the results and listed with the tables.
 
 Image downscaling sends the size the provider would resize to anyway. The providers
 bill image tokens after their own resize, so **we expect no token saving from it**; it
@@ -254,7 +271,7 @@ this benchmark), counted by each provider's free token-count endpoint: tokens pe
 character, and how many more tokens Turkish needs for the same content. This is a fact
 about the providers' tokenizers that Turkish teams budget for; shim does not change it.
 
-Results: `TBD`
+Results: `TBD`. Models used: `TBD`.
 
 | Lever | Model | Arm | input tokens | cache read share | USD / request | saved | USD saved per 1M requests |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -281,7 +298,15 @@ scripts/bench/run_all.sh --report                           # every table above
 ```
 
 `--all` runs everything in order. Results, raw samples and the report go to
-`scripts/bench/results/<date>/`. Comparing shim v0.3.0 needs a checkout of `ca6b2e9`
+`scripts/bench/results/<date>/`. Raw samples are not committed; the corpus is not
+either, because the generator and its seed reproduce it byte for byte (compare the
+SHA-256 it prints with the one cited above each table).
+
+**Presidio is built from source.** The compose file builds the Presidio analyzer and
+anonymizer from Microsoft's own Dockerfiles at git tag `2.2.364`, the version shim
+pins. Microsoft's registry stops at 2.2.362, which has no Turkish ID (TCKN) recognizer,
+so with the published images LiteLLM's guardrail could not detect a TCKN at all. The
+first build takes a while and needs network access. Comparing shim v0.3.0 needs a checkout of `ca6b2e9`
 (`git worktree add ../bench-base ca6b2e9`, then `SHIM_V030=../bench-base`). The `.env`
 file holds `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `GOOGLE_API_KEY`; the scripts never
 print them. The latency steps refuse to start while the load average is above 2.

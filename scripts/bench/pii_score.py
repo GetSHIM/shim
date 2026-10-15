@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import platform
@@ -464,6 +465,9 @@ def report(args: argparse.Namespace) -> None:
         print(
             f"- {meta['label']}: {meta['date']}, {meta['machine']}, Python {meta['python']}"
         )
+    for name, path in corpora.items():
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        print(f"- {name}: sha256 `{digest}`")
     if results["corpus.jsonl"]:
         print("\n### Detection\n")
         print(detection_tables(loaded["corpus.jsonl"], results["corpus.jsonl"]))

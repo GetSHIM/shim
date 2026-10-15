@@ -38,14 +38,25 @@ TARGETS = {
     "shim-main-noprivacy": ("http://127.0.0.1:8002", SHIM, {}),
     "shim-v030": ("http://127.0.0.1:8003", SHIM, {}),
     "litellm": ("http://127.0.0.1:4000", LITELLM, {}),
+    # Presidio as its images ship: one gunicorn worker per service. The default.
     "litellm-presidio": (
+        "http://127.0.0.1:4000",
+        LITELLM,
+        {"guardrails": ["presidio-pii"]},
+    ),
+    # The same request with PRESIDIO_WORKERS=4: four workers per Presidio service.
+    "litellm-presidio-scaled": (
         "http://127.0.0.1:4000",
         LITELLM,
         {"guardrails": ["presidio-pii"]},
     ),
 }
 # Pairs whose difference is detection: (with, without).
-DETECTION = {"shim-main": "shim-main-noprivacy", "litellm-presidio": "litellm"}
+DETECTION = {
+    "shim-main": "shim-main-noprivacy",
+    "litellm-presidio": "litellm",
+    "litellm-presidio-scaled": "litellm",
+}
 
 
 async def block(
