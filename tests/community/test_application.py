@@ -306,6 +306,56 @@ async def test_disguised_identifiers_never_reach_the_provider(shown: str) -> Non
     assert response.json()["choices"][0]["message"]["content"] == prompt
 
 
+@pytest.mark.asyncio
+async def test_invoice_order_and_tracking_numbers_and_dates_reach_the_provider() -> (
+    None
+):
+    kept = (
+        "Fatura no: 6726182317. Fatura no 1628469723. fatura numaranız 2704530520. "
+        "Invoice No: 6726182317. Sipariş no 17409706488. Sipariş numaranız "
+        "12139597577. order no: 6726182317. Kargo takip numarası 911872290065. "
+        "kargo takip no 918226586102. Kaydınızı 05.03.2026 tarihli faturayla "
+        "eşleştirdim."
+    )
+    phones = "Tel no: 2704530521. telefon no 2125551234. cep no 4155552671."
+    sent: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][0]["content"]
+        sent.append(content)
+        return httpx.Response(200, json=_completion(content))
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    application = create_community_app(
+        _settings(), http_client=upstream, event_stream=StringIO()
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": f"{kept} {phones}"}],
+                },
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 200, response.text
+    [upstream_text] = sent
+    # A "no" after an invoice, order or tracking word is not a phone cue; after a
+    # phone word it still is.
+    assert re.sub(r"<PHONE_NUMBER_[0-9a-f]{32}>", "#", upstream_text) == (
+        f"{kept} Tel no: #. telefon no #. cep no #."
+    ), upstream_text
+
+
 class _SplitStream(httpx.AsyncByteStream):
     def __init__(self, content: bytes) -> None:
         self.content = content

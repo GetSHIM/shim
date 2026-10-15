@@ -338,6 +338,9 @@ IBAN. A TCKN, card, IBAN or phone number with a space between every character
 more, and an email broken over a line after its `@` is read whole. Text after a
 right-to-left override (U+202E) is also read in the order it is shown, so a value
 stored reversed is found; the mask covers the separators and the reversed text.
+A number after `fatura no`, `sipariş no`, `order no`, `invoice no` or `takip no`
+(and `numarası`, `numaranız`) is not taken for a phone; after `tel no`,
+`telefon no` or `cep no` it is. A date such as `05.03.2026` is not a phone.
 
 Each entity also carries its `action` (see the next recipe); a type whose action
 is `off` is not reported. Enterprise names the list `entities_found` and gives

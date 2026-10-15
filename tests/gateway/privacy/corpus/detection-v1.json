@@ -969,8 +969,38 @@
       ]
     },
     {
-      "id": "number-after-no-cue-is-masked",
+      "id": "order-number-with-no-cue",
       "text": "Sipariş no: 4829104455",
+      "expect": []
+    },
+    {
+      "id": "invoice-number-with-possessive-cue",
+      "text": "fatura numaranız 4829104455",
+      "expect": []
+    },
+    {
+      "id": "tracking-number-with-no-cue",
+      "text": "kargo takip no 918226586102",
+      "expect": []
+    },
+    {
+      "id": "not-phone-dotted-date",
+      "text": "Kaydınızı 05.03.2026 tarihli faturayla eşleştirdim.",
+      "expect": []
+    },
+    {
+      "id": "phone-after-tel-no-cue",
+      "text": "Tel no: 4829104455",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4829104455"
+        }
+      ]
+    },
+    {
+      "id": "phone-after-order-phone-cue",
+      "text": "Sipariş telefon no: 4829104455",
       "expect": [
         {
           "entity": "PHONE_NUMBER",
