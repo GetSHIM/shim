@@ -188,6 +188,47 @@ async def test_responses_nonstream_uses_sdk_key_and_restores_native_output(
 
 
 @pytest.mark.asyncio
+async def test_a_responses_answer_carries_only_the_fields_the_provider_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client replays the output items as input; OpenAI refuses a `status: null`
+    on a reasoning item it never sent ("Unknown parameter: 'input[1].status'")."""
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    sent = _response("resp_replay")
+    sent["output"] = [
+        {"id": "rs_1", "type": "reasoning", "summary": [], "content": []},
+        {
+            "id": "fc_1",
+            "type": "function_call",
+            "status": "completed",
+            "arguments": "{}",
+            "call_id": "call_1",
+            "name": "rows",
+        },
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=sent)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _execution(http, SimpleNamespace(save=AsyncMock())).execute(
+            invocation=SimpleNamespace(
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-a"),
+            ),
+            prepared=_prepared(
+                {"model": "gpt-5.6-luna", "input": "hi", "store": False},
+                tenant="11111111-1111-1111-1111-111111111111",
+            ),
+            provider_start_callback=AsyncMock(),
+        )
+
+    assert isinstance(result, ProviderNonStream)
+    assert result.payload["output"] == sent["output"]
+    assert set(result.payload) == set(sent)
+
+
+@pytest.mark.asyncio
 async def test_sdk_forwards_future_body_fields_and_only_feature_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

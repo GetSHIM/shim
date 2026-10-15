@@ -434,7 +434,9 @@ class OpenAIExecution:
 
 
 def _dump_sdk(value: Any, *, warnings: bool = True) -> dict[str, Any]:
-    dumped = value.model_dump(mode="json", warnings=warnings)
+    # Only what the provider sent: a field the SDK defaults to null (a reasoning item's
+    # `status`) is refused by OpenAI when the client replays the output as input.
+    dumped = value.model_dump(mode="json", warnings=warnings, exclude_unset=True)
     if not isinstance(dumped, dict):
         raise TypeError("OpenAI SDK value did not serialize to an object")
     return dumped
