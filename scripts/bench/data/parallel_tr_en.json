@@ -1,0 +1,35 @@
+{
+  "about": "Parallel Turkish and English texts written for the shim token-tax benchmark. Each pair says the same thing in each language. No personal data.",
+  "pairs": [
+    {
+      "id": "support-reply",
+      "tr": "Merhaba, yaşadığınız sorun için özür dileriz. Siparişinizin kargoya verilmesi depodaki yoğunluk nedeniyle iki gün gecikti. Paketiniz bugün öğleden sonra yola çıktı ve yarın akşama kadar teslim edilmesi bekleniyor. Teslimat sırasında evde olamayacaksanız, kargo şubesinden teslim alma seçeneğini uygulama üzerinden seçebilirsiniz. Gecikme nedeniyle hesabınıza bir sonraki alışverişinizde kullanabileceğiniz bir indirim kuponu tanımladık.",
+      "en": "Hello, we apologise for the problem you experienced. Shipping your order was delayed by two days because of the backlog at the warehouse. Your parcel left this afternoon and is expected to be delivered by tomorrow evening. If you will not be at home during delivery, you can choose to pick it up from the courier branch in the app. Because of the delay, we have added a discount coupon to your account that you can use on your next purchase."
+    },
+    {
+      "id": "bank-notice",
+      "tr": "Değerli müşterimiz, hesap güvenliğinizi artırmak amacıyla internet şubesine girişlerde ek doğrulama adımı uygulanmaya başlanacaktır. Bu değişiklikten sonra, tanımlı olmayan bir cihazdan giriş yaptığınızda cep telefonunuza tek kullanımlık bir onay kodu gönderilecektir. Bankamız hiçbir koşulda telefon veya e-posta yoluyla şifrenizi ya da onay kodunuzu talep etmez. Şüpheli bir işlem fark ederseniz lütfen müşteri hizmetlerimizle hemen iletişime geçiniz.",
+      "en": "Dear customer, to improve the security of your account, an additional verification step will be applied to online banking logins. After this change, when you log in from a device that is not registered, a one-time confirmation code will be sent to your mobile phone. Our bank will never ask for your password or confirmation code by phone or email. If you notice a suspicious transaction, please contact our customer service immediately."
+    },
+    {
+      "id": "product-description",
+      "tr": "Bu bulaşık makinesi on dört kişilik kapasitesi ve sessiz çalışan motoruyla kalabalık aileler için tasarlandı. Akıllı sensörler, bulaşığın kirlilik derecesini algılayarak su ve enerji tüketimini otomatik olarak ayarlar. Yarım yük programı, makineyi tamamen doldurmadan çalıştırmak istediğiniz günlerde zaman ve elektrik tasarrufu sağlar. Ayarlanabilir üst sepet sayesinde büyük tencereler ve uzun bardaklar kolayca yerleştirilebilir.",
+      "en": "This dishwasher is designed for large families, with a capacity of fourteen place settings and a quietly running motor. Smart sensors detect how dirty the dishes are and adjust water and energy consumption automatically. The half-load programme saves time and electricity on days when you want to run the machine without filling it completely. Thanks to the adjustable upper basket, large pots and tall glasses can be loaded easily."
+    },
+    {
+      "id": "contract-clause",
+      "tr": "Taraflardan herhangi biri, sözleşmenin esaslı hükümlerinden birini ihlal eder ve bu ihlali yazılı bildirimin tebliğinden itibaren otuz gün içinde gidermezse, diğer taraf sözleşmeyi tazminat ödemeksizin derhal feshetme hakkına sahiptir. Fesih, feshin yürürlüğe girdiği tarihe kadar doğmuş olan ödeme yükümlülüklerini ortadan kaldırmaz. Gizlilik ve sorumluluğun sınırlandırılmasına ilişkin hükümler, sözleşmenin sona ermesinden sonra da yürürlükte kalır.",
+      "en": "If either party breaches a material provision of the agreement and does not remedy the breach within thirty days of receiving written notice, the other party has the right to terminate the agreement immediately without paying compensation. Termination does not remove payment obligations that arose before the date the termination takes effect. The provisions on confidentiality and limitation of liability remain in force after the agreement ends."
+    },
+    {
+      "id": "technical-doc",
+      "tr": "Ağ geçidi, gelen her isteği sağlayıcıya iletmeden önce kimlik doğrulama, hız sınırı ve gizlilik kontrollerinden geçirir. Gizlilik aşaması metindeki kişisel verileri bulur ve bunları isteğe özel yer tutucularla değiştirir. Sağlayıcıdan gelen yanıt, istemciye gönderilmeden önce aynı yer tutucular kullanılarak eski haline getirilir. Bu sayede uygulama kodunda herhangi bir değişiklik yapmadan hassas veriler sağlayıcıya ulaşmaz.",
+      "en": "The gateway passes every incoming request through authentication, rate limiting and privacy checks before forwarding it to the provider. The privacy stage finds personal data in the text and replaces it with request-specific placeholders. The response from the provider is restored using the same placeholders before it is sent to the client. This way, sensitive data does not reach the provider without any change to the application code."
+    },
+    {
+      "id": "news",
+      "tr": "Şehirdeki toplu taşıma ağına eklenen yeni raylı sistem hattı bu sabah ilk yolcularını taşıdı. Yaklaşık on sekiz kilometre uzunluğundaki hat, üniversite kampüsünü sanayi bölgesine ve şehir merkezine bağlıyor. Yetkililer, hattın günde yüz bin yolcuya hizmet vermesini ve ana caddelerdeki trafik yoğunluğunu belirgin şekilde azaltmasını bekliyor. Seferler hafta içi her beş dakikada bir, hafta sonları ise on dakikada bir yapılacak.",
+      "en": "The new rail line added to the city's public transport network carried its first passengers this morning. The line, about eighteen kilometres long, connects the university campus to the industrial zone and the city centre. Officials expect the line to serve one hundred thousand passengers a day and to noticeably reduce traffic congestion on the main streets. Trains will run every five minutes on weekdays and every ten minutes at weekends."
+    }
+  ]
+}

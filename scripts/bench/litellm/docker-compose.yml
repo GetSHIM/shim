@@ -1,0 +1,102 @@
+# Every system the shim benchmarks compare, pinned. Ports are bound to 127.0.0.1.
+# Start only what one step needs; scripts/bench/run_all.sh does that.
+name: shim-bench
+
+x-python: &python
+  # The base image shim's own Dockerfile pins.
+  image: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+  command: ["python", "-u", "/srv/mock_upstream.py"]
+  volumes:
+    - ./mock_upstream.py:/srv/mock_upstream.py:ro
+    - ${CAPTURES:-./captures}:/captures
+
+x-shim-env: &shim-env
+  SHIM_API_KEY: shim-bench-gateway-key-0123456789
+  OPENAI_API_KEY: sk-bench-upstream
+  OPENAI_BASE_URL: http://mock:8080/v1
+  GLOBAL_RATE_LIMIT_PER_MINUTE: "10000000"
+  DEFAULT_RPM_LIMIT: "10000000"
+  DEFAULT_TPM_LIMIT: "10000000000"
+
+services:
+  # The provider every gateway calls: answers at once. MOCK_RECORD=/captures/upstream.jsonl
+  # records each request body (off for latency runs).
+  mock:
+    <<: *python
+    environment:
+      RECORD: ${MOCK_RECORD:-}
+    ports: ["127.0.0.1:8080:8080"]
+
+  # Presidio 2.2.364, the version shim pins, built from Microsoft's own Dockerfile at the
+  # release tag (Microsoft's registry stops at 2.2.362, which has no Turkish recognizer).
+  presidio-analyzer:
+    build: https://github.com/microsoft/presidio.git#2.2.364:presidio-analyzer
+    image: shim-bench/presidio-analyzer:2.2.364
+    entrypoint: ["python", "/srv/presidio_registry.py"]
+    volumes:
+      - ./presidio_registry.py:/srv/presidio_registry.py:ro
+
+  presidio-anonymizer:
+    build: https://github.com/microsoft/presidio.git#2.2.364:presidio-anonymizer
+    image: shim-bench/presidio-anonymizer:2.2.364
+
+  # Recording relays between LiteLLM and Presidio, for the detection and egress runs only.
+  relay-analyzer:
+    <<: *python
+    environment:
+      RELAY_TO: http://presidio-analyzer:3000
+      RECORD: /captures/presidio-analyzer.jsonl
+      PORT: "3000"
+    depends_on: [presidio-analyzer]
+
+  relay-anonymizer:
+    <<: *python
+    environment:
+      RELAY_TO: http://presidio-anonymizer:3000
+      RECORD: /captures/presidio-anonymizer.jsonl
+      PORT: "3000"
+    depends_on: [presidio-anonymizer]
+
+  # The newest stable LiteLLM at least 14 days old on 2026-10-15 (published 2026-10-01).
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.103.2@sha256:f63fb81b831b170ec16851e23c36ac5bf52ef106b271406429524a2ed730bbfd
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+    environment:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      LITELLM_LOG: ERROR
+      PRESIDIO_ANALYZER_API_BASE: ${PRESIDIO_ANALYZER_API_BASE:-http://presidio-analyzer:3000}
+      PRESIDIO_ANONYMIZER_API_BASE: ${PRESIDIO_ANONYMIZER_API_BASE:-http://presidio-anonymizer:3000}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    ports: ["127.0.0.1:4000:4000"]
+    depends_on: [mock]
+
+  # shim at the commit under test, built from the repository's Dockerfile.
+  shim-main:
+    build: ../../..
+    image: shim-bench/shim:main
+    environment: *shim-env
+    ports: ["127.0.0.1:8001:8000"]
+    depends_on: [mock]
+
+  # The same image with every entity type off: shim without detection, the counterpart
+  # of LiteLLM without its guardrail.
+  shim-main-noprivacy:
+    build: ../../..
+    image: shim-bench/shim:main
+    environment:
+      <<: *shim-env
+      PII_ENTITY_ACTIONS: >-
+        {"CREDIT_CARD":"off","DB_URI":"off","EMAIL_ADDRESS":"off","FILE_PATH":"off",
+        "IBAN_CODE":"off","IP_ADDRESS":"off","MAC_ADDRESS":"off","PERSON_NAME_TR":"off",
+        "PHONE_NUMBER":"off","SECRET":"off","TR_LICENSE_PLATE":"off","TR_NATIONAL_ID":"off",
+        "TR_VKN":"off","US_SSN":"off"}
+    ports: ["127.0.0.1:8002:8000"]
+    depends_on: [mock]
+
+  # shim v0.3.0 as released.
+  shim-v030:
+    image: ghcr.io/getshim/shim:0.3.0@sha256:9d8153451522781ad5e9c2238dcddb318d5e8573b4d786f06ecc4463e0b57b59
+    environment: *shim-env
+    ports: ["127.0.0.1:8003:8000"]
+    depends_on: [mock]

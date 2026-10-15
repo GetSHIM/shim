@@ -1,0 +1,33 @@
+# LiteLLM v1.103.2 for the shim benchmarks.
+#
+# One model, pointed at the instant mock upstream, and the Presidio guardrail as
+# LiteLLM's guardrail docs set it up (docs.litellm.ai/docs/proxy/guardrails/pii_masking_v2):
+# mode pre_call, language en, no entity filter, so every entity the analyzer finds is
+# masked. The analyzer carries Presidio's own Turkish recognizers (presidio_registry.py).
+# No ad-hoc regex recognizers: neither Presidio nor LiteLLM ships a VKN recognizer, and a
+# regex written for this benchmark would be ours, not theirs.
+#
+# The guardrail is off by default and turned on per request with
+# `"guardrails": ["presidio-pii"]`, so one proxy serves both latency arms.
+# No database, Redis or callbacks: the leanest proxy, which favours LiteLLM's latency.
+
+model_list:
+  - model_name: gpt-5.6-luna
+    litellm_params:
+      model: openai/gpt-5.6-luna
+      api_base: http://mock:8080/v1
+      api_key: sk-bench-upstream
+
+guardrails:
+  - guardrail_name: presidio-pii
+    litellm_params:
+      guardrail: presidio
+      mode: pre_call
+      presidio_language: en
+      default_on: false
+
+router_settings:
+  num_retries: 0 # one upstream attempt per request, as shim makes
+
+general_settings:
+  master_key: sk-bench-litellm-master-key

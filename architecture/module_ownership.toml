@@ -163,6 +163,12 @@ forbidden_noncloud_import_roots = [
 [modules]
 # Python files owned by the community target and free of enterprise imports.
 public = [
+  "scripts/bench/litellm/mock_upstream.py",
+  "scripts/bench/litellm/presidio_registry.py",
+  "scripts/bench/overhead.py",
+  "scripts/bench/pii_corpus.py",
+  "scripts/bench/pii_score.py",
+  "scripts/bench/savings.py",
   "scripts/bench_middleware.py",
   "scripts/export_finding_schema.py",
   "scripts/sync_models_dev.py",
@@ -342,6 +348,7 @@ public = [
   "tests/rules/test_rule_model.py",
   "tests/secrets/test_azure.py",
   "tests/secrets/test_credentials.py",
+  "tests/test_bench_corpus.py",
   "tests/test_jsonschema_subset.py",
 ]
 
