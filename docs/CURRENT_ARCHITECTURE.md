@@ -151,10 +151,11 @@ rate, circuit, continuation, and local-event state. Missing referenced privacy
 state fails closed. Unknown catalog prices remain nullable rather than guessed.
 
 Detection opens no connection and writes nothing to disk, so it runs with egress
-closed. Email domains are checked against the Public Suffix List bundled with the
-pinned `tldextract` (snapshot of 2025-04-07), never downloaded; a suffix added after
-the snapshot is not yet a domain. `tests/community/test_application.py` audits a cold
-process's sockets for a chat request and a scan.
+closed. An email's domain needs a dot and a final label of two or more letters
+(`.hotel`, `.corp`, `.local` included), or a suffix in the Public Suffix List bundled
+with the pinned `tldextract` (snapshot of 2025-04-07, for punycode TLDs), which is
+never downloaded. `tests/community/test_application.py` audits a cold process's
+sockets for a chat request and a scan.
 
 `SHIM_API_KEY` is optional on loopback and required for a non-loopback bind.
 Browser CORS is disabled in keyless mode. Provider credentials resolve from an
