@@ -23,6 +23,7 @@ from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.concurrency import Lease
 from shim.gateway.contracts.ids import ProviderId
+from shim.gateway.media import MediaPart
 from shim.gateway.request_policy import AgentLoop, BandSettings, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
 from shim.observability.metrics import WARNINGS_TOTAL
@@ -239,6 +240,11 @@ class PreparedInference:
     response_scan: Literal["off", "count"] = "off"
     response_analysis: tuple[str, ...] = ()
     injection_markers: Literal["off", "count", "warn"] = "off"
+    media_inputs: Literal["block", "allow"] = "block"
+    documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media"
+    document_format: Literal["native", "by_provider"] = "native"
+    # The payload's images and files, classified by admission; None before it ran.
+    media: tuple[MediaPart, ...] | None = field(default=None, repr=False)
     price_tier_warning: bool = False
     model_retiring_warning: Literal["record", "header"] = "record"
     embeddings_monitor_types: frozenset[str] = frozenset()

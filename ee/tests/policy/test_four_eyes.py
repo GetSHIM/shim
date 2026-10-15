@@ -223,6 +223,9 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
             },
             "inference_metrics": [],
             "injection_markers": "off",
+            "media_inputs": "block",
+            "documents": "as_media",
+            "document_format": "native",
             "price_tier_warning": False,
             "model_retiring_warning": "record",
             "restore_withheld": {},
@@ -248,7 +251,8 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 "anthropic_keep_turns": 0,
                 "openai_reasoning_context": "off",
             },
-            "transforms": {"json_compaction": "off"},
+            "transforms": {"json_compaction": "off", "image_downscale": "off"},
+            "image_detail": {"openai": "off", "gemini": "off", "models": []},
         }
     }
     assert (version.source, version.risk) == ("api", "tightening")
@@ -268,6 +272,9 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 },
                 "inference_metrics": [],
                 "injection_markers": "off",
+                "media_inputs": "block",
+                "documents": "as_media",
+                "document_format": "native",
                 "price_tier_warning": False,
                 "model_retiring_warning": "record",
                 "restore_withheld": {},
@@ -293,7 +300,8 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                     "anthropic_keep_turns": 0,
                     "openai_reasoning_context": "off",
                 },
-                "transforms": {"json_compaction": "off"},
+                "transforms": {"json_compaction": "off", "image_downscale": "off"},
+                "image_detail": {"openai": "off", "gemini": "off", "models": []},
             }
         }
     }
@@ -1071,6 +1079,8 @@ def test_a_field_change_not_listed_as_neutral_or_tightening_relaxes(
         {"tool_search": {"mode": "bm25", "min_tools": 3}},
         {"thinking_history": {"anthropic_keep_turns": 2}},
         {"provider_cache": {"anthropic_auto_cache": "1h"}},
+        {"transforms": {"image_downscale": "on"}},
+        {"image_detail": {"openai": "low", "gemini": "medium"}},
     ],
 )
 def test_a_plan_on_the_band_settings_alone_is_neutral(change: dict) -> None:
@@ -1079,6 +1089,14 @@ def test_a_plan_on_the_band_settings_alone_is_neutral(change: dict) -> None:
 
     assert REGISTRY["gateway_settings"].classify(before, after) == "neutral"
     assert REGISTRY["gateway_settings"].classify(after, before) == "neutral"
+
+
+def test_moving_documents_back_to_media_relaxes() -> None:
+    before = GatewaySettings().model_dump(mode="json")
+    scanned = GatewaySettings(documents="scan").model_dump(mode="json")
+
+    assert REGISTRY["gateway_settings"].classify(before, scanned) == "tightening"
+    assert REGISTRY["gateway_settings"].classify(scanned, before) == "relaxing"
 
 
 @pytest.mark.asyncio

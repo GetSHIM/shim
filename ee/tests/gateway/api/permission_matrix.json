@@ -809,6 +809,16 @@
   "service_recommender": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/savings": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "service_recommender": "200",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/management/service-accounts": {
   "admin": "403 Organization owner required",
   "auditor": "403 Organization owner required",

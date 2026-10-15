@@ -137,7 +137,8 @@ def shadow_of(
         attempt=None,
         route_decision=None,
         settings_applied=None,
-        transforms_applied=None,
+        transforms_applied=(primary.privacy.conversions if primary.privacy else ())
+        or None,
         provider_betas=(),
         concurrency_lease=None,
         # Its own verdicts and warnings: the primary's records stay as they were.

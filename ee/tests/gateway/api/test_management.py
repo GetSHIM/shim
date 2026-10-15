@@ -347,6 +347,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
                             Decimal("0.12500000"),
                             {"TR_NATIONAL_ID": 1},
                             {"probe": {"n": 1}, "versions": {"probe": "1"}},
+                            None,
                         )
                     ]
                 ),
@@ -425,6 +426,12 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "blocked_entities",
         "bulk_disclosure",
         "injection_markers",
+        "media_parts",
+        "media_unscanned",
+        "media_images",
+        "media_images_truncated",
+        "documents",
+        "document_entities",
         "restore_withheld",
         "response_entities",
         "response_analysis",
@@ -440,6 +447,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "shadow_of",
         "approval_id",
         "content_archived",
+        "savings",
     }
     assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
     assert str(page.items[0].approval_id) == "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10"
@@ -724,6 +732,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
                         Decimal("0.000001"),
                         None,
                         {"versions": {"probe": "1"}, "probe": {"n": 1}},
+                        None,
                     )
                 ]
             )

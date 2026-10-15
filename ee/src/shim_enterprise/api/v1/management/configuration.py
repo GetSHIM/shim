@@ -867,8 +867,9 @@ class _GatewaySettingsResource:
             },
         )
         _, relaxed = classify_change(previous, current)
-        # Restore permission protects personal data, so it is a privacy relaxation.
-        relaxed = [field for field in relaxed if field != "restore_withheld"]
+        # Restore permission and media scanning protect personal data: privacy relaxations.
+        privacy_fields = {"restore_withheld", "media_inputs"}
+        relaxed = [field for field in relaxed if field not in privacy_fields]
         if relaxed:
             await _audit(
                 session,
@@ -879,6 +880,10 @@ class _GatewaySettingsResource:
             )
         privacy_relaxed = restore_relaxed(
             previous.restore_withheld, current.restore_withheld
+        ) + (
+            ["media_inputs"]
+            if (previous.media_inputs, current.media_inputs) == ("block", "allow")
+            else []
         )
         if privacy_relaxed:
             await _record_privacy_relaxed(

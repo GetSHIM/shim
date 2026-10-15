@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 import logging
 from datetime import datetime, timezone
@@ -19,6 +19,7 @@ from opentelemetry import trace
 from starlette.background import BackgroundTask
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_usd
+from shim.billing.savings import cleared_tokens, request_savings, shared_savings
 from shim.gateway.analyzers import ANALYZERS
 from shim.gateway.admission import TaskCounter
 from shim.gateway.kernel.result import (
@@ -369,15 +370,18 @@ class ResponsePostprocessor:
             outcome="skip",
             reason_code="INFLIGHT_RESPONSE_SHARED",
         )
+        share = {
+            "leader_request_id": leader_request_id,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "avoided_cost_usd": str(usage.settlement_cost_usd),
+        }
         await self.usage.finalize_shared(
             prepared,
-            terminal,
-            {
-                "leader_request_id": leader_request_id,
-                "prompt_tokens": usage.prompt_tokens,
-                "completion_tokens": usage.completion_tokens,
-                "avoided_cost_usd": str(usage.settlement_cost_usd),
-            },
+            replace(
+                terminal, usage=replace(usage, savings=shared_savings(share, usage))
+            ),
+            share,
         )
         return gateway_response
 
@@ -525,6 +529,19 @@ class ResponsePostprocessor:
             ),
             shim_latency_ms=prepared.timing.shim_latency_ms,
         )
+        if not shared and lifecycle_status == "completed":
+            cleared = (
+                cleared_tokens(response.payload.get("context_management"))
+                if _clears_thinking(prepared)
+                else None
+            )
+            terminal = replace(
+                terminal,
+                usage=replace(
+                    terminal.usage,
+                    savings=request_savings(prepared, terminal.usage, cleared),
+                ),
+            )
         gateway_response.headers["X-Shim-Latency-Ms"] = str(terminal.shim_latency_ms)
         return gateway_response, terminal
 
@@ -549,6 +566,7 @@ class ResponsePostprocessor:
             prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
             expected_candidates=candidate_count(prepared),
             output_hash_salt=self.output_hash_salt,
+            clear_thinking=_clears_thinking(prepared),
             keep_scan_text=scan,
             keep_answer=keep_answer
             or any(analyzer.reads_answer for analyzer in analyzers),
@@ -570,6 +588,16 @@ class ResponsePostprocessor:
                     await prepared.concurrency_lease.release()
 
         async def settle_stream(terminal: StreamFinalization) -> None:
+            if terminal.terminal_status == "completed":
+                terminal = replace(
+                    terminal,
+                    usage=replace(
+                        terminal.usage,
+                        savings=request_savings(
+                            prepared, terminal.usage, meter.cleared_input_tokens
+                        ),
+                    ),
+                )
             warn_after_answer(
                 prepared,
                 None if terminal.usage.estimated else terminal.usage.prompt_tokens,
@@ -891,3 +919,10 @@ def _gateway_headers(
         }.get(str(prepared.provider), "x-request-id")
         headers[header] = upstream_request_id
     return headers
+
+
+def _clears_thinking(prepared: PreparedInference) -> bool:
+    return any(
+        entry["id"] == "anthropic_clear_thinking"
+        for entry in prepared.settings_applied or ()
+    )

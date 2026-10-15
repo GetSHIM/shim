@@ -102,7 +102,9 @@ request it:
   by the `X-Shim-Tag` header. Prompt-cache reads and writes the provider reports
   are priced at their own rates; input whose cache split is unknown is priced at
   the highest input rate, so an estimate is never lower than the bill. In enterprise an API key's assigned cost center
-  takes precedence, and header tags remain breakdown dimensions.
+  takes precedence, and header tags remain breakdown dimensions. What a lever
+  saved is recorded per request: measured where the provider reported the usage,
+  and labelled as an estimate everywhere else.
 - **Sanitizes provider errors**, so a provider error body does not reach your
   caller unchanged. A provider's message is passed on only when it says how to
   correct the request (400, 404, 413 and 422), still masked and at most 500
@@ -115,9 +117,11 @@ request it:
   content only under published, switchable rules; a report band only shows. shim
   writes a parameter such as `temperature` only when an enterprise tenant pins it,
   and asks for the providers' own prompt-cache discount (an Anthropic breakpoint,
-  an OpenAI `prompt_cache_key`), tool search and the clearing of old thinking only
-  when the operator turns them on. The one transform today, also off by default,
-  removes the whitespace from JSON tool results without changing their value.
+  an OpenAI `prompt_cache_key`), tool search, the clearing of old thinking and a
+  cheaper image detail level for OpenAI and Gemini 3 only when the operator turns
+  them on. The transforms, also off by default, remove the whitespace from JSON
+  tool results without changing their value, and shrink oversized images to the
+  size the provider would read them at anyway (same token bill, smaller requests).
 
 It does not translate payloads. When a provider ships a new field, a new model,
 or changes streaming behaviour, you are not waiting on shim to catch up.
@@ -228,6 +232,14 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
   per process.
 - shim validates the routing, privacy and admission fields of a provider
   payload. The rest of the provider's JSON passes through unvalidated.
+- Images and most files cannot be scanned. While any type is masked or
+  blocked, a request carrying one is refused with 400, unless
+  `SHIM_MEDIA_INPUTS=allow` (enterprise: the `media_inputs` gateway setting)
+  forwards it unchanged and unscanned; the usage event counts such parts.
+  PDF, Word and text files are read and checked like message text when
+  `SHIM_DOCUMENTS` (enterprise: `documents`) is `scan` or `scan_and_convert`;
+  PDFs need `shim-gateway[documents]`. Scanned PDFs without a text layer are not
+  read (no OCR).
 - `background=true` Responses requests are not supported.
 - Stored audit evidence, retained records, roles, budgets and tenant rules are
   enterprise features. Community keeps no request history.

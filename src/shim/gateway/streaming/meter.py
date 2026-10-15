@@ -11,6 +11,7 @@ from decimal import Decimal
 from time import perf_counter
 from typing import Any, Literal, NamedTuple
 
+from shim.billing.savings import cleared_tokens
 from shim.billing.pricing import (
     DEFAULT_PRICE_BOOK,
     UNSPECIFIED_PROVIDER_MODEL,
@@ -63,6 +64,8 @@ class StreamUsageSnapshot:
     answer_characters: int | None = None
     tool_call_names: tuple[str, ...] = ()
     reasoning_seen: bool = False
+    # What the request's levers saved (`shim.billing.savings`); completed requests only.
+    savings: Mapping[str, Any] | None = None
 
 
 class StreamMeter:
@@ -87,12 +90,16 @@ class StreamMeter:
         keep_scan_text: bool = False,
         keep_answer: bool = False,
         price: ModelPrice | None = None,
+        clear_thinking: bool = False,
     ) -> None:
         if prompt_tokens_estimated < 0:
             raise ValueError("stream token estimates must be nonnegative")
         if expected_candidates < 1:
             raise ValueError("expected stream candidates must be positive")
         self.provider = provider
+        # Read the cleared tokens only where the settings band asked for clearing.
+        self.clear_thinking = clear_thinking
+        self.cleared_input_tokens: int | None = None
         self.unpriced = unpriced
         self.price = price
         self.requested_model = requested_model
@@ -260,6 +267,10 @@ class StreamMeter:
         self._capture_terminal_hint(payload_type, payload)
         self._capture_response_model(payload)
         self._capture_usage(payload)
+        if self.clear_thinking and payload_type == "message_delta":
+            cleared = cleared_tokens(payload.get("context_management"))
+            if cleared is not None:
+                self.cleared_input_tokens = cleared
         self.provider_finish_reasons.update(
             native_finish_reasons(payload, provider=self.provider) or {}
         )

@@ -12,7 +12,7 @@ COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY ee/pyproject.toml ./ee/pyproject.toml
 COPY ee/cloud/pyproject.toml ./ee/cloud/pyproject.toml
 COPY src ./src
-RUN uv sync --locked --no-dev --package shim-gateway --no-editable
+RUN uv sync --locked --no-dev --package shim-gateway --extra documents --extra images --no-editable
 
 FROM python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285 AS runtime
 

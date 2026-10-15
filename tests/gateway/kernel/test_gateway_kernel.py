@@ -1,10 +1,13 @@
 from array import array
 import asyncio
+import base64
 from dataclasses import replace
 from decimal import Decimal
 import io
 import json
 from types import SimpleNamespace
+import zipfile
+import zlib
 from unittest.mock import AsyncMock
 
 import httpx
@@ -12,6 +15,7 @@ import pytest
 from starlette.responses import Response
 
 from shim.application import create_community_app
+from shim.core import isolation
 from shim.core.community_config import CommunitySettings
 import shim.gateway.kernel.gateway_kernel as kernel_module
 from shim.gateway.contracts.ids import CURRENT_REQUEST_ID, ProviderId
@@ -20,6 +24,7 @@ from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
 from shim.gateway.pipeline.provider_execution import ERROR_HINTS, ProviderCallError
 from shim.gateway.request_policy import BandSettings
 from shim.gateway.usage import LocalUsageLifecycle
+from shim.observability.metrics import IMAGE_DOWNSCALE_TOTAL
 from shim.privacy.policies import (
     PrivacyAction,
     PrivacyOutcome,
@@ -2537,6 +2542,16 @@ async def test_a_twin_of_one_key_receives_the_answer_without_a_second_call(
         follower["estimated"],
         follower["completion_outcome"],
     ) == (0, 0, "0", False, leader["completion_outcome"])
+    assert follower["savings"] == {
+        "version": 1,
+        "measured": {
+            "inflight_share": {
+                "usd": f"{Decimal(leader['estimated_cost_usd']):.10f}",
+                "tokens": leader["prompt_tokens"] + leader["completion_tokens"],
+            }
+        },
+    }
+    assert "savings" not in leader
     assert {
         (verdict["rule_id"], verdict["outcome"], verdict["reason_code"])
         for verdict in follower["policy_verdicts"]
@@ -4545,3 +4560,921 @@ async def test_a_stream_renews_on_heartbeat_and_releases_when_disconnected() -> 
         await asyncio.sleep(0.01)
 
     lease.release.assert_awaited_once()
+
+
+def _png_b64(width: int = 4000, height: int = 3000, size: int = 0) -> str:
+    header = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+    )
+    return base64.b64encode(header + bytes(max(0, size - len(header)))).decode()
+
+
+# A PDF's base64 with a pasted key in it, which privacy must never read or mask.
+_KEY_IN_DATA = base64.b64encode(b"%PDF-1.4\n").decode() + _PASTED_KEY
+_MEDIA_REQUESTS = {
+    "chat": (
+        "/v1/chat/completions",
+        {"authorization": f"Bearer {_GATEWAY_KEY}"},
+        lambda data: {
+            "model": "gpt-5-nano",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{data}"},
+                        },
+                    ],
+                }
+            ],
+        },
+        ("messages", 0, "content", 1),
+    ),
+    "messages": (
+        "/v1/messages",
+        {"x-api-key": _GATEWAY_KEY},
+        lambda data: {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 16,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "title": "Report for ayse@example.com",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": data,
+                            },
+                        },
+                        {"type": "text", "text": "summarise"},
+                    ],
+                }
+            ],
+        },
+        ("messages", 0, "content", 0),
+    ),
+    "gemini": (
+        "/v1beta/models/gemini-3.5-flash:generateContent",
+        {"x-goog-api-key": _GATEWAY_KEY},
+        lambda data: {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": "describe"},
+                        {"inlineData": {"mimeType": "image/png", "data": data}},
+                    ],
+                }
+            ]
+        },
+        ("contents", 0, "parts", 1),
+    ),
+}
+
+
+async def _call_with_media(route: str, data: str, **settings):
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=_RULE_REPLIES[request.url.path])
+
+    path, auth, build, _ = _MEDIA_REQUESTS[route]
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(_env_file=None, SHIM_API_KEY=_GATEWAY_KEY, **settings),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={**auth, "x-provider-key": "provider-secret"},
+                    json=build(data),
+                )
+    lines = [json.loads(item) for item in events.getvalue().splitlines()]
+    return response, calls, lines
+
+
+def _media_sent(route: str, call: httpx.Request) -> object:
+    *_, path = _MEDIA_REQUESTS[route]
+    value = json.loads(call.content)
+    for step in path:
+        value = value[step]
+    return value
+
+
+_ALL_MONITOR = json.dumps(dict.fromkeys(effective_entity_actions(), "monitor"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["chat", "messages", "gemini"])
+async def test_media_is_refused_by_default_with_the_same_error(route) -> None:
+    response, calls, lines = await _call_with_media(route, _png_b64())
+
+    assert response.status_code == 400
+    assert response.headers["x-shim-error-code"] == "PRIVACY_POLICY_BLOCKED"
+    assert "PII scrubbing does not support opaque media inputs." in response.text
+    assert calls == []
+    assert all("media_parts" not in line for line in lines)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["chat", "messages", "gemini"])
+async def test_allowed_media_reaches_the_provider_unchanged_and_unscanned(
+    route,
+) -> None:
+    data = _png_b64() if route != "messages" else _KEY_IN_DATA
+    _, _, build, _ = _MEDIA_REQUESTS[route]
+
+    response, [call], [line] = await _call_with_media(
+        route, data, SHIM_MEDIA_INPUTS="allow"
+    )
+
+    assert response.status_code == 200
+    sent = _media_sent(route, call)
+    expected = build(data)
+    *_, path = _MEDIA_REQUESTS[route]
+    for step in path:
+        expected = expected[step]
+    if route == "messages":
+        # The title is text and is masked; the data is passed on as it came.
+        assert sent["source"] == expected["source"]
+        assert "ayse@example.com" not in sent["title"]
+        assert line["media_parts"] == {"pdf": 1}
+        assert "media_images" not in line
+    else:
+        assert sent == expected
+        assert line["media_parts"] == {"image": 1}
+        assert line["media_images"] == [[4000, 3000, 24]]
+    assert line["media_unscanned"] == 1
+    assert "SECRET" not in line["privacy_counts"]
+    assert "SECRET" not in line["monitored_entities"]
+
+
+@pytest.mark.asyncio
+async def test_a_two_megabyte_image_is_no_longer_too_large_for_privacy() -> None:
+    data = _png_b64(size=1_600_000)
+    for settings in (
+        {"SHIM_MEDIA_INPUTS": "allow"},
+        {"PII_ENTITY_ACTIONS": _ALL_MONITOR},
+    ):
+        response, calls, _ = await _call_with_media("chat", data, **settings)
+        assert response.status_code == 200 and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_forwarded_media_is_sized_by_its_parts_not_its_bytes() -> None:
+    # About 12,000 approximate tokens by bytes; one image of 4,784 by parts.
+    data = _png_b64(size=36_000)
+    limits = {"DEFAULT_TPM_LIMIT": 6000}
+
+    # Under the default actions the media is refused, so it is still sized by bytes.
+    refused, calls, _ = await _call_with_media("chat", data, **limits)
+    assert refused.status_code == 429 and calls == []
+    assert refused.headers["x-should-retry"] == "false"
+
+    admitted, [call], [line] = await _call_with_media(
+        "chat", data, PII_ENTITY_ACTIONS=_ALL_MONITOR, **limits
+    )
+
+    assert admitted.status_code == 200
+    assert _media_sent("chat", call)["image_url"]["url"].endswith(data)
+    assert line["media_parts"] == {"image": 1} and line["media_unscanned"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_record_keeps_at_most_sixteen_image_sizes() -> None:
+    def chat(data: str) -> dict[str, object]:
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{data}"},
+        }
+
+    path, auth, _, _ = _MEDIA_REQUESTS["chat"]
+    truncated = base64.b64encode(b"\x89PNG\r\n\x1a\n\x00\x00").decode()
+    cases = [
+        ([_png_b64(10, 20), _png_b64(30, 40)], [[10, 20, 24], [30, 40, 24]], None),
+        ([truncated], None, None),
+        ([_png_b64(index + 1, 1) for index in range(17)], 16, True),
+    ]
+    for images, sizes, flag in cases:
+        payload = {
+            "model": "gpt-5-nano",
+            "messages": [{"role": "user", "content": [chat(data) for data in images]}],
+        }
+        events = io.StringIO()
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=_CHAT_REPLY)
+            )
+        ) as outbound:
+            app = create_community_app(
+                CommunitySettings(
+                    _env_file=None, SHIM_API_KEY=_GATEWAY_KEY, SHIM_MEDIA_INPUTS="allow"
+                ),
+                http_client=outbound,
+                event_stream=events,
+            )
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app), base_url="http://shim.test"
+                ) as inbound:
+                    response = await inbound.post(
+                        path,
+                        headers={**auth, "x-provider-key": "provider-secret"},
+                        json=payload,
+                    )
+        assert response.status_code == 200
+        [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+        assert line["media_parts"] == {"image": len(images)}
+        if sizes is None:
+            assert "media_images" not in line
+        elif isinstance(sizes, int):
+            assert len(line["media_images"]) == sizes
+        else:
+            assert line["media_images"] == sizes
+        assert line.get("media_images_truncated") is flag
+
+
+@pytest.mark.asyncio
+async def test_the_media_setting_is_part_of_the_privacy_policy_version() -> None:
+    def version(line: dict) -> str:
+        [verdict] = [
+            item
+            for item in line["policy_verdicts"]
+            if item["rule_id"] == "privacy.input"
+        ]
+        return verdict["policy_version"]
+
+    versions = set()
+    for setting in ("block", "allow"):
+        _, _, [line] = await _call_with_media(
+            "chat",
+            _png_b64(),
+            PII_ENTITY_ACTIONS=_ALL_MONITOR,
+            SHIM_MEDIA_INPUTS=setting,
+        )
+        versions.add(version(line))
+
+    assert len(versions) == 2
+
+
+def _document_pdf(text: str) -> str:
+    body = b"BT /F1 12 Tf 72 720 Td (%s) Tj ET" % text.encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 6\n0000000000 65535 f \n"
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    out += b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+    return base64.b64encode(bytes(out)).decode()
+
+
+_MEDIA_REQUESTS["gemini-pdf"] = (
+    "/v1beta/models/gemini-3.5-flash:generateContent",
+    {"x-goog-api-key": _GATEWAY_KEY},
+    lambda data: {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "summarise"},
+                    {"inlineData": {"mimeType": "application/pdf", "data": data}},
+                ],
+            }
+        ]
+    },
+    ("contents", 0, "parts", 1),
+)
+_CLEAN_PDF = _document_pdf("Rapor hazir, ekip onayladi.")
+_EMAIL_PDF = _document_pdf("Iletisim: ayse.yilmaz@example.com adresine yazin.")
+
+
+@pytest.mark.asyncio
+async def test_a_clean_document_is_scanned_and_forwarded_as_it_came() -> None:
+    # Monitor only: a tenant that masks gets the scanned text instead (D1).
+    response, [call], [line] = await _call_with_media(
+        "messages", _CLEAN_PDF, SHIM_DOCUMENTS="scan", PII_ENTITY_ACTIONS=_ALL_MONITOR
+    )
+
+    assert response.status_code == 200
+    assert _media_sent("messages", call)["source"]["data"] == _CLEAN_PDF
+    assert line["documents"] == {
+        "scanned": 1,
+        "converted": 0,
+        "native": 1,
+        "unscannable": {},
+    }
+    assert line["document_entities"] == {}
+    assert line["media_parts"] == {"pdf": 1} and line["media_unscanned"] == 0
+    assert "transforms_applied" not in line
+
+
+@pytest.mark.asyncio
+async def test_a_document_that_needs_masking_stops_without_a_provider_call() -> None:
+    response, calls, lines = await _call_with_media(
+        "messages", _EMAIL_PDF, SHIM_DOCUMENTS="scan"
+    )
+
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "PII_BLOCKED"
+    assert "EMAIL_ADDRESS" in response.text and "ayse" not in response.text
+    reasons = [
+        verdict["reason_code"]
+        for line in lines
+        for verdict in line.get("policy_verdicts", [])
+        if verdict["rule_id"] == "privacy.input"
+    ]
+    assert reasons == ["DOCUMENT_MASKING_REQUIRED"]
+
+
+@pytest.mark.asyncio
+async def test_a_converted_document_is_masked_and_its_answer_restored() -> None:
+    sent: list[str] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        text = json.loads(request.content)["messages"][0]["content"][0]["source"][
+            "data"
+        ]
+        sent.append(text)
+        placeholder = text[text.index("<") : text.index(">") + 1]
+        reply = _RULE_REPLIES["/v1/messages"]
+        return httpx.Response(
+            200,
+            json={
+                **reply,
+                "content": [{"type": "text", "text": f"Yaz: {placeholder}"}],
+            },
+        )
+
+    path, auth, build, _ = _MEDIA_REQUESTS["messages"]
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                SHIM_DOCUMENTS="scan_and_convert",
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={**auth, "x-provider-key": "provider-secret"},
+                    json=build(_EMAIL_PDF),
+                )
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+
+    assert response.status_code == 200
+    assert response.json()["content"][0]["text"] == "Yaz: ayse.yilmaz@example.com"
+    assert "ayse" not in sent[0] and "<EMAIL_ADDRESS_" in sent[0]
+    assert line["documents"]["converted"] == 1
+    assert line["document_entities"] == {"EMAIL_ADDRESS": 1}
+    [entry] = line["transforms_applied"]
+    assert entry["id"] == "document_text" and entry["reader"].startswith("pypdf ")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "as_text"), [("messages", True), ("gemini-pdf", False)]
+)
+async def test_by_provider_sends_clean_pdfs_as_the_provider_bills_less(
+    route, as_text
+) -> None:
+    response, [call], [line] = await _call_with_media(
+        route, _CLEAN_PDF, SHIM_DOCUMENTS="scan", SHIM_DOCUMENT_FORMAT="by_provider"
+    )
+
+    assert response.status_code == 200
+    part = _media_sent(route, call)
+    if as_text:
+        assert part["source"]["type"] == "text"
+        assert "Rapor hazir" in part["source"]["data"]
+        assert line["documents"]["converted"] == 1
+    else:
+        assert base64.b64decode(
+            part["inlineData"]["data"].replace("-", "+").replace("_", "/")
+        ) == base64.b64decode(_CLEAN_PDF)
+        assert line["documents"]["native"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unscannable_document_is_refused_or_counted() -> None:
+    broken = base64.b64encode(b"%PDF-1.4 broken").decode()
+
+    refused, calls, _ = await _call_with_media(
+        "gemini-pdf", broken, SHIM_DOCUMENTS="scan"
+    )
+    passed, [call], [line] = await _call_with_media(
+        "gemini-pdf", broken, SHIM_DOCUMENTS="scan", SHIM_MEDIA_INPUTS="allow"
+    )
+
+    assert refused.status_code == 400 and calls == []
+    assert refused.headers["x-shim-error-code"] == "DOCUMENT_UNSCANNABLE"
+    assert "corrupt" in refused.text
+    assert passed.status_code == 200
+    assert line["documents"]["unscannable"] == {"corrupt": 1}
+    assert line["media_unscanned"] == 1
+
+
+def _raw_pdf(*objects: bytes, catalog: bytes = b"") -> bytes:
+    """A PDF whose first object is the catalog, its second the page tree."""
+    body = [b"<< /Type /Catalog /Pages 2 0 R %s>>" % catalog, *objects]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, item in enumerate(body, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, item)
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(body) + 1)
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(body) + 1,
+        xref,
+    )
+    return bytes(out)
+
+
+def _one_page_pdf(
+    content: bytes, *, flate: bool = False, page: bytes = b"", catalog: bytes = b""
+) -> bytes:
+    stream = zlib.compress(content, 9) if flate else content
+    return _raw_pdf(
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> %s>>" % page,
+        b"<< /Length %d%s >>\nstream\n%s\nendstream"
+        % (len(stream), b" /Filter /FlateDecode" if flate else b"", stream),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        catalog=catalog,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_tiny_pdf_that_inflates_to_megabytes_is_refused_quickly() -> None:
+    # Night 4 H1: 12.8 KB, an 8 MB content stream; it took 27.6 s and 365 MB.
+    content = b"BT /F1 12 Tf 72 720 Td " + b"(A) Tj " * (8 * 1024 * 1024 // 7) + b"ET"
+    data = base64.b64encode(_one_page_pdf(content, flate=True)).decode()
+    assert len(data) < 18_000
+
+    started = asyncio.get_running_loop().time()
+    response, calls, _ = await _call_with_media(
+        "gemini-pdf", data, SHIM_DOCUMENTS="scan"
+    )
+
+    assert asyncio.get_running_loop().time() - started < 5
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "DOCUMENT_UNSCANNABLE"
+    assert "too_large" in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_slow_pdf_stops_at_its_deadline_without_holding_the_loop(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(isolation, "CALL_SECONDS", 0.3)
+    content = b"BT /F1 12 Tf 72 720 Td " + b"(A) Tj " * (3 * 1024 * 1024 // 7) + b"ET"
+    data = base64.b64encode(_one_page_pdf(content, flate=True)).decode()
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    started = asyncio.get_running_loop().time()
+    response, calls, _ = await _call_with_media(
+        "gemini-pdf", data, SHIM_DOCUMENTS="scan"
+    )
+    elapsed = asyncio.get_running_loop().time() - started
+    ticker.cancel()
+
+    assert response.status_code == 400 and calls == []
+    assert "too_slow" in response.text
+    assert elapsed < 3
+    # The loop kept running while the worker read the file.
+    assert ticks >= elapsed / 0.01 / 4
+
+
+_MEDIA_REQUESTS["gemini-docx"] = (
+    "/v1beta/models/gemini-3.5-flash:generateContent",
+    {"x-goog-api-key": _GATEWAY_KEY},
+    lambda data: {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "summarise"},
+                    {
+                        "inlineData": {
+                            "mimeType": "application/vnd.openxmlformats-"
+                            "officedocument.wordprocessingml.document",
+                            "data": data,
+                        }
+                    },
+                ],
+            }
+        ]
+    },
+    ("contents", 0, "parts", 1),
+)
+
+
+@pytest.mark.asyncio
+async def test_a_utf16_word_file_with_entities_is_refused_before_expanding() -> None:
+    # Night 4 H2: a DOCTYPE search on the raw bytes missed UTF-16, and expat expanded
+    # it; each reference stays under expat's amplification limit of 100.
+    xml = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        f'<!DOCTYPE w:document [<!ENTITY a "{"x" * 90}">]>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body><w:p><w:r><w:t>{'&a;' * 300_000}</w:t></w:r></w:p></w:body></w:document>"
+    ).encode("utf-16")
+    assert b"<!DOCTYPE" not in xml
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", xml)
+    data = base64.b64encode(buffer.getvalue()).decode()
+    assert len(data) < 40_000
+
+    response, calls, _ = await _call_with_media(
+        "gemini-docx", data, SHIM_DOCUMENTS="scan"
+    )
+
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "DOCUMENT_UNSCANNABLE"
+    assert "corrupt" in response.text
+
+
+def _form_pdf(**fields: str) -> str:
+    """A filled form: a label on the page, each value only in its AcroForm field."""
+    label = b"BT /F1 12 Tf 72 720 Td (Basvuru formu: kimlik numarasi ve e-posta) Tj ET"
+    widgets = [
+        b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (%s) /V (%s) "
+        b"/Rect [72 %d 400 %d] /P 3 0 R >>"
+        % (name.encode(), value.encode(), 600 - 40 * index, 620 - 40 * index)
+        for index, (name, value) in enumerate(fields.items())
+    ]
+    numbers = b" ".join(b"%d 0 R" % (6 + index) for index in range(len(widgets)))
+    return base64.b64encode(
+        _raw_pdf(
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Annots [%s] >>" % numbers,
+            b"<< /Length %d >>\nstream\n%s\nendstream" % (len(label), label),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            *widgets,
+            catalog=b"/AcroForm << /Fields [%s] >> " % numbers,
+        )
+    ).decode()
+
+
+@pytest.mark.asyncio
+async def test_a_value_in_a_pdf_form_field_is_scanned() -> None:
+    # Night 4 H3: page text only; the provider renders the field and reads the value.
+    data = _form_pdf(tckn="10000000146", email="ayse.yilmaz@example.com")
+
+    response, calls, _ = await _call_with_media(
+        "gemini-pdf", data, SHIM_DOCUMENTS="scan"
+    )
+
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "PII_BLOCKED"
+    assert "EMAIL_ADDRESS" in response.text
+    assert "10000000146" not in response.text and "ayse" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_tenant_that_masks_gets_a_clean_pdf_as_its_scanned_text() -> None:
+    masked, [sent], [line] = await _call_with_media(
+        "messages", _CLEAN_PDF, SHIM_DOCUMENTS="scan"
+    )
+    monitored, [native], _ = await _call_with_media(
+        "messages", _CLEAN_PDF, SHIM_DOCUMENTS="scan", PII_ENTITY_ACTIONS=_ALL_MONITOR
+    )
+
+    assert masked.status_code == monitored.status_code == 200
+    source = _media_sent("messages", sent)["source"]
+    assert source["type"] == "text" and "Rapor hazir" in source["data"]
+    assert line["documents"]["converted"] == 1
+    assert _media_sent("messages", native)["source"]["data"] == _CLEAN_PDF
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_with_a_lone_surrogate_in_its_text_is_sent_as_text() -> None:
+    # Night 4 M2: pypdf passed U+D800 through; encoding the provider body failed.
+    cmap = (
+        b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap "
+        b"1 begincodespacerange <00> <FF> endcodespacerange "
+        b"1 beginbfchar <41> <D800> endbfchar endcmap end end"
+    )
+    text = b"BT /F1 12 Tf 72 720 Td (Rapor hazir, ekip onayladi. A) Tj ET"
+    pdf = _raw_pdf(
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(text), text),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(cmap), cmap),
+    )
+
+    response, [call], _ = await _call_with_media(
+        "messages", base64.b64encode(pdf).decode(), SHIM_DOCUMENTS="scan"
+    )
+
+    assert response.status_code == 200
+    sent = _media_sent("messages", call)["source"]["data"]
+    assert "�" in sent and not any("\ud800" <= c <= "\udfff" for c in sent)
+
+
+def _palette_bomb() -> str:
+    from PIL import Image
+
+    image = Image.new("P", (8000, 8000))
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return base64.b64encode(output.getvalue()).decode()
+
+
+_MEDIA_REQUESTS["messages-images"] = (
+    "/v1/messages",
+    {"x-api-key": _GATEWAY_KEY},
+    lambda data: {
+        "model": "claude-haiku-4-5",
+        "max_tokens": 16,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    *(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": data,
+                            },
+                        }
+                        for _ in range(3)
+                    ),
+                    {"type": "text", "text": "describe"},
+                ],
+            }
+        ],
+    },
+    ("messages", 0, "content", 0),
+)
+
+
+@pytest.mark.asyncio
+async def test_tiny_images_with_huge_dimensions_spend_a_pixel_budget_in_order() -> None:
+    # Night 4 H4: 10 KB of base64 decodes to 64M pixels; each one cost 0.8 s and 200 MB.
+    pytest.importorskip("PIL")
+    bomb = _palette_bomb()
+    assert len(bomb) < 20_000
+
+    response, [call], [line] = await _call_with_media(
+        "messages-images",
+        bomb,
+        SHIM_MEDIA_INPUTS="allow",
+        SHIM_IMAGE_DOWNSCALE="on",
+    )
+
+    assert response.status_code == 200
+    [entry] = [
+        entry
+        for entry in line["transforms_applied"]
+        if entry["id"] == "image_downscale"
+    ]
+    assert entry["items"] == 2 and entry["skipped"] == {"too_large": 1}
+    content = json.loads(call.content)["messages"][0]["content"]
+    assert content[2]["source"]["data"] == bomb
+    assert content[0]["source"]["data"] != bomb
+
+
+@pytest.mark.asyncio
+async def test_an_image_decode_stops_at_its_deadline(monkeypatch) -> None:
+    pytest.importorskip("PIL")
+    monkeypatch.setattr(isolation, "CALL_SECONDS", 0.05)
+    slow = IMAGE_DOWNSCALE_TOTAL.labels(outcome="too_slow")
+
+    before = slow._value.get()
+    response, [call], [line] = await _call_with_media(
+        "messages-images",
+        _palette_bomb(),
+        SHIM_MEDIA_INPUTS="allow",
+        SHIM_IMAGE_DOWNSCALE="on",
+    )
+
+    assert response.status_code == 200
+    assert slow._value.get() == before + 2
+    assert not line.get("transforms_applied")
+    assert (
+        json.loads(call.content)["messages"][0]["content"][0]["source"]["data"]
+        == _palette_bomb()
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_scanned_document_is_reserved_by_its_text_too() -> None:
+    # Night 4 D2: a page is estimated at 3,000 tokens, its text can be far more.
+    async def failed_estimate(**settings: str) -> tuple[int, list[httpx.Request]]:
+        calls: list[httpx.Request] = []
+
+        def upstream(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return httpx.Response(500, json={"error": {"message": "down"}})
+
+        path, auth, build, _ = _MEDIA_REQUESTS["messages"]
+        events = io.StringIO()
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(upstream)
+        ) as outbound:
+            app = create_community_app(
+                CommunitySettings(
+                    _env_file=None, SHIM_API_KEY=_GATEWAY_KEY, **settings
+                ),
+                http_client=outbound,
+                event_stream=events,
+            )
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app), base_url="http://shim.test"
+                ) as inbound:
+                    await inbound.post(
+                        path,
+                        headers={**auth, "x-provider-key": "provider-secret"},
+                        json=build(_CLEAN_PDF),
+                    )
+        [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+        return line["prompt_tokens"], calls
+
+    unread, _ = await failed_estimate(SHIM_MEDIA_INPUTS="allow")
+    read, [call] = await failed_estimate(SHIM_DOCUMENTS="scan")
+
+    text = _media_sent("messages", call)["source"]["data"]
+    assert read - unread == len(text.encode()) > 0
+
+
+def test_without_pypdf_the_gateway_warns_at_start(monkeypatch, caplog) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "pypdf", None)
+    with caplog.at_level("WARNING"):
+        create_community_app(
+            CommunitySettings(_env_file=None, SHIM_DOCUMENTS="scan"),
+            event_stream=io.StringIO(),
+        )
+        create_community_app(
+            CommunitySettings(_env_file=None), event_stream=io.StringIO()
+        )
+
+    assert [record.message for record in caplog.records].count(
+        "SHIM_DOCUMENTS is on but pypdf is not installed: PDFs are unscannable "
+        "(needs_pypdf); install shim-gateway[documents]"
+    ) == 1
+
+
+async def _call_messages(settings: dict, reply: httpx.Response, **body: object):
+    events = io.StringIO()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: reply)
+    ) as outbound:
+        app = create_community_app(
+            CommunitySettings(_env_file=None, SHIM_API_KEY=_GATEWAY_KEY, **settings),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    "/v1/messages",
+                    headers={"x-api-key": _GATEWAY_KEY, "x-provider-key": "up"},
+                    json={
+                        "model": "claude-haiku-4-5",
+                        "max_tokens": 16,
+                        "messages": [{"role": "user", "content": "hi"}],
+                        **body,
+                    },
+                )
+                await response.aread()
+    [line] = [
+        json.loads(item)
+        for item in events.getvalue().splitlines()
+        if json.loads(item)["event"] == "request"
+    ]
+    return response, line
+
+
+def _cached_reply(read: int, write: int) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            **_RULE_REPLIES["/v1/messages"],
+            "model": "claude-haiku-4-5",
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 10,
+                "cache_read_input_tokens": read,
+                "cache_creation_input_tokens": write,
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_cache_breakpoint_records_what_it_saved_and_defaults_record_nothing() -> (
+    None
+):
+    _, written = await _call_messages(
+        {"SHIM_ANTHROPIC_AUTO_CACHE": "5m"}, _cached_reply(0, 4000)
+    )
+    _, read = await _call_messages(
+        {"SHIM_ANTHROPIC_AUTO_CACHE": "5m"}, _cached_reply(4000, 0)
+    )
+    _, default = await _call_messages({}, _cached_reply(4000, 0))
+
+    assert Decimal(written["savings"]["measured"]["provider_cache"]["usd"]) < 0
+    assert Decimal(read["savings"]["measured"]["provider_cache"]["usd"]) > 0
+    assert read["savings"]["measured"]["provider_cache"]["read_tokens"] == 4000
+    assert "savings" not in default
+
+
+_CLEARED = {
+    "applied_edits": [
+        {"type": "clear_thinking_20251015", "cleared_input_tokens": 15000}
+    ]
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_cleared_thinking_is_recorded_from_json_and_streams(stream) -> None:
+    if stream:
+        reply = httpx.Response(
+            200,
+            text=(
+                'event: message_start\ndata: {"type":"message_start","message":{"id":"m",'
+                '"type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],'
+                '"usage":{"input_tokens":1,"output_tokens":1}}}\n\n'
+                'event: message_delta\ndata: {"type":"message_delta","delta":'
+                '{"stop_reason":"end_turn"},"usage":{"output_tokens":1},"context_management":'
+                + json.dumps(_CLEARED)
+                + '}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n'
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+    else:
+        reply = httpx.Response(
+            200,
+            json={
+                **_RULE_REPLIES["/v1/messages"],
+                "model": "claude-haiku-4-5",
+                "context_management": _CLEARED,
+            },
+        )
+
+    response, line = await _call_messages(
+        {"SHIM_ANTHROPIC_KEEP_THINKING_TURNS": 1},
+        reply,
+        stream=stream,
+        thinking={"type": "enabled", "budget_tokens": 1024},
+        max_tokens=2048,
+    )
+
+    assert response.status_code == 200
+    assert line["savings"]["measured"] == {"context_clearing": {"tokens": 15000}}
+    assert Decimal(line["savings"]["estimated"]["context_clearing"]["usd"]) > 0

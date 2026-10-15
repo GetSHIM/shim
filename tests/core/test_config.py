@@ -315,6 +315,38 @@ def test_inflight_sharing_is_off_unless_turned_on(value, valid) -> None:
 
 
 @pytest.mark.parametrize(
+    ("value", "valid"), [("block", True), ("allow", True), ("scan", False)]
+)
+def test_media_inputs_are_blocked_unless_allowed(value, valid) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_MEDIA_INPUTS == "block"
+    if valid:
+        assert (
+            CommunitySettings(_env_file=None, SHIM_MEDIA_INPUTS=value).SHIM_MEDIA_INPUTS
+            == value
+        )
+    else:
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, SHIM_MEDIA_INPUTS=value)
+
+
+@pytest.mark.parametrize(
+    ("name", "values", "default"),
+    [
+        ("SHIM_DOCUMENTS", ("as_media", "scan", "scan_and_convert"), "as_media"),
+        ("SHIM_DOCUMENT_FORMAT", ("native", "by_provider"), "native"),
+    ],
+)
+def test_document_settings_take_their_values(name, values, default) -> None:
+    assert getattr(CommunitySettings(_env_file=None), name) == default
+    for value in values:
+        assert (
+            getattr(CommunitySettings(_env_file=None, **{name: value}), name) == value
+        )
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, **{name: "convert"})
+
+
+@pytest.mark.parametrize(
     ("name", "values"),
     [
         ("SHIM_ANTHROPIC_AUTO_CACHE", ("off", "5m", "1h")),
@@ -503,3 +535,44 @@ def test_azure_is_off_by_default_and_an_empty_value_is_unset(monkeypatch) -> Non
 def test_an_incoherent_azure_setting_stops_the_gateway_by_name(values, named) -> None:
     with pytest.raises(ValidationError, match=named):
         CommunitySettings(_env_file=None, **values)
+
+
+def test_image_detail_settings_are_off_bounded_and_listed() -> None:
+    settings = CommunitySettings(_env_file=None)
+    assert (settings.SHIM_IMAGE_DETAIL_OPENAI, settings.SHIM_IMAGE_DETAIL_GEMINI) == (
+        "off",
+        "off",
+    )
+    assert settings.SHIM_IMAGE_DETAIL_MODELS == []
+    chosen = CommunitySettings(
+        _env_file=None,
+        SHIM_IMAGE_DETAIL_OPENAI="high",
+        SHIM_IMAGE_DETAIL_GEMINI="medium",
+        SHIM_IMAGE_DETAIL_MODELS="gpt-4o, gemini-3.5-flash",
+    )
+    assert chosen.SHIM_IMAGE_DETAIL_MODELS == ["gpt-4o", "gemini-3.5-flash"]
+    for values in (
+        {"SHIM_IMAGE_DETAIL_OPENAI": "original"},
+        {"SHIM_IMAGE_DETAIL_GEMINI": "high"},
+        {"SHIM_IMAGE_DETAIL_MODELS": ",".join(f"m{index}" for index in range(101))},
+        {"SHIM_IMAGE_DETAIL_MODELS": "x" * 129},
+    ):
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, **values)
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"), [("off", True), ("on", True), ("yes", False)]
+)
+def test_image_downscale_is_off_unless_turned_on(value, valid) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_IMAGE_DOWNSCALE == "off"
+    if valid:
+        assert (
+            CommunitySettings(
+                _env_file=None, SHIM_IMAGE_DOWNSCALE=value
+            ).SHIM_IMAGE_DOWNSCALE
+            == value
+        )
+    else:
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, SHIM_IMAGE_DOWNSCALE=value)

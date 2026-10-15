@@ -291,6 +291,33 @@ class RequestActivityView(BaseModel):
             '{"error": true} when the scan failed; null when the tenant\'s scan was off.'
         ),
     )
+    media_parts: dict[str, int] | None = Field(
+        default=None,
+        description="Images and files the request carried and privacy forwarded, by "
+        "kind; null when it carried none.",
+    )
+    media_unscanned: int | None = Field(
+        default=None,
+        ge=0,
+        description="Of those, the parts forwarded without being scanned.",
+    )
+    media_images: list[list[int]] | None = Field(
+        default=None,
+        description="[width, height, decoded bytes] of each inline image whose header "
+        "was readable, in request order, at most 16; null when there were none.",
+    )
+    media_images_truncated: bool | None = Field(
+        default=None, description="true when the request had more than 16 such images."
+    )
+    documents: dict[str, Any] | None = Field(
+        default=None,
+        description="With document scanning on: documents scanned, converted to text, "
+        "sent as they came, and unscannable by reason; null otherwise.",
+    )
+    document_entities: dict[str, int] | None = Field(
+        default=None,
+        description="Detected values in the documents' text, by entity type.",
+    )
     restore_withheld: dict[str, int] | None = Field(
         default=None,
         description=(
@@ -353,6 +380,12 @@ class RequestActivityView(BaseModel):
         default=None,
         description="The request approval this request created, was refused under "
         "or consumed; null when no approval gate decided it.",
+    )
+    savings: dict[str, Any] | None = Field(
+        default=None,
+        description="What the request's levers saved: measured, estimated and "
+        "not_attributed sections by lever; only measured figures are savings; null "
+        "when no lever had a figure.",
     )
     content_archived: bool = Field(
         default=False,
@@ -511,8 +544,9 @@ async def list_requests(
                 content_archived=(row.details or {}).get("request_archive") == "stored",
                 response_entities=response_entities,
                 response_analysis=response_analysis,
+                savings=savings,
             )
-            for row, cost_usd, response_entities, response_analysis in rows
+            for row, cost_usd, response_entities, response_analysis, savings in rows
         ],
         total=summary.requests,
         limit=limit,
@@ -914,13 +948,20 @@ async def export_requests(
                 "route_decision",
                 "shadow_of",
                 "injection_markers",
+                "media_parts",
+                "media_unscanned",
+                "media_images",
+                "media_images_truncated",
+                "documents",
+                "document_entities",
                 "restore_withheld",
                 "approval_id",
                 "content_archived",
+                "savings",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
-        for row, cost_usd, response_entities, response_analysis in rows:
+        for row, cost_usd, response_entities, response_analysis, savings in rows:
             details = row.details or {}
             output.seek(0)
             output.truncate(0)
@@ -975,9 +1016,18 @@ async def export_requests(
                     _json(details.get("route_decision")),
                     details.get("shadow_of"),
                     _json(details.get("injection_markers")),
+                    _json(details.get("media_parts")),
+                    details.get("media_unscanned"),
+                    _json(details.get("media_images")),
+                    details.get("media_images_truncated"),
+                    _json(details.get("documents")),
+                    _json(details.get("document_entities")),
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),
                     details.get("request_archive") == "stored",
+                    json.dumps(savings, sort_keys=True, separators=(",", ":"))
+                    if savings is not None
+                    else None,
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -1288,6 +1338,7 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
             RequestLifecycle.lifecycle_metadata["response_analysis"].label(
                 "response_analysis"
             ),
+            RequestLifecycle.lifecycle_metadata["savings"].label("savings"),
         )
         .outerjoin(
             RequestLifecycle,

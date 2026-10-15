@@ -234,6 +234,29 @@ HTTP call (the SDK would turn `:embedContent` into a batch); nothing is restored
 vectors; settlement takes the prompt tokens the provider reports, no completion
 tokens and no outcome.
 
+Images and files have one definition, `classify_media` in `src/shim/gateway/media.py`:
+the parts the privacy walk reaches in content (image, file, document, audio and
+Gemini inline or file data parts) with their kind, source, declared type, the path
+of their inline data and its decoded size. Admission walks the payload for them only
+when its compact JSON carries a media word, and the model capability check reads
+them. Privacy refuses them (400 `PRIVACY_POLICY_BLOCKED`) while it protects anything
+and the tenant's `media_inputs` is `block`; otherwise it forwards them byte for byte
+and never gives their data string to the detector. When they will be forwarded,
+admission sizes the request by its text bytes plus a published token estimate per
+part instead of the base64 bytes. With `documents` at `scan` or `scan_and_convert`,
+inline PDF, Word and text parts are not media: the privacy stage reads their text in
+its worker thread (`src/shim/privacy/documents.py`, bounded in size, pages and time;
+pypdf is the optional `documents` extra), scans it with the same actions and rules, and
+forwards the part, stops the request, or replaces the part with its (masked) text,
+recorded as a `document_text` entry of `transforms_applied`. A tenant that hides any
+value gets every scanned PDF as its text (Gemini with `by_provider` excepted), since a
+provider reads a PDF's drawn pages. PDF reading and image decoding run in
+`src/shim/core/isolation.py`: two spawned worker processes per gateway process, each
+with a 1 GB address-space cap (Linux) and a signal alarm per call (10 s, and 20 s for
+all of a request's files). A caller thread waits on a two-slot semaphore and then on
+the call; a call still running past its deadline plus 2 s has its pool terminated and
+replaced. The event loop never waits on a worker.
+
 OpenAI errors use `{error: {message, type, param, code, hint}}`. Anthropic
 errors use `{type: "error", error: {type, message, code, hint}, request_id}`,
 where `request_id` keeps its native meaning, the provider's request id, and is
@@ -274,7 +297,7 @@ The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `CONCURRENCY_LIMITED`,
 `AGENT_LOOP_DETECTED`,
 `ZERO_RETENTION_REQUIRED`, `RATE_LIMIT_EXCEEDED`, `PRIVACY_POLICY_BLOCKED`,
-`SECRET_BLOCKED`, `PII_BLOCKED`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,
+`SECRET_BLOCKED`, `PII_BLOCKED`, `DOCUMENT_UNSCANNABLE`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,
 `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE`,
 `PRIVACY_STATE_UNAVAILABLE`, `PROVIDER_NOT_CONFIGURED`, `PROVIDER_RATE_LIMITED`,
 `PROVIDER_REJECTED_REQUEST`, `PROVIDER_CONTENT_FILTERED`, `PROVIDER_UNAVAILABLE`,
@@ -350,17 +373,24 @@ each off by default: `anthropic_auto_cache` (a top-level Anthropic breakpoint) a
 `openai_prompt_cache_key` (an OpenAI routing key derived from the prompt prefix),
 `tool_search` (`defer_loading` and the provider's search tool),
 `anthropic_clear_thinking` (`context_management`, with its beta flag in
-`provider_betas`, which moves the Anthropic execution to the beta client) and
-`openai_reasoning_context`, for catalog routes and the registry aliases the tenant
+`provider_betas`, which moves the Anthropic execution to the beta client),
+`openai_reasoning_context` and `image_detail` (a cheaper `detail` or Gemini 3
+`mediaResolution` on image parts the client left unset, where the version-pinned
+table in `src/shim/gateway/image_rules.py` says it lowers the budget), for catalog routes and the registry aliases the tenant
 lists. A step that declines a request it was on for records a `settings.<step>`
 `skip` verdict. The transform band (`src/shim/gateway/pipeline/transform_band.py`)
 follows it, only when a transform is on, and changes content under four conditions:
 nothing changes below a published threshold, each step is deterministic and
 version-pinned, before and after sizes are recorded (`transforms_applied`), and the
-tenant can turn it off. Its one step, `json_compaction`, removes whitespace between
-JSON tokens in tool results and keeps a string only when it parses to the same value;
-it skips Anthropic requests bound to thinking with a `transforms.json_compaction`
-verdict, and runs in a worker thread above 65,536 candidate characters. The `route` kind
+tenant can turn it off. Its first step, `json_compaction`, removes whitespace between
+JSON tokens in tool results and keeps a string only when it parses to the same value.
+Its second, `image_downscale` (needs Pillow, the optional `images` extra), shrinks an
+inline PNG, JPEG or static WEBP to the size the provider publishes it reads that model
+and detail level at (`target_size` in `src/shim/gateway/image_rules.py`) and re-encodes
+it in its own format. Both skip requests bound to thinking with a `transforms.<step>`
+verdict, and the band runs in a worker thread above 65,536 candidate characters or when
+an image is a candidate; the decoding itself runs in the isolation pool, at most 128
+megapixels per request in payload order. The `route` kind
 ships no matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 Admission adds `MODEL_RETIRING` (retirement within 90 days) or `MODEL_RETIRED`

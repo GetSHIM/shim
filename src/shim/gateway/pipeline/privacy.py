@@ -5,19 +5,22 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 import logging
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 from fastapi import HTTPException, status
 
 from shim.gateway.kernel.result import EMBEDDINGS_PROTOCOLS, PreparedInference
+from shim.gateway.media import MediaPart, classify_media, value_at
 from shim.gateway.contracts.errors import ScanAnalysisError
 from shim.gateway.contracts.inference import ScanEntity, ScanPolicy, ScanVerdict
 from shim.gateway.kernel.stage import TraceValue
 from shim.observability.metrics import (
     INJECTION_MARKERS_TOTAL,
+    DOCUMENTS_TOTAL,
+    MEDIA_PARTS_TOTAL,
     PRIVACY_BULK_DISCLOSURES_TOTAL,
     PRIVACY_DETECTION_TOTAL,
     PRIVACY_RESPONSE_DETECTION_TOTAL,
@@ -25,125 +28,40 @@ from shim.observability.metrics import (
 )
 from shim.privacy.pii_scrubber import (
     MAX_ANALYZABLE_TEXT_LENGTH,
+    PLACEHOLDER,
     PIIInputTooLarge,
     PIIScrubberService,
     placeholder_period_key,
 )
 from shim.privacy.policies import (
-    OPAQUE_MEDIA_FIELDS,
-    OPAQUE_MEDIA_TYPE_FIELDS,
+    DEEP_PRIVACY_FIELDS,
+    OPAQUE_PROTOCOL_FIELDS_BY_TYPE,
+    PRIVACY_BEARING_FIELDS,
     EntityAction,
     PrivacyAction,
     PrivacyOutcome,
     block_code,
     effective_entity_actions,
+    is_protocol_field,
     placeholder_type,
 )
+from shim.core.isolation import request_deadline
 from shim.privacy.continuation import PrivacyContinuationStore
+from shim.privacy.documents import (
+    DOCUMENT_FORMAT_V1,
+    DOCUMENT_TEXT_VERSION,
+    MAX_REQUEST_CHARS,
+    Unscannable,
+    is_document,
+    pdf_reader_version,
+    read_document,
+)
 from shim.privacy.injection import scan_payload
-from shim.rules.content import ContentRules, content_rules
+from shim.rules.content import CONTENT_KINDS, ContentRules, content_rules
 from shim.rules.destination import destination_actions
 from shim.rules.evaluate import in_scope
 
 logger = logging.getLogger(__name__)
-
-_DEEP_PRIVACY_FIELDS = frozenset(
-    {
-        "arguments",
-        "args",
-        "action",
-        "client_metadata",
-        "custom",
-        "environment",
-        "input_examples",
-        "input_schema",
-        "metadata",
-        "operation",
-        "output",
-        "parameters",
-        "parametersJsonSchema",
-        "parameters_json_schema",
-        "response",
-        "result",
-        "responseJsonSchema",
-        "responseSchema",
-        "response_json_schema",
-        "response_schema",
-        "schema",
-        "userLocation",
-        "user_location",
-    }
-)
-_PRIVACY_BEARING_FIELDS = frozenset(
-    {
-        "content",
-        "contents",
-        "description",
-        "instructions",
-        "prompt",
-        "prompt_cache_key",
-        "parts",
-        "safety_identifier",
-        "stop",
-        "stopSequences",
-        "stop_sequences",
-        "system",
-        "text",
-        "user",
-        "user_profile_id",
-    }
-)
-_PROTOCOL_FIELDS = frozenset(
-    {
-        "authorization",
-        "cachedContent",
-        "cached_content",
-        "call_id",
-        "container",
-        "conversation",
-        "encrypted_content",
-        "encrypted_stdout",
-        "fingerprint",
-        "headers",
-        "id",
-        "inference_geo",
-        "language",
-        "media_type",
-        "mimeType",
-        "mime_type",
-        "model",
-        "name",
-        "namespace",
-        "previous_response_id",
-        "role",
-        "service_tier",
-        "server_label",
-        "server_name",
-        "signature",
-        "status",
-        "thoughtSignature",
-        "thought_signature",
-        "tool_call_id",
-        "tool_name",
-        "tool_names",
-        "tool_use_id",
-        "type",
-        "url",
-        "uri",
-    }
-)
-_OPAQUE_PROTOCOL_FIELDS_BY_TYPE = {
-    "encrypted_code_execution_result": frozenset({"encrypted_stdout"}),
-    "fallback": frozenset({"from", "to", "trigger"}),
-    "redacted_thinking": frozenset({"data"}),
-}
-
-
-def _is_protocol_field(key: object) -> bool:
-    return isinstance(key, str) and (
-        key in _PROTOCOL_FIELDS or key.endswith(("_id", "_ids"))
-    )
-
 
 # Actions that keep a value from the provider.
 _HIDING = frozenset({"mask", "mask_last4", "block"})
@@ -163,28 +81,27 @@ class PrivacyStage:
         self.chain_store = chain_store
 
     async def run(self, value: PreparedInference) -> PreparedInference:
-        actions = effective_entity_actions(value.pii_config, value.entity_actions)
-        if value.protocol in EMBEDDINGS_PROTOCOLS:
-            # The tenant's embeddings relaxation: listed types are only counted.
-            actions = {
-                kind: "monitor"
-                if kind in value.embeddings_monitor_types and action in _HIDING
-                else action
-                for kind, action in actions.items()
-            }
-        policy = {"pii_config": value.pii_config, "entity_actions": actions}
+        actions = _base_actions(value)
+        policy = {
+            "pii_config": value.pii_config,
+            "entity_actions": actions,
+            "media_inputs": value.media_inputs,
+            "documents": value.documents,
+            "document_format": value.document_format,
+        }
         try:
             prepared = await self._run(value, actions)
         except BaseException as error:
             refused = isinstance(error, HTTPException) and error.status_code < 500
             detail = getattr(error, "detail", None)
-            code = detail.get("code") if refused and isinstance(detail, dict) else None
+            detail = detail if refused and isinstance(detail, dict) else {}
+            code = detail.get("code")
             value.record_verdict(
                 "privacy.input",
                 stage="privacy",
                 outcome="deny" if refused else "error",
-                reason_code=code
-                if code in {"SECRET_BLOCKED", "PII_BLOCKED"}
+                reason_code=detail.get("reason_code", code)
+                if code in {"SECRET_BLOCKED", "PII_BLOCKED", "DOCUMENT_UNSCANNABLE"}
                 else "PRIVACY_POLICY_BLOCKED"
                 if refused
                 else "PRIVACY_UNAVAILABLE",
@@ -250,6 +167,8 @@ class PrivacyStage:
             )
         unmasked: dict[str, str] = {}
         tags = value.admission.tags if value.admission is not None else ()
+        media = classify_media(value.payload) if value.media is None else value.media
+        report = DocumentReport()
         content = content_rules(
             value.rules, lambda rule: in_scope(rule, value, tags), value.record_sets
         )
@@ -315,6 +234,22 @@ class PrivacyStage:
             batch=embedded_texts(value.payload, value.protocol)
             if value.protocol in EMBEDDINGS_PROTOCOLS
             else (),
+            media=media,
+            media_inputs=value.media_inputs,
+            documents=value.documents,
+            convert_clean=frozenset(
+                {"docx"}
+                | (
+                    {"pdf"}
+                    if DOCUMENT_FORMAT_V1.get(str(value.provider)) == "text"
+                    else set()
+                )
+            )
+            if value.document_format == "by_provider"
+            else frozenset(),
+            native_pdf=value.document_format == "by_provider"
+            and DOCUMENT_FORMAT_V1.get(str(value.provider)) == "native",
+            report=report,
             # An enforced block cannot see inside media either.
             protects=any(
                 (rule.state, rule.action) == ("enforced", "block")
@@ -387,7 +322,18 @@ class PrivacyStage:
             monitored_values=frozenset(monitored),
             injection_markers=injection_markers,
             restore_withheld=value.restore_withheld,
+            media=_media_record(media, report.scanned)
+            | (
+                report.record()
+                if value.documents != "as_media" and any(map(is_document, media))
+                else {}
+            )
+            if media
+            else None,
+            conversions=tuple(report.transforms),
         )
+        for part in media:
+            MEDIA_PARTS_TOTAL.labels(kind=part.kind, outcome="forwarded").inc()
         if injection_markers and "error" not in injection_markers:
             for marker, count in injection_markers.items():
                 INJECTION_MARKERS_TOTAL.labels(
@@ -428,6 +374,15 @@ class PrivacyStage:
             value,
             payload=safe_payload,
             privacy=privacy,
+            # A scanned document is reserved by its text too, read only now.
+            admission=replace(
+                value.admission,
+                estimated_input_tokens=value.admission.estimated_input_tokens
+                + report.text_bytes,
+            )
+            if value.admission is not None and report.text_bytes
+            else value.admission,
+            transforms_applied=privacy.conversions or value.transforms_applied,
             rules_evaluated=value.rules_evaluated
             or content is not None
             or bool(destinations),
@@ -439,6 +394,66 @@ class PrivacyStage:
     ) -> Mapping[str, TraceValue]:
         assert output.privacy is not None
         return output.privacy.trace_metadata()
+
+
+def _base_actions(value: PreparedInference) -> Mapping[str, EntityAction]:
+    actions = effective_entity_actions(value.pii_config, value.entity_actions)
+    if value.protocol not in EMBEDDINGS_PROTOCOLS:
+        return actions
+    # The tenant's embeddings relaxation: listed types are only counted.
+    return {
+        kind: "monitor"
+        if kind in value.embeddings_monitor_types and action in _HIDING
+        else action
+        for kind, action in actions.items()
+    }
+
+
+def media_refused(value: PreparedInference, tags: Sequence[str]) -> bool:
+    """Whether the privacy stage will refuse the request's media parts.
+
+    The same test as `scrub_payload`'s `protects`, from the rules in scope for `tags`.
+    """
+    if value.media_inputs == "allow":
+        return False
+    rules = [
+        rule
+        for rule in (value.rules.rules if value.rules is not None else ())
+        if rule.kind == "destination" or rule.kind in CONTENT_KINDS
+        if in_scope(rule, value, tags)
+    ]
+    destinations = [rule for rule in rules if rule.kind == "destination"]
+    actions = destination_actions(_base_actions(value), destinations)
+    return any(action in _HIDING for action in actions.values()) or any(
+        rule.state == "enforced"
+        and (
+            rule.action == "block"
+            if rule.kind == "destination"
+            else rule.action in {"mask", "block", "require_approval"}
+        )
+        for rule in rules
+    )
+
+
+_MEDIA_IMAGES_LIMIT = 16
+
+
+def _media_record(media: Sequence[MediaPart], scanned: int) -> dict[str, Any]:
+    images = [
+        [*part.dimensions, part.decoded_bytes]
+        for part in media
+        if part.dimensions is not None
+    ]
+    return {
+        "media_parts": dict(Counter(part.kind for part in media)),
+        "media_unscanned": len(media) - scanned,
+        **({"media_images": images[:_MEDIA_IMAGES_LIMIT]} if images else {}),
+        **(
+            {"media_images_truncated": True}
+            if len(images) > _MEDIA_IMAGES_LIMIT
+            else {}
+        ),
+    }
 
 
 def embedded_texts(payload: Mapping[str, Any], protocol: str) -> list[str]:
@@ -471,11 +486,27 @@ def scrub_payload(
     content: ContentRules | None = None,
     protects: bool = False,
     batch: Sequence[str] = (),
+    media: Sequence[MediaPart] | None = None,
+    media_inputs: Literal["block", "allow"] = "block",
+    documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media",
+    convert_clean: frozenset[str] = frozenset(),
+    native_pdf: bool = False,
+    report: DocumentReport | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """`batch`: texts scanned together in one analyzer pass before the walk."""
+    """`batch`: texts scanned together in one analyzer pass before the walk.
+
+    `media`: the payload's media parts (`classify_media`), found here when None.
+    `documents`: whether inline PDF, Word and text files are read and scanned;
+    `convert_clean` names the kinds sent as text even when nothing was masked, and
+    `native_pdf` keeps a clean PDF native for a tenant that hides values;
+    `report` collects what happened to them.
+    """
     verification_map = dict(known_placeholders or {})
     if content is None and all(action == "off" for action in actions.values()):
         return dict(payload), verification_map
+    if not isinstance(payload, dict):
+        payload = dict(payload)
+    media = classify_media(payload) if media is None else media
     # Monitored values pass unchanged, so only masked or blocked types refuse
     # what cannot be rewritten; media cannot be searched for tenant terms either.
     protects = (
@@ -483,7 +514,30 @@ def scrub_payload(
         or any(action in {"mask", "mask_last4", "block"} for action in actions.values())
         or (content is not None and content.protects)
     )
+    # A provider reads a PDF's pages drawn: images, glyphs without text and form
+    # appearances no scan saw. A tenant that hides values sends the text that was scanned.
+    if protects and not native_pdf:
+        convert_clean |= {"pdf"}
     unmasked = {} if unmasked is None else unmasked
+    report = DocumentReport() if report is None else report
+    deadline: float | None = None
+    refuse_media = protects and media_inputs == "block"
+    document_parts = {
+        id(value_at(payload, part.path)): part
+        for part in media
+        if documents != "as_media" and is_document(part)
+    }
+    refused_parts = (
+        {id(value_at(payload, part.path)) for part in media} - document_parts.keys()
+        if refuse_media
+        else set()
+    )
+    # A part's data is never read: base64 is no text, and a false match would corrupt it.
+    unread = {
+        (id(value_at(payload, part.data_path[:-1])), part.data_path[-1])
+        for part in media
+        if part.data_path is not None
+    }
 
     placeholders_by_value = {
         value: placeholder for placeholder, value in verification_map.items()
@@ -537,26 +591,6 @@ def scrub_payload(
                 inspect_identifier(item)
         return value
 
-    def contains_opaque_media(value: Mapping[str, Any], *, deep: bool) -> bool:
-        media_type = value.get("type")
-        media_fields = (
-            OPAQUE_MEDIA_TYPE_FIELDS.get(media_type)
-            if isinstance(media_type, str)
-            else None
-        )
-        requires_field = deep or media_type == "image_generation_call"
-        if media_fields is not None and (
-            not requires_field
-            or any(value.get(field) is not None for field in media_fields)
-        ):
-            return True
-        if isinstance(media_type, str) and media_type in {"document", "image"}:
-            source = value.get("source")
-            source_type = source.get("type") if isinstance(source, Mapping) else None
-            if isinstance(source_type, str) and source_type in {"base64", "url"}:
-                return True
-        return any(value.get(field) is not None for field in OPAQUE_MEDIA_FIELDS)
-
     def protected(
         found: Mapping[str, str], kept: Mapping[str, str]
     ) -> tuple[bool, frozenset[str]]:
@@ -606,6 +640,91 @@ def scrub_payload(
             unmasked.update(kept)
             text_cache.update(zip(distinct, scrubbed_texts))
 
+    def document(part: MediaPart, scanned: dict[str, Any]) -> dict[str, Any]:
+        nonlocal deadline
+        data = value_at(payload, part.data_path) if part.data_path else None
+        # One deadline for all of a request's documents.
+        deadline = request_deadline() if deadline is None else deadline
+        try:
+            text = read_document(part, data, deadline)
+            if report.characters + len(text) > MAX_REQUEST_CHARS:
+                raise Unscannable("too_large")
+        except Unscannable as error:
+            report.unscannable[error.reason] += 1
+            DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="unscannable").inc()
+            if refuse_media:
+                reject(
+                    f"A document in the request cannot be scanned: {error.reason}.",
+                    code="DOCUMENT_UNSCANNABLE",
+                )
+            return scanned
+        report.characters += len(text)
+        report.text_bytes += len(text.encode())
+        report.scanned += 1
+        DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="scanned").inc()
+        kept: dict[str, str] = {}
+        masked, found = scrubber.scrub(
+            text,
+            actions,
+            known_placeholders=verification_map,
+            placeholders_by_value=placeholders_by_value,
+            unmasked=kept,
+            placeholder_key=placeholder_key,
+            content=content,
+        )
+        verification_map.update(found)
+        unmasked.update(kept)
+        hidden = Counter(
+            placeholder_type(placeholder)
+            for placeholder in {
+                match.group(0) for match in PLACEHOLDER.finditer(masked)
+            }
+            & verification_map.keys()
+        )
+        report.entities.update(hidden + Counter(kept.values()))
+        # A blocked type refuses the whole request after this stage, as in message text.
+        if any(actions.get(kind) == "block" for kind in kept.values()):
+            return scanned
+        # Gemini's function response parts hold files only; text cannot replace one.
+        native_only = (
+            "functionResponse" in part.path or "function_response" in part.path
+        )
+        if masked != text and (documents == "scan" or native_only):
+            DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="stopped").inc()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": block_code(hidden),
+                    "message": f"Request blocked by privacy policy: {', '.join(sorted(hidden))}. "
+                    + (
+                        "A document in a function response carries them and cannot be sent as text."
+                        if native_only
+                        else "A document carries them; turn on document conversion to send it masked."
+                    ),
+                    "reason_code": "DOCUMENT_MASKING_REQUIRED",
+                },
+            )
+        if masked == text and (native_only or part.kind not in convert_clean):
+            report.native += 1
+            return scanned
+        report.converted += 1
+        DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="converted").inc()
+        report.transforms.append(
+            {
+                "id": "document_text",
+                "version": DOCUMENT_TEXT_VERSION,
+                "before_chars": len(data or ""),
+                "after_chars": len(masked),
+                "items": 1,
+                **(
+                    {"reader": f"pypdf {pdf_reader_version()}"}
+                    if part.kind == "pdf"
+                    else {}
+                ),
+            }
+        )
+        return as_text(scanned, masked)
+
     def visit(value: Any, *, content: bool = False, deep: bool = False) -> Any:
         if isinstance(value, str):
             return scrub_text(value)
@@ -613,16 +732,16 @@ def scrub_payload(
             return [visit(item, content=content, deep=deep) for item in value]
         if isinstance(value, dict):
             value_type = value.get("type")
-            if (
-                protects
-                and (content or value_type == "image_generation")
-                and contains_opaque_media(value, deep=deep)
-            ):
+            if refused_parts and id(value) in refused_parts:
+                for part in media:
+                    MEDIA_PARTS_TOTAL.labels(kind=part.kind, outcome="blocked").inc()
                 reject("PII scrubbing does not support opaque media inputs.")
             scrubbed: dict[str, Any] = {}
             for key, item in value.items():
                 inspect_identifier(key)
-                if deep:
+                if unread and (id(value), key) in unread:
+                    scrubbed[key] = item
+                elif deep:
                     scrubbed[key] = visit(item, content=content, deep=True)
                 elif (
                     key == "model"
@@ -630,31 +749,77 @@ def scrub_payload(
                     and item == request_model
                 ):
                     scrubbed[key] = item
-                elif _is_protocol_field(key) or (
+                elif is_protocol_field(key) or (
                     isinstance(value_type, str)
-                    and key in _OPAQUE_PROTOCOL_FIELDS_BY_TYPE.get(value_type, ())
+                    and key in OPAQUE_PROTOCOL_FIELDS_BY_TYPE.get(value_type, ())
                 ):
                     scrubbed[key] = inspect_identifier(item)
                 elif key == "input":
                     scrubbed[key] = visit(item, content=True, deep=content)
-                elif key in _DEEP_PRIVACY_FIELDS:
+                elif key in DEEP_PRIVACY_FIELDS:
                     scrubbed[key] = visit(item, content=content, deep=True)
                 else:
                     scrubbed[key] = visit(
                         item,
-                        content=content or key in _PRIVACY_BEARING_FIELDS,
+                        content=content or key in PRIVACY_BEARING_FIELDS,
                     )
+            if document_parts and id(value) in document_parts:
+                return document(document_parts[id(value)], scrubbed)
             return scrubbed
         return value
 
     try:
-        return visit(dict(payload)), verification_map
+        return visit(payload), verification_map
     except PIIInputTooLarge as exc:
         reject(
             str(exc),
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             code="REQUEST_TOO_LARGE",
         )
+
+
+@dataclass(slots=True)
+class DocumentReport:
+    """What the privacy stage did with a request's documents; counts, never text."""
+
+    scanned: int = 0
+    converted: int = 0
+    native: int = 0
+    unscannable: Counter[str] = field(default_factory=Counter)
+    entities: Counter[str] = field(default_factory=Counter)
+    transforms: list[dict[str, Any]] = field(default_factory=list)
+    characters: int = 0
+    # UTF-8 bytes of the text read, a bound on its tokens.
+    text_bytes: int = 0
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "documents": {
+                "scanned": self.scanned,
+                "converted": self.converted,
+                "native": self.native,
+                "unscannable": dict(self.unscannable),
+            },
+            "document_entities": dict(self.entities),
+        }
+
+
+def as_text(part: Mapping[str, Any], text: str) -> dict[str, Any]:
+    """A document part replaced by its text, in the protocol's own text shape."""
+    part_type = part.get("type")
+    if part_type == "document":
+        return {
+            **part,
+            "source": {"type": "text", "media_type": "text/plain", "data": text},
+        }
+    if part_type in {"file", "input_file"}:
+        file = part.get("file") if part_type == "file" else part
+        name = file.get("filename") if isinstance(file, Mapping) else None
+        return {
+            "type": "text" if part_type == "file" else "input_text",
+            "text": f"[document: {name if isinstance(name, str) else 'document'}]\n{text}",
+        }
+    return {"text": text}
 
 
 @dataclass(frozen=True, slots=True)

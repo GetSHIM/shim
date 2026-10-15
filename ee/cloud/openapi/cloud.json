@@ -7296,6 +7296,25 @@
               "scopes": []
             }
           },
+          "document_format": {
+            "default": "native",
+            "enum": [
+              "native",
+              "by_provider"
+            ],
+            "title": "Document Format",
+            "type": "string"
+          },
+          "documents": {
+            "default": "as_media",
+            "enum": [
+              "as_media",
+              "scan",
+              "scan_and_convert"
+            ],
+            "title": "Documents",
+            "type": "string"
+          },
           "finding_modes": {
             "additionalProperties": {
               "enum": [
@@ -7317,6 +7336,14 @@
             ],
             "title": "Four Eyes",
             "type": "string"
+          },
+          "image_detail": {
+            "$ref": "#/components/schemas/ImageDetailSettings",
+            "default": {
+              "gemini": "off",
+              "models": [],
+              "openai": "off"
+            }
           },
           "inference_metrics": {
             "default": [],
@@ -7345,6 +7372,15 @@
               "warn"
             ],
             "title": "Injection Markers",
+            "type": "string"
+          },
+          "media_inputs": {
+            "default": "block",
+            "enum": [
+              "block",
+              "allow"
+            ],
+            "title": "Media Inputs",
             "type": "string"
           },
           "model_retiring_warning": {
@@ -7417,6 +7453,7 @@
           "transforms": {
             "$ref": "#/components/schemas/TransformSettings",
             "default": {
+              "image_downscale": "off",
               "json_compaction": "off"
             }
           }
@@ -7468,6 +7505,37 @@
               }
             ]
           },
+          "document_format": {
+            "anyOf": [
+              {
+                "enum": [
+                  "native",
+                  "by_provider"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Format"
+          },
+          "documents": {
+            "anyOf": [
+              {
+                "enum": [
+                  "as_media",
+                  "scan",
+                  "scan_and_convert"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents"
+          },
           "finding_modes": {
             "anyOf": [
               {
@@ -7501,6 +7569,16 @@
               }
             ],
             "title": "Four Eyes"
+          },
+          "image_detail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageDetailSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "inference_metrics": {
             "anyOf": [
@@ -7548,6 +7626,21 @@
               }
             ],
             "title": "Injection Markers"
+          },
+          "media_inputs": {
+            "anyOf": [
+              {
+                "enum": [
+                  "block",
+                  "allow"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Inputs"
           },
           "model_retiring_warning": {
             "anyOf": [
@@ -8680,6 +8773,45 @@
           "requests"
         ],
         "title": "IdCount",
+        "type": "object"
+      },
+      "ImageDetailSettings": {
+        "additionalProperties": false,
+        "description": "Image detail levels the settings band fills in where the client chose none.",
+        "properties": {
+          "gemini": {
+            "default": "off",
+            "enum": [
+              "off",
+              "low",
+              "medium"
+            ],
+            "title": "Gemini",
+            "type": "string"
+          },
+          "models": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Models",
+            "type": "array"
+          },
+          "openai": {
+            "default": "off",
+            "enum": [
+              "off",
+              "low",
+              "high"
+            ],
+            "title": "Openai",
+            "type": "string"
+          }
+        },
+        "title": "ImageDetailSettings",
         "type": "object"
       },
       "ImageResponseFormat": {
@@ -15246,6 +15378,34 @@
             ],
             "title": "Deployment Kind"
           },
+          "document_entities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Detected values in the documents' text, by entity type.",
+            "title": "Document Entities"
+          },
+          "documents": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With document scanning on: documents scanned, converted to text, sent as they came, and unscannable by reason; null otherwise.",
+            "title": "Documents"
+          },
           "endpoint": {
             "anyOf": [
               {
@@ -15278,6 +15438,64 @@
             ],
             "description": "Tool results and documents carrying each hidden-instruction marker; {\"error\": true} when the scan failed; null when the tenant's scan was off.",
             "title": "Injection Markers"
+          },
+          "media_images": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "[width, height, decoded bytes] of each inline image whose header was readable, in request order, at most 16; null when there were none.",
+            "title": "Media Images"
+          },
+          "media_images_truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "true when the request had more than 16 such images.",
+            "title": "Media Images Truncated"
+          },
+          "media_parts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Images and files the request carried and privacy forwarded, by kind; null when it carried none.",
+            "title": "Media Parts"
+          },
+          "media_unscanned": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Of those, the parts forwarded without being scanned.",
+            "title": "Media Unscanned"
           },
           "model": {
             "anyOf": [
@@ -15465,6 +15683,19 @@
               }
             ],
             "title": "Rule Matches Truncated"
+          },
+          "savings": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the request's levers saved: measured, estimated and not_attributed sections by lever; only measured figures are savings; null when no lever had a figure.",
+            "title": "Savings"
           },
           "settings_applied": {
             "anyOf": [
@@ -16565,6 +16796,119 @@
           }
         },
         "title": "SafetySetting",
+        "type": "object"
+      },
+      "SavingsLeverView": {
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes"
+          },
+          "chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chars"
+          },
+          "lever": {
+            "title": "Lever",
+            "type": "string"
+          },
+          "method": {
+            "enum": [
+              "measured",
+              "estimated",
+              "not_attributed",
+              "counted"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "requests": {
+            "minimum": 1.0,
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens"
+          },
+          "unpriced": {
+            "default": 0,
+            "description": "Requests of this row whose price was unknown.",
+            "minimum": 0.0,
+            "title": "Unpriced",
+            "type": "integer"
+          },
+          "usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Decimal string; may be negative for the cache.",
+            "title": "Usd"
+          }
+        },
+        "required": [
+          "lever",
+          "method",
+          "requests",
+          "note"
+        ],
+        "title": "SavingsLeverView",
+        "type": "object"
+      },
+      "SavingsView": {
+        "properties": {
+          "levers": {
+            "items": {
+              "$ref": "#/components/schemas/SavingsLeverView"
+            },
+            "title": "Levers",
+            "type": "array"
+          },
+          "measured_usd": {
+            "description": "Only rows whose method is measured; estimates are never added.",
+            "title": "Measured Usd",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/BillingPeriodView"
+          }
+        },
+        "required": [
+          "period",
+          "measured_usd",
+          "levers"
+        ],
+        "title": "SavingsView",
         "type": "object"
       },
       "ScanInput": {
@@ -19488,6 +19832,21 @@
       "TransformPatch": {
         "additionalProperties": false,
         "properties": {
+          "image_downscale": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "on"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Downscale"
+          },
           "json_compaction": {
             "anyOf": [
               {
@@ -19511,6 +19870,15 @@
         "additionalProperties": false,
         "description": "Transform band steps: lossless content changes, each off by default (S56).",
         "properties": {
+          "image_downscale": {
+            "default": "off",
+            "enum": [
+              "off",
+              "on"
+            ],
+            "title": "Image Downscale",
+            "type": "string"
+          },
           "json_compaction": {
             "default": "off",
             "enum": [
@@ -29711,6 +30079,95 @@
         "summary": "Propose Rules",
         "tags": [
           "rules"
+        ]
+      }
+    },
+    "/api/v1/management/savings": {
+      "get": {
+        "operationId": "savings_api_v1_management_savings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Savings",
+        "tags": [
+          "management"
         ]
       }
     },

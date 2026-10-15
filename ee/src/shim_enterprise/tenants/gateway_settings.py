@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import importlib.util
 import logging
 import re
 from typing import Annotated, Any, Literal
@@ -18,7 +19,8 @@ from pydantic import (
 )
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
-from shim.gateway.request_policy import AgentLoop, TaskCaps
+from shim.gateway.request_policy import AgentLoop, ImageDetailSettings, TaskCaps
+from shim.privacy.documents import pdf_reader_version
 from shim.privacy.policies import effective_entity_actions
 from shim_enterprise.core.config import settings
 
@@ -170,12 +172,15 @@ class TransformSettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     json_compaction: Literal["off", "on"] = "off"
+    # Runs only where Pillow is installed (SETTING_AVAILABILITY).
+    image_downscale: Literal["off", "on"] = "off"
 
 
 class TransformPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     json_compaction: Literal["off", "on"] | None = None
+    image_downscale: Literal["off", "on"] | None = None
 
 
 LockMode = Literal["off", "monitor", "enforce"]
@@ -281,6 +286,11 @@ class GatewaySettings(BaseModel):
 
     response_analysis: list[str] = []
     injection_markers: Literal["off", "count", "warn"] = "off"
+    # Images and files: refused while privacy protects anything, or forwarded unscanned.
+    media_inputs: Literal["block", "allow"] = "block"
+    # Read and scan PDF, Word and text files instead of treating them as media.
+    documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media"
+    document_format: Literal["native", "by_provider"] = "native"
     price_tier_warning: bool = False
     model_retiring_warning: Literal["record", "header"] = "record"
     restore_withheld: dict[str, RestoreGrant] = {}
@@ -296,6 +306,8 @@ class GatewaySettings(BaseModel):
     tool_search: ToolSearchSettings = ToolSearchSettings()
     thinking_history: ThinkingHistorySettings = ThinkingHistorySettings()
     transforms: TransformSettings = TransformSettings()
+    # Image detail levels filled in where the client chose none (S63).
+    image_detail: ImageDetailSettings = ImageDetailSettings()
     # Stops new automatic and agent applies; automatic undo keeps running.
     auto_remediation_paused: bool = False
     bedrock_region_lock: BedrockRegionLock = BedrockRegionLock()
@@ -320,6 +332,9 @@ class GatewaySettingsPatch(BaseModel):
 
     response_analysis: list[str] | None = None
     injection_markers: Literal["off", "count", "warn"] | None = None
+    media_inputs: Literal["block", "allow"] | None = None
+    documents: Literal["as_media", "scan", "scan_and_convert"] | None = None
+    document_format: Literal["native", "by_provider"] | None = None
     price_tier_warning: bool | None = None
     model_retiring_warning: Literal["record", "header"] | None = None
     # Merged into the stored grants type by type; null gives a type back to everyone.
@@ -337,6 +352,7 @@ class GatewaySettingsPatch(BaseModel):
     tool_search: ToolSearchPatch | None = None
     thinking_history: ThinkingHistoryPatch | None = None
     transforms: TransformPatch | None = None
+    image_detail: ImageDetailSettings | None = None
     auto_remediation_paused: bool | None = None
     bedrock_region_lock: BedrockRegionLockPatch | None = None
     bedrock_attribution: BedrockAttributionPatch | None = None
@@ -548,6 +564,13 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "finding_modes": _finding_modes,
     "request_archive": _request_archive,
     "injection_markers": _marker_direction,
+    # Forwarded media is not scanned.
+    "media_inputs": toward("allow"),
+    # Under media_inputs allow, as_media forwards documents scan would stop.
+    "documents": toward("as_media"),
+    # by_provider keeps a clean PDF native for Gemini, page images a tenant that hides
+    # values would otherwise get as scanned text.
+    "document_format": toward("by_provider"),
     # A report, not a protection.
     "price_tier_warning": neutral,
     # Where a retirement warning is shown; it is always recorded.
@@ -565,6 +588,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "thinking_history": neutral,
     # Lossless: the model reads the same values in fewer characters.
     "transforms": neutral,
+    # What the provider bills and reads an image at, not what the request may carry.
+    "image_detail": neutral,
     # Pausing stops unattended changes; resuming lets them run again.
     "auto_remediation_paused": toward(False),
     "bedrock_region_lock": _region_lock_direction,
@@ -576,6 +601,14 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
 SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {
+    "transforms.image_downscale": lambda: (
+        None
+        if importlib.util.find_spec("PIL") is not None
+        else "off, needs shim-gateway[images]"
+    ),
+    "documents.pdf": lambda: (
+        None if pdf_reader_version() is not None else "off, needs pypdf"
+    ),
     "bedrock_attribution": lambda: (
         None
         if settings.AWS_GATEWAY_IDENTITY != "none"

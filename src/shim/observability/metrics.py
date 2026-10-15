@@ -260,6 +260,21 @@ TRANSFORMS_TOTAL = Counter(
     "Transform band steps per request, by step and result.",
     ("transform", "result"),
 )
+MEDIA_PARTS_TOTAL = Counter(
+    "shim_media_parts_total",
+    "Images and files in requests, by kind and whether privacy forwarded or blocked them.",
+    ("kind", "outcome"),
+)
+DOCUMENTS_TOTAL = Counter(
+    "shim_documents_total",
+    "PDF, Word and text files the privacy stage read, by kind and outcome.",
+    ("kind", "outcome"),
+)
+IMAGE_DOWNSCALE_TOTAL = Counter(
+    "shim_image_downscale_total",
+    "Inline images the transform band considered, by what happened to each.",
+    ("outcome",),
+)
 INJECTION_MARKERS_TOTAL = Counter(
     "shim_injection_markers_total",
     "Tool results and documents carrying a hidden-instruction marker, by marker.",

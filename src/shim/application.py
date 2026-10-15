@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import importlib.util
+import logging
 import sys
 from typing import TextIO
 
@@ -37,11 +39,13 @@ from shim.gateway.concurrency import InMemoryConcurrencyLimiter
 from shim.gateway.request_policy import (
     AgentLoop,
     BandSettings,
+    ImageDetailSettings,
     LocalRequestPolicyResolver,
     TaskCaps,
 )
 from shim.gateway.usage import LocalUsageLifecycle
 from shim.observability.logging import configure_error_reporting, configure_logging
+from shim.privacy.documents import pdf_reader_version
 from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim.privacy.continuation import InMemoryPrivacyContinuationStore
 from shim.privacy.pii_scrubber import PIIScrubberService
@@ -99,6 +103,17 @@ def create_community_app(
         sentry_dsn=configured.SENTRY_DSN,
         environment=configured.ENVIRONMENT,
     )
+    pillow = importlib.util.find_spec("PIL") is not None
+    if configured.SHIM_IMAGE_DOWNSCALE == "on" and not pillow:
+        logging.getLogger(__name__).warning(
+            "SHIM_IMAGE_DOWNSCALE is on but Pillow is not installed: images are not "
+            "shrunk; install shim-gateway[images]"
+        )
+    if configured.SHIM_DOCUMENTS != "as_media" and pdf_reader_version() is None:
+        logging.getLogger(__name__).warning(
+            "SHIM_DOCUMENTS is on but pypdf is not installed: PDFs are unscannable "
+            "(needs_pypdf); install shim-gateway[documents]"
+        )
     tracing = bool(configured.OTEL_EXPORTER_OTLP_ENDPOINT)
     if tracing:
         configure_tracing(
@@ -183,6 +198,9 @@ def create_community_app(
                     response_scan=configured.PII_RESPONSE_SCAN,
                     response_analysis=tuple(configured.SHIM_RESPONSE_ANALYSIS),
                     injection_markers=configured.SHIM_INJECTION_MARKERS,
+                    media_inputs=configured.SHIM_MEDIA_INPUTS,
+                    documents=configured.SHIM_DOCUMENTS,
+                    document_format=configured.SHIM_DOCUMENT_FORMAT,
                     price_tier_warning=configured.SHIM_PRICE_TIER_WARNING == "on",
                     task_caps=TaskCaps(
                         max_calls=configured.SHIM_TASK_MAX_CALLS,
@@ -209,6 +227,13 @@ def create_community_app(
                         anthropic_keep_thinking_turns=configured.SHIM_ANTHROPIC_KEEP_THINKING_TURNS,
                         openai_reasoning_context=configured.SHIM_OPENAI_REASONING_CONTEXT,
                         json_compaction=configured.SHIM_JSON_COMPACTION == "on",
+                        image_downscale=configured.SHIM_IMAGE_DOWNSCALE == "on"
+                        and pillow,
+                        image_detail=ImageDetailSettings(
+                            openai=configured.SHIM_IMAGE_DETAIL_OPENAI,
+                            gemini=configured.SHIM_IMAGE_DETAIL_GEMINI,
+                            models=tuple(configured.SHIM_IMAGE_DETAIL_MODELS),
+                        ),
                     ),
                 ),
                 concurrency_limiter=None

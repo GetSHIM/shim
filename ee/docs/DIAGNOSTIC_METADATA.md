@@ -234,6 +234,26 @@ It is written with the privacy counts, in the same transaction, and is in the
 analytics row, the request list and the last column of its CSV (as JSON) and the
 community JSONL event. Only marker ids and counts are kept, never the text.
 
+`media_parts` counts the images and files of a request that privacy forwarded, by
+kind (`image`, `pdf`, `docx`, `text`, `audio`, `video`, `other`), and
+`media_unscanned` how many of them went out without being scanned; `media_images`
+lists `[width, height, decoded_bytes]` of each inline image whose header was
+readable, in request order, at most 16, with `media_images_truncated: true` when
+there were more. All are absent when the request carried no media or its media was
+refused. They are written with the privacy counts, in the same transaction, and are
+in the analytics row, the request list and its CSV and the community JSONL event.
+No format, path, digest or content is kept.
+
+With document scanning on (`documents` `scan` or `scan_and_convert`), a request that
+carried a PDF, Word or text file also records `documents`: `{"scanned", "converted",
+"native", "unscannable": {"<reason>": n}}` (reasons `not_inline`, `needs_pypdf`,
+`encrypted`, `corrupt`, `too_large`, `too_slow`, `no_text_layer`), and
+`document_entities`, the values detected in the documents' text by entity type. These
+values are also in the request's own counts (`pii_entities`, `monitored_entities`,
+`blocked_entities`), since the document is part of the request; `document_entities`
+is the documents' share. A scanned document is not counted in `media_unscanned`. The
+extracted text is never stored, logged or recorded.
+
 `restore_withheld` counts, per type, the placeholders a caller got back unrestored
 because its key and team are outside the tenant's restore grant for that type
 (`{}` when none was in the request), written with the privacy counts in the same
@@ -266,6 +286,24 @@ received that request's answer because its key is in
 price. Such a request settles one request unit with no tokens and no spend row;
 the leader's row carries the provider call and its cost. Both are in the
 lifecycle metadata only.
+
+`savings` is written at finalization of a `completed` request when one of its
+levers has a figure: `{"version": 1, "measured": {...}, "estimated": {...},
+"not_attributed": {...}}`, each section by lever and omitted when empty. Measured:
+`inflight_share` (`usd` is the avoided cost, `tokens` the shared answer's), the
+Anthropic breakpoint the settings band added as `provider_cache` (`usd` = cache reads
+at the input rate minus the read rate, less writes above the input rate, at the
+request's own settled rates, possibly negative; `read_tokens`, `write_tokens`),
+`json_compaction` (`chars`), `image_downscale` (`bytes`) and `context_clearing`
+(`tokens` Anthropic reported clearing). Estimated: `json_compaction` (`tokens` at four
+characters a token, `usd` at the input rate), `context_clearing` (`usd`, gross) and
+`inflight_share` when the shared answer's usage was estimated, not reported.
+Not attributed: `provider_cache_key` (OpenAI caches without the key). Amounts are
+decimal strings with 10 places; a lever whose price was unknown has `"usd": null,
+"unpriced": true`. Only ids, counts and amounts, never content. It is in the
+lifecycle metadata, read through the request list (`savings`) and its CSV (compact
+JSON), and on the community JSONL event. `GET /api/v1/management/savings` sums it
+([enterprise cookbook](COOKBOOK.md#see-what-each-lever-saved)).
 
 `response_entities` holds the distinct values a delivered answer carried that
 the request did not, by entity type, when the tenant's `response_scan` is
@@ -362,7 +400,8 @@ quota reservation's `prompt_tokens`, `media_parts`, `warnings` and
 the request, as `{"id", "version"}`: a [parameter pin](COOKBOOK.md#pin-a-parameter)
 is `parameter_pin.<rule id>` with the rule set's revision; the provider-cache steps
 are `anthropic_auto_cache` and `openai_prompt_cache_key`, and the tool and thinking
-steps `tool_search`, `anthropic_clear_thinking` and `openai_reasoning_context`, all
+steps `tool_search`, `anthropic_clear_thinking` and `openai_reasoning_context`, and
+the image step `image_detail` (an image part's `detail` or `mediaResolution`), all
 version 1. It is written with the
 privacy facts, `[]` when the band ran and set nothing (a pin in monitor state, a
 `warn` pin, a provider-cache step with nothing to do, a refused request), and absent
@@ -374,11 +413,22 @@ community JSONL event carries it only when a step was applied.
 `transforms_applied` lists the transform band steps that changed the request, as
 `{"id", "version", "before_chars", "after_chars"}` plus the step's own counts:
 `json_compaction` adds `items`, the tool result strings it compacted, and its
-character sums cover those strings only. Written with the privacy facts, `[]` when the
+character sums cover those strings only. `image_downscale` adds `items` (images
+changed, their base64 characters before and after), `rules` (the size rules
+version), `library` (`pillow-<version>`), `before_bytes` and `after_bytes` (decoded
+bytes of the changed images), `images` (at most 64, in request order: `format`,
+`before` and `after` as `[width, height]`, `before_bytes`, `after_bytes`) and
+`skipped` (images left alone by reason: `below_threshold`, `not_smaller`,
+`unsupported`, `client_opt_out`, `unknown_model`, `too_large`, `corrupt`); it is
+written only when an image changed. Written with the privacy facts, `[]` when the
 band ran and changed nothing (no JSON tool result qualified, or the request was
 skipped as bound to Anthropic thinking), absent when no transform is on and for token
 counting. Sizes and counts only. The request list and its CSV show it, and the
-community JSONL event carries it whenever the band ran.
+community JSONL event carries it whenever the band ran. A document the privacy stage
+turned into text comes first, one entry per document: `{"id": "document_text",
+"version": 1, "before_chars": <base64 characters>, "after_chars": <text characters>,
+"items": 1}`, with `reader` (`pypdf <version>`) for a PDF; it is written also when no
+transform is on.
 
 `attempt_group_id`, `attempt_number`, `attempt_reason` and `attempt_rule_id` are on
 the row of an extra attempt a tenant rule asked for (number 2 or 3, reason

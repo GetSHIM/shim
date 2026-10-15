@@ -258,6 +258,22 @@ the same vector. The list replaces the stored one whole; an unknown type or `nul
 is 422. Adding a type records `tenant.privacy_protection_relaxed` with
 `embeddings_monitor_types.<TYPE>`; removing one does not.
 
+Images and files are a [gateway setting](#change-the-gateway-settings),
+`media_inputs`: `block` (default) refuses a request carrying one while any type is
+masked or blocked, or an enforced `mask`, `block` or `require_approval` rule
+applies; `allow` forwards it unchanged and unscanned, and the request list counts
+it in `media_parts` and `media_unscanned`. Turning it to `allow` records
+`tenant.privacy_protection_relaxed` with `media_inputs`. What "unscanned" means and
+how such requests are sized is in the
+[community cookbook](../../docs/COOKBOOK.md#choose-what-happens-to-each-data-type).
+`documents` (`as_media`, `scan`, `scan_and_convert`) and `document_format` (`native`,
+`by_provider`) read and check PDF, Word and text files like message text, as the same
+recipe describes; the request list shows `documents` and `document_entities`. Moving
+`documents` back to `as_media` relaxes (under `media_inputs: allow` it forwards what a
+scan stopped), and so does `document_format: by_provider` (Gemini then gets a clean
+PDF's pages instead of its scanned text); both need a second approver while four-eyes
+is on.
+
 `bulk_threshold` (default 50) raises a bulk-disclosure alert when one request
 carries at least that many distinct detected values, across every type and
 action; `null` turns it off. The request still goes on as its actions decide.
@@ -302,13 +318,17 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `restore_withheld` | `{}` | Per entity type or rule label, the teams and keys that get the value back in the answer; every other caller keeps the placeholder. See [show masked values only to some teams](#show-masked-values-only-to-some-teams). |
 | `model_retiring_warning` | `"record"` | `header` also puts `MODEL_RETIRING` and `MODEL_RETIRED` in `X-Shim-Warnings`; the request list's `warnings` always has them. See [retiring models](MODEL_DEPLOYMENTS.md#retiring-models). |
 | `price_tier_warning` | `false` | Add `PRICE_TIER_CROSSED` to `X-Shim-Warnings` when a request's approximate size is above a catalog model's large-context price tier; see [stay under the price tier](#stay-under-the-price-tier). |
+| `documents` | `"as_media"` | `scan` reads PDF, Word and text files and checks their text; `scan_and_convert` also sends one with a value to mask as its masked text ([privacy settings](#change-the-privacy-settings)). `unavailable` says `{"documents.pdf": "off, needs pypdf"}` when pypdf is missing. |
+| `document_format` | `"native"` | `by_provider` sends a clean document as text where the provider bills that less. |
+| `media_inputs` | `"block"` | `allow` forwards images and files unchanged and unscanned instead of refusing them; a privacy relaxation ([privacy settings](#change-the-privacy-settings)). |
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 | `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |
 | `finding_modes` | `{}` | Per finding rule, `observe`, `suggest` or `auto`, up to the rule's highest mode ([let shim suggest a fix](#let-shim-suggest-a-fix)); a PATCH merges per rule. |
 | `provider_cache` | off, off, `[]` | `anthropic_auto_cache` (`off`, `5m`, `1h`) and `openai_prompt_cache_key` (`off`, `key`, `tenant`), the [community recipe](../../docs/COOKBOOK.md#use-the-providers-cache-discount)'s two switches, for catalog routes and the registry aliases in `deployments` (at most 100 of this organization; a Bedrock deployment is 422). A PATCH changes only the fields it names. |
 | `tool_search` | `off`, 10, `[]`, `[]` | `mode` (`off`, `regex`, `bm25`), `min_tools` (2 to 10,000), `keep_loaded` (at most 64 tool names) and `api_key_ids` (at most 100 keys of this organization; empty is every key): [load tools on demand](../../docs/COOKBOOK.md#load-tools-on-demand), for catalog routes and the `provider_cache.deployments` aliases. Start with one app's key. |
 | `thinking_history` | 0, `off` | `anthropic_keep_turns` (0 to 8) and `openai_reasoning_context` (`off`, `current_turn`): [stop paying for old thinking](../../docs/COOKBOOK.md#stop-paying-for-old-thinking). |
-| `transforms` | `off` | `json_compaction` (`off`, `on`): [shrink JSON tool results](../../docs/COOKBOOK.md#shrink-json-tool-results), lossless, for every target. |
+| `image_detail` | off, off, `[]` | `openai` (`off`, `low`, `high`), `gemini` (`off`, `low`, `medium`) and `models` (at most 100 names; empty is every model): [read images at a cheaper detail level](../../docs/COOKBOOK.md#read-images-at-a-cheaper-detail-level), for catalog routes and the `provider_cache.deployments` aliases, while `media_inputs` lets images through. A PATCH changes only the fields it names. |
+| `transforms` | `off`, `off` | `json_compaction` (`off`, `on`): [shrink JSON tool results](../../docs/COOKBOOK.md#shrink-json-tool-results), lossless, for every target; `image_downscale` (`off`, `on`): [shrink oversized images](../../docs/COOKBOOK.md#shrink-oversized-images) for catalog routes and the `provider_cache.deployments` aliases, while `media_inputs` lets images through. A PATCH changes only the fields it names. `unavailable` says "off, needs shim-gateway[images]" under `transforms.image_downscale` when Pillow is missing, and a stored `on` then runs as `off`. |
 | `auto_remediation_paused` | `false` | `true` stops new automatic and agent applies; windows keep closing and automatic undo keeps running ([let shim switch off unused deployments](#let-shim-switch-off-unused-deployments-and-see-what-it-did)). |
 | `bedrock_region_lock` | `off` | `mode`, `scopes`, `regions`: which Bedrock inference profiles requests may use ([lock Bedrock to EU regions](#lock-bedrock-to-eu-regions)). |
 | `bedrock_attribution` | `off` | `mode` `session_tags`, `tag_key`, `unassigned_value`: each team's tag on its Bedrock role sessions ([see team costs on the AWS bill](#see-team-costs-on-the-aws-bill)); needs `AWS_GATEWAY_IDENTITY`. |
@@ -1203,6 +1223,39 @@ curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
 Notes: loosening or turning the lock off is relaxing (four eyes applies when on);
 one PATCH or a version restore takes it back. Destinations refresh on each health
 check.
+
+## See what each lever saved
+
+Read what the gateway's levers saved on your own traffic, saved money kept apart from
+estimates.
+
+1. `GET /api/v1/management/savings` (`usage.read`: owner, admin, auditor and service
+   readers), optional `start_date` and `end_date` (with an offset; the last 30 days by
+   default, at most 31) and `api_key_id`.
+2. Read `measured_usd`, the only total: in-flight sharing and the Anthropic cache
+   breakpoint shim added, priced at the requests' own settled rates. It can be
+   negative when cache writes cost more than the reads saved.
+3. Read `levers`: one row per lever and method (`measured`, `estimated`,
+   `not_attributed`, `counted`) with `requests`, `usd`, `tokens`, `chars`, `bytes`,
+   `unpriced` (requests whose price was unknown) and a `note` on the method.
+
+```console
+curl "http://localhost:8000/api/v1/management/savings?start_date=2026-10-01T00:00:00Z" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Estimated rows are never added to the total: JSON compaction's tokens (four characters
+a token), context clearing's money (gross, before the cache rewrite clearing causes),
+and `routing` and `routing_monitor`, the same settled tokens priced at both models of a
+route rule's decision (an alias by its deployment price, else its upstream model's
+catalog price; the other model would have written a different answer). The OpenAI
+prompt-cache key's discount is `not_attributed`, because OpenAI caches without it.
+Image detail, tool search, reasoning context and parameter pins are only counted: the
+providers report no tokens for them. Document conversion is not a lever: a tenant that
+masks values gets it as protection. In-flight sharing is `estimated` when the first
+request's usage was shim's estimate rather than the provider's report. Only completed requests
+count, and each request's record is in the request list as `savings`
+([diagnostic metadata](DIAGNOSTIC_METADATA.md)).
 
 ## Allocate hardware cost to teams
 
