@@ -234,6 +234,78 @@ async def test_identifiers_in_any_script_s_digits_never_reach_the_provider(
     )
 
 
+_TCKN, _CARD, _IBAN = "10000000146", "4111111111111111", "TR330006100519786457841326"
+_PHONE, _EMAIL = "+905321234567", "ayse.yilmaz@ornek.com.tr"
+
+
+def _every_third(value: str) -> str:
+    return "-".join(value[index : index + 3] for index in range(0, len(value), 3))
+
+
+# How the benchmark of 15 October 2026 hid an identifier from detection.
+_DISGUISED = {
+    "spaced-tckn": " ".join(_TCKN),
+    "spaced-card": " ".join(_CARD),
+    "spaced-iban": " ".join(_IBAN),
+    "spaced-phone": " ".join(_PHONE),
+    "reversed-override-tckn": f"‮{_TCKN[::-1]}‬",
+    "reversed-override-card": f"‮{_CARD[::-1]}‬",
+    "reversed-override-iban": f"‮{_IBAN[::-1]}‬",
+    "reversed-override-phone": f"‮{_PHONE[::-1]}‬",
+    "reversed-override-email": f"‮{_EMAIL[::-1]}‬",
+    "override-unclosed-email": f"‮{_EMAIL[::-1]}",
+    "email-broken-after-at": _EMAIL.replace("@", "@\n"),
+    "acute-on-email-letters": "".join(c + "́" if c.isalnum() else c for c in _EMAIL),
+    "acute-on-iban-letters": "".join(c + "́" for c in _IBAN),
+    "hyphen-every-third-iban": _every_third(_IBAN),
+    "hyphen-every-third-card": _every_third(_CARD),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shown", _DISGUISED.values(), ids=_DISGUISED)
+async def test_disguised_identifiers_never_reach_the_provider(shown: str) -> None:
+    prompt = f"Müşteri bilgisi: {shown} teşekkürler."
+    sent: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][0]["content"]
+        sent.append(content)
+        return httpx.Response(200, json=_completion(content))
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    application = create_community_app(
+        _settings(), http_client=upstream, event_stream=StringIO()
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 200, response.text
+    [upstream_text] = sent
+    # Every character of the value is masked; only the direction controls stay.
+    controls = "".join(c for c in shown if c in "‮‬")
+    assert (
+        re.sub(r"<[A-Z_]+_[0-9a-f]{32}>", "", upstream_text)
+        == f"Müşteri bilgisi: {controls} teşekkürler."
+    ), upstream_text
+    assert response.json()["choices"][0]["message"]["content"] == prompt
+
+
 class _SplitStream(httpx.AsyncByteStream):
     def __init__(self, content: bytes) -> None:
         self.content = content

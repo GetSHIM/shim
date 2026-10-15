@@ -331,7 +331,13 @@ number written in Arabic-Indic, Devanagari or fullwidth digits is found and
 masked like one written in 0-9, and so is a rule term or template. Marks and
 invisible characters on the digits (an accent after each digit, a variation
 selector, a keycap, a zero-width joiner) do not hide the number; they are masked
-with it and restored with it.
+with it and restored with it, and so are marks on the letters of an email or an
+IBAN. A TCKN, card, IBAN or phone number with a space between every character
+(`1 0 0 0 0 0 0 0 1 4 6`) or in hyphenated groups of one size
+(`TR3-300-061-005-...`) is read without the separators when it has ten digits or
+more, and an email broken over a line after its `@` is read whole. Text after a
+right-to-left override (U+202E) is also read in the order it is shown, so a value
+stored reversed is found; the mask covers the separators and the reversed text.
 
 Each entity also carries its `action` (see the next recipe); a type whose action
 is `off` is not reported. Enterprise names the list `entities_found` and gives

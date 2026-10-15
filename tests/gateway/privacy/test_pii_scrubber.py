@@ -1373,6 +1373,74 @@ def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -
     )
 
 
+@pytest.mark.parametrize(
+    ("text", "prepared"),
+    [
+        ("TC 1 0 0 0 0 0 0 0 1 4 6.", "TC 10000000146."),
+        ("ara + 9 0 5 3 2 1 2 3 4 5 6 7", "ara +905321234567"),
+        ("IBAN TR3-300-061-005-197-864-578-413-26", "IBAN TR330006100519786457841326"),
+        ("kart 4111-1111-1111-1111", "kart 4111111111111111"),
+        ("a@\n example.com", "a@example.com"),
+        ("\u202e64100000001\u202c ok", "64100000001\n10000000146 ok"),
+        ("a\u0301li@e\u0301xample.com", "ali@example.com"),
+        # Left alone: under ten digits, groups of mixed sizes, a word glued on.
+        ("seri 1 2 3 4 5 6 7 8 9 10", "seri 1 2 3 4 5 6 7 8 9 10"),
+        ("2026-10-15-2026-10-20", "2026-10-15-2026-10-20"),
+        ("0532-123-45-67", "0532-123-45-67"),
+        ("sk-proj-1234-5678-9012-abcd", "sk-proj-1234-5678-9012-abcd"),
+        ("0532 123 45 67 0533 765 43 21", "0532 123 45 67 0533 765 43 21"),
+        ("Tutar 1 250 000 TL", "Tutar 1 250 000 TL"),
+        ("café", "café"),
+    ],
+)
+def test_preprocessing_joins_split_identifiers_and_shows_overrides_reversed(
+    scrubber: PIIScrubberService, text: str, prepared: str
+) -> None:
+    assert PIIScrubberService.preprocess(text) == prepared
+    # A mask still covers the original characters, and restore gives them back.
+    scrubbed, mapping = scrubber.scrub(text, DEFAULT_ACTIONS)
+    assert scrubber.deanonymize(scrubbed, mapping) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1 " * 50_000,
+        ("1 " * 9 + "1x ") * 5_000,
+        "1-" * 50_000,
+        "TR1-" * 25_000,
+        "a@" + " " * 100_000,
+        "a@\n" * 33_000,
+        "\u202e1" * 50_000,
+        "\u202e1\u202c" * 33_000,
+        "a\u0301" * 50_000,
+    ],
+    ids=[
+        "spaced-run",
+        "runs-one-short",
+        "hyphenated-run",
+        "hyphenated-letters",
+        "spaces-after-at",
+        "breaks-after-at",
+        "open-overrides",
+        "closed-overrides",
+        "marks-on-letters",
+    ],
+)
+def test_preprocessing_100_kb_of_separators_overrides_and_marks_stays_linear(
+    text: str,
+) -> None:
+    # About 0.25 s on an M1; quadratic work on 100 KB would take minutes.
+    assert (
+        timeit.timeit(
+            lambda: PIIScrubberService.preprocess(text),
+            timer=time.thread_time,
+            number=1,
+        )
+        < 2
+    )
+
+
 def test_a_json_document_survives_scrubbing_with_only_the_phone_replaced(
     scrubber: PIIScrubberService,
 ) -> None:
