@@ -348,6 +348,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
                             {"TR_NATIONAL_ID": 1},
                             {"probe": {"n": 1}, "versions": {"probe": "1"}},
                             None,
+                            None,
                         )
                     ]
                 ),

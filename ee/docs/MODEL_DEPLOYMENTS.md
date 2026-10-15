@@ -306,8 +306,10 @@ of `from`: it is the same model on its own server, not another model or another
 residency (sending long requests to another model is a [route rule](#routing-rules)).
 One lane per alias.
 
-The measure is admission's TPM unit: the UTF-8 bytes of the compact JSON request,
-divided by four and rounded up, computed only for an alias that has a lane. At or above
+The measure is admission's TPM unit for text: the UTF-8 bytes of the compact JSON
+request, divided by four and rounded up, computed only for an alias that has a lane.
+Inline images and files count as their encoded bytes here (the lane is chosen before
+admission sizes media by parts), so a request carrying them reaches the threshold sooner. At or above
 the threshold an enforced rule sends the request to the lane, checked as a direct
 request to it (enabled, not unhealthy, approved origin, in the key's allowlist, still
 of the kind of `from` at run time); a lane that cannot serve leaves it on `from` with

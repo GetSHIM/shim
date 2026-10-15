@@ -28,7 +28,7 @@ TURKISH = "Şirketin 2026 bütçesini özetle: ğüşıöç İĞÜŞÖÇ " * 40
     ids=["chat", "responses", "messages", "short"],
 )
 def test_the_measure_is_admissions_approximate_tokens(payload) -> None:
-    input_bytes, _ = _estimate_input_tokens(payload, "identity")
+    input_bytes, _, _ = _estimate_input_tokens(payload, "identity")
 
     assert approximate_input_tokens(payload) == -(-input_bytes // 4)
 
