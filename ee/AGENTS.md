@@ -44,4 +44,6 @@ python -m shim_enterprise.workers.ai_act
 ```
 
 Never downgrade production. Test downgrade only against disposable data and
-roll production back with a previous schema-compatible image.
+roll production back with a previous schema-compatible image. The one exception
+is a rollback from v0.4.0 to an older image, which needs
+`alembic downgrade c6bf1ec40802` first ([release notes](../docs/releases/v0.4.0.md#rolling-back)).

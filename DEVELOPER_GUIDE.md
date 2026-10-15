@@ -50,7 +50,7 @@ Community:
 
 ```bash
 cp .env.example .env
-uv sync --locked --package shim-gateway
+uv sync --locked --package shim-gateway --extra documents --extra images
 uv run --locked --package shim-gateway shim serve
 ```
 
@@ -89,7 +89,9 @@ uv run --locked --package shim-enterprise alembic -c ee/alembic.ini upgrade head
 ```
 
 Never downgrade a production database. Roll production back to the previous
-schema-compatible application image.
+schema-compatible application image. The one exception so far is a rollback from
+v0.4.0 to an older image, which needs `downgrade c6bf1ec40802` first
+([release notes](docs/releases/v0.4.0.md#rolling-back)).
 
 Operator-managed provisioning and plan activation are enterprise operations.
 Follow [the provisioning and existing-customer transition runbook](ee/docs/PROVISIONING.md):

@@ -10,7 +10,7 @@ no public workflow checks out the dashboard repository.
 The workflows deliver one archive per `linux/amd64` and `linux/arm64` platform:
 image archive, immutable source reference, component version, commit, SPDX
 SBOM, BuildKit provenance, public key, signed checksums. They also sign the
-registry image digest. Backend **0.1.3** and dashboard **0.1.0** are separate
+registry image digest. Backend **0.4.0** and dashboard **0.1.0** are separate
 component versions; a bundle ID such as `example-release-1` identifies their
 combination. Publishing requires tag versions to match package metadata.
 Workflows are not proof that an unpublished image has been built or tested.
@@ -75,7 +75,7 @@ Create a JSON specification beside the local files (replace every placeholder):
   "bundle_id": "example-release-1",
   "platform": "linux/amd64",
   "images": [
-    {"name": "backend", "version": "0.1.3", "source": "ghcr.io/getshim/shim-enterprise@sha256:<64-hex-digest>"},
+    {"name": "backend", "version": "0.4.0", "source": "ghcr.io/getshim/shim-enterprise@sha256:<64-hex-digest>"},
     {"name": "dashboard", "version": "0.1.0", "source": "ghcr.io/durthvadr/shim-dashboard@sha256:<64-hex-digest>"}
   ],
   "files": ["shim-enterprise-0.1.0.tgz", "OFFLINE_RELEASES.md", "OPERATIONS.md", "backend.spdx.json", "dashboard.spdx.json", "backend.provenance.json", "dashboard.provenance.json"]
@@ -130,8 +130,8 @@ Preserve the original signed manifest and import output as mapping evidence.
 For example:
 
 ```sh
-docker tag sha256:<verified-loaded-id> registry.internal/shim/backend:0.1.3
-docker push registry.internal/shim/backend:0.1.3
+docker tag sha256:<verified-loaded-id> registry.internal/shim/backend:0.4.0
+docker push registry.internal/shim/backend:0.4.0
 # Record the digest returned by push; use registry.internal/shim/backend@sha256:...
 ```
 

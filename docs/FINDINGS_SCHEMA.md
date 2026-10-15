@@ -5,12 +5,13 @@ findings API and carried by its OCSF export. The shape is a pydantic model,
 `shim.findings.Finding`, published as a JSON Schema (Draft 2020-12) in
 [`docs/schemas/finding-v1.json`](schemas/finding-v1.json).
 `python scripts/export_finding_schema.py` writes the file, and the test suite
-fails while it differs from the model. Other producers (`shim doctor --json`,
-LiteLLM imports) are planned to emit it; none does yet.
+fails while it differs from the model. LiteLLM spend-log imports emit it with
+`source: litellm`, and shim-cli 1.2.0 and later emit it from `doctor`, `report`
+and `watch` with `source: shim-cli`.
 
 ## What changes for existing apps
 
-v0.3.0 served findings in its own shape. From this release the findings API
+v0.3.0 served findings in its own shape. From v0.4.0 the findings API
 (`GET /findings`, `GET` and `PATCH /findings/{id}`) answers in v1 instead:
 
 | v0.3.0 | v1 |

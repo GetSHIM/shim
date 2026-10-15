@@ -2,7 +2,7 @@
 
 Status: current implementation contract
 
-Last verified: 2026-10-07
+Last verified: 2026-10-15 (v0.4.0)
 
 This document describes the code in this branch. When it disagrees with prose,
 use this order of authority:
@@ -59,6 +59,7 @@ GatewayKernel
   policy -> admission -> privacy -> rules -> settings band -> transform band
          -> provider start
          -> one SDK attempt -> restore -> finalize
+         -> after-delivery analysis (opt-in)
         |
         v
 provider-native JSON or SSE response
@@ -449,7 +450,8 @@ runtime code, Alembic, and enterprise scripts remain exact-manifest-only.
 | Compliance | `python -m shim_enterprise.workers.compliance` |
 | AI Act | `python -m shim_enterprise.workers.ai_act` |
 
-The root Dockerfile contains only the community runtime. `ee/Dockerfile`
+The root Dockerfile contains only the community runtime, with its `documents` and
+`images` extras. `ee/Dockerfile`
 contains both packages plus enterprise migrations and operational scripts.
 Customer Compose uses the enterprise image. Cloud Build uses `ee/cloud/Dockerfile`,
 which installs `shim-cloud` and selects cloud API, outbox and migration entrypoints.
