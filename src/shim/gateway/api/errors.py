@@ -102,7 +102,11 @@ async def gateway_exception_handler(
             content={
                 "detail": jsonable_encoder(
                     [
-                        {key: value for key, value in error.items() if key != "input"}
+                        {
+                            key: _sanitize_str(value) if isinstance(value, str) else value
+                            for key, value in error.items()
+                            if key != "input"
+                        }
                         for error in exc.errors()
                     ]
                 )
@@ -209,17 +213,17 @@ def _error_parts(
     detail: Any, status_code: int
 ) -> tuple[str, str | None, JsonValue, str | None]:
     if isinstance(detail, str):
-        return detail, None, None, None
+        return _sanitize_str(detail), None, None, None
     if isinstance(detail, Mapping):
         message = detail.get("message")
         code = detail.get("code")
         param = detail.get("param", detail.get("dimension"))
         hint = detail.get("hint")
         return (
-            message if isinstance(message, str) else _status_message(status_code, code),
-            code if isinstance(code, str) else None,
+            _sanitize_str(message) if isinstance(message, str) else _status_message(status_code, code),
+            _sanitize_str(code) if isinstance(code, str) else None,
             param if isinstance(param, (str, int, float, bool)) else None,
-            hint if isinstance(hint, str) else None,
+            _sanitize_str(hint) if isinstance(hint, str) else None,
         )
     if isinstance(detail, Sequence) and detail:
         first = detail[0]
@@ -234,12 +238,17 @@ def _error_parts(
                 else None
             )
             return (
-                message if isinstance(message, str) else _status_message(status_code),
-                error_type if isinstance(error_type, str) else "INVALID_REQUEST",
+                _sanitize_str(message) if isinstance(message, str) else _status_message(status_code),
+                _sanitize_str(error_type) if isinstance(error_type, str) else "INVALID_REQUEST",
                 param or None,
                 None,
             )
     return _status_message(status_code), None, None, None
+
+
+def _sanitize_str(s: str) -> str:
+    """Replace lone surrogate characters so the string is safe for UTF-8 encoding."""
+    return s.encode("utf-8", errors="replace").decode("utf-8")
 
 
 def _status_message(status_code: int, code: object = None) -> str:
