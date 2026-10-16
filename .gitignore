@@ -19,3 +19,7 @@ supabase/.temp/
 .idea/
 .vscode/
 *.swp
+
+# Benchmark outputs and downloaded test images (scripts/bench/run_all.sh).
+scripts/bench/results/
+scripts/bench/litellm/captures/
