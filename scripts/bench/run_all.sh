@@ -31,14 +31,17 @@ export CAPTURES=$PWD/$OUT/captures
 py() { uv run --locked python -m "$@"; }
 
 idle() {
-  # Latency numbers are only published from an idle machine.
+  # Latency numbers are only published from an idle machine. A build just before a
+  # block raises the load, so wait up to ten minutes for it to settle.
   local load
-  load=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' || cut -d' ' -f1 /proc/loadavg)
-  echo "load average: $load"
-  if awk "BEGIN {exit !($load > 2)}" && [[ -z ${BENCH_ALLOW_BUSY:-} ]]; then
-    echo "machine is busy; wait, or set BENCH_ALLOW_BUSY=1 for a run you will not publish" >&2
-    exit 1
-  fi
+  for _ in $(seq 1 60); do
+    load=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' || cut -d' ' -f1 /proc/loadavg)
+    awk "BEGIN {exit !($load > 2)}" || { echo "load average: $load"; return; }
+    [[ -z ${BENCH_ALLOW_BUSY:-} ]] || { echo "load average: $load (busy, not for publishing)"; return; }
+    sleep 10
+  done
+  echo "machine is busy (load $load); wait, or set BENCH_ALLOW_BUSY=1 for a run you will not publish" >&2
+  exit 1
 }
 
 wait_http() {

@@ -66,7 +66,7 @@ async def block(
     requests: int,
     warmup: int,
     serial: list[int],
-) -> tuple[list[float], float]:
+) -> tuple[list[float], int, float]:
     url, headers, extra = TARGETS[target]
     limits = httpx.Limits(
         max_connections=concurrency, max_keepalive_connections=concurrency
@@ -75,7 +75,7 @@ async def block(
         base_url=url, headers=headers, limits=limits, timeout=300
     ) as http:
 
-        async def one() -> float:
+        async def one() -> float | None:
             serial[0] += 1  # A fresh prompt each time: no repeat detector, no cache.
             body = {
                 "model": MODEL,
@@ -85,22 +85,27 @@ async def block(
             started = perf_counter()
             reply = await http.post("/v1/chat/completions", json=body)
             elapsed = (perf_counter() - started) * 1_000
-            reply.raise_for_status()
-            return elapsed
+            # A failed request is counted, not timed: a gateway that fails is a result.
+            return elapsed if reply.is_success else None
 
         for _ in range(warmup):
             await one()
         samples: list[float] = []
+        failed = [0]
         remaining = [requests]
 
         async def worker() -> None:
             while remaining[0] > 0:
                 remaining[0] -= 1
-                samples.append(await one())
+                elapsed = await one()
+                if elapsed is None:
+                    failed[0] += 1
+                else:
+                    samples.append(elapsed)
 
         started = perf_counter()
         await asyncio.gather(*(worker() for _ in range(concurrency)))
-        return samples, perf_counter() - started
+        return samples, failed[0], perf_counter() - started
 
 
 async def sweep(args: argparse.Namespace) -> None:
@@ -125,7 +130,7 @@ async def sweep(args: argparse.Namespace) -> None:
         for run in range(args.runs):
             random.Random(args.seed + run).shuffle(order)
             for target, size, concurrency in order:
-                samples, wall = await block(
+                samples, failed, wall = await block(
                     target, size, concurrency, args.requests, args.warmup, serial
                 )
                 row = {
@@ -134,13 +139,14 @@ async def sweep(args: argparse.Namespace) -> None:
                     "size_kb": size,
                     "concurrency": concurrency,
                     "rps": len(samples) / wall,
+                    "failed": failed,
                     "samples_ms": [round(s, 3) for s in samples],
                 }
                 out.write(json.dumps(row) + "\n")
                 out.flush()
-                p50, p95, p99 = cuts(samples)
+                p50, p95, p99 = cuts(samples) if len(samples) > 1 else (0, 0, 0)
                 print(
-                    f"run {run} {target:>20} {size:>3} KB c={concurrency}: p50 {p50:.1f} p95 {p95:.1f} p99 {p99:.1f} ms"
+                    f"run {run} {target:>20} {size:>3} KB c={concurrency}: p50 {p50:.1f} p95 {p95:.1f} p99 {p99:.1f} ms, {failed} failed"
                 )
 
 
@@ -153,21 +159,29 @@ def report(path: Path) -> None:
     runs: dict[tuple[str, int, int], list[tuple[float, float, float, float]]] = (
         defaultdict(list)
     )
+    failed: dict[tuple[str, int, int], list[int]] = defaultdict(lambda: [0, 0])
     for line in path.read_text().splitlines():
         row = json.loads(line)
         if "meta" in row:
             print(f"- {row['meta']}")
             continue
         key = (row["target"], row["size_kb"], row["concurrency"])
-        runs[key].append((*cuts(row["samples_ms"]), row["rps"]))
+        failed[key][0] += row.get("failed", 0)
+        failed[key][1] += row.get("failed", 0) + len(row["samples_ms"])
+        if len(row["samples_ms"]) > 1:
+            runs[key].append((*cuts(row["samples_ms"]), row["rps"]))
     print(
-        "\n| Target | KB | c | p50 ms (min–max over runs) | p95 | p99 | req/s | added p50 vs mock | detection share |"
+        "\n| Target | KB | c | p50 ms (min–max over runs) | p95 | p99 | req/s | added p50 vs mock | detection share | failed |"
     )
-    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     p50 = {key: median(r[0] for r in rows) for key, rows in runs.items()}
-    for key in sorted(runs, key=lambda k: (k[2], k[1], k[0])):
+    for key in sorted(failed, key=lambda k: (k[2], k[1], k[0])):
         target, size, concurrency = key
-        rows = runs[key]
+        lost = f"{failed[key][0]} of {failed[key][1]}" if failed[key][0] else ""
+        rows = runs.get(key)
+        if not rows:
+            print(f"| {target} | {size} | {concurrency} | — | — | — | — | | | {lost} |")
+            continue
         base = p50.get(("mock", size, concurrency))
         added = (
             f"{p50[key] - base:.1f}" if base is not None and target != "mock" else ""
@@ -180,7 +194,7 @@ def report(path: Path) -> None:
             f"| {target} | {size} | {concurrency} | {p50[key]:.1f} "
             f"({min(r[0] for r in rows):.1f}–{max(r[0] for r in rows):.1f}) | "
             f"{median(r[1] for r in rows):.1f} | {median(r[2] for r in rows):.1f} | "
-            f"{median(r[3] for r in rows):.0f} | {added} | {share} |"
+            f"{median(r[3] for r in rows):.0f} | {added} | {share} | {lost} |"
         )
 
 

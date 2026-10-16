@@ -48,6 +48,9 @@ def record(entry: dict) -> None:
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # Keep-alive, as a real provider offers.
+    # Headers and body go out as two writes; with Nagle on, the body waits for the
+    # client's delayed ACK, about 40 ms on every keep-alive request.
+    disable_nagle_algorithm = True
 
     def reply(self, status: int, body: bytes) -> None:
         self.send_response(status)
