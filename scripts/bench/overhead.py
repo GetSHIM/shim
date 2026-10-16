@@ -83,9 +83,12 @@ async def block(
                 **extra,
             }
             started = perf_counter()
-            reply = await http.post("/v1/chat/completions", json=body)
-            elapsed = (perf_counter() - started) * 1_000
             # A failed request is counted, not timed: a gateway that fails is a result.
+            try:
+                reply = await http.post("/v1/chat/completions", json=body)
+            except httpx.TransportError:
+                return None
+            elapsed = (perf_counter() - started) * 1_000
             return elapsed if reply.is_success else None
 
         for _ in range(warmup):

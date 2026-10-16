@@ -281,6 +281,7 @@ class Runner:
                 event_stream=events,
             )
             rows = []
+            stop = None
             async with (
                 app.router.lifespan_context(app),
                 httpx.AsyncClient(
@@ -291,13 +292,19 @@ class Runner:
             ):
                 for case, provider, model, path, body in requests:
                     if self.spent >= self.budget:
-                        raise SystemExit(f"budget of ${self.budget} reached, stopping")
+                        # Stop after writing what was already paid for, not before.
+                        stop = f"budget of ${self.budget} reached, stopping"
+                        break
                     headers = {
                         "Authorization": f"Bearer {KEY}",
                         "x-provider-key": self.keys[provider],
                         "anthropic-version": "2023-06-01",
                     }
-                    reply = await http.post(path, json=body, headers=headers)
+                    try:
+                        reply = await http.post(path, json=body, headers=headers)
+                    except httpx.TransportError as error:
+                        # Recorded as a failed request; the arm's earlier rows still land.
+                        reply = httpx.Response(599, text=repr(error)[:500])
                     try:
                         answer = reply.json()
                     except ValueError:
@@ -348,6 +355,8 @@ class Runner:
         print(
             f"{lever:>16} {arm:>10}: {len(rows)} requests, spent so far ${self.spent:.4f}"
         )
+        if stop:
+            raise SystemExit(stop)
 
 
 def called_tools(answer: dict) -> list[str]:
