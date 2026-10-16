@@ -253,20 +253,18 @@ disguise not in this list is not measured.
   `sendto`, `bind`), with its target and the code that opened it. Each run starts with
   an empty `tldextract` cache, as a fresh container does.
 
-  **Result: not zero.** In each of ten runs on `1f2eed6` (A1 and A2 with and without
-  Turkish names, four repeats, and the two held-out runs), shim made exactly one upstream call per chat request, and **its process
-  opened one more connection: an HTTPS request to `publicsuffix.org`**, the first time
-  it checked an email address. Presidio's email recognizer, which shim's extends,
-  validates the domain with `tldextract`, and `tldextract` downloads the Public Suffix
-  List when its cache is empty (`privacy/pii_scrubber.py` → Presidio's
-  `EmailRecognizer.validate_result` → `tldextract/suffix_list.py`). The request is a
-  plain download of the public list; it carries nothing from the prompt. With the
-  cache already filled, the same run opened **0** sockets. A fresh container has no
-  cache, so it makes this call once per start. `tldextract` sets no timeout on it by
-  default, and falls back to its built-in copy of the list when the download fails.
+  **Result: zero.** In each of four runs on v0.4.1 (`8e87dcd`; A1 and A2, with and
+  without Turkish names), shim made exactly one upstream call per chat request (480
+  and 1,040) and **its process opened no other socket**.
 
-  We do not claim zero egress until this is removed. The fix is to give the
-  recognizer a `tldextract` instance that uses only its built-in list.
+  This benchmark is why. On v0.4.0 and `1f2eed6` every run opened one more
+  connection, an HTTPS request to `publicsuffix.org`, the first time the process
+  checked an email address: Presidio's email recognizer, which shim's extends,
+  validates the domain with `tldextract`, which downloads the Public Suffix List when
+  its cache is empty, with no timeout. It carried nothing from the prompt, but a fresh
+  container made it once per start. Since #227 the recognizer uses `tldextract`'s
+  built-in list only (snapshot of 2025-04-07), and since #229 any well-formed domain
+  counts, so the list decides only punycode suffixes.
 - **LiteLLM**: **480 upstream calls** for 480 chat requests, so nothing extra reaches
   the provider. Detection itself is two further services called over HTTP: **960
   analyzer calls** (two per request: the prompt, and again the answer) and **461
@@ -283,7 +281,7 @@ disguise not in this list is not measured.
 ### Found by this benchmark
 
 Each was found by writing or running this benchmark, reported, and fixed in shim
-before the numbers above were published, except the last, which is open.
+before the numbers above were published.
 
 | Finding | Effect in v0.4.0 | Status |
 | --- | --- | --- |
@@ -291,7 +289,7 @@ before the numbers above were published, except the last, which is open.
 | five disguises not undone | 25.6% of disguised identifiers reached the provider | fixed in `1f2eed6` (#226) |
 | "no" read as a phone cue | 86.7% of invoice numbers masked as phones | fixed in `1f2eed6` (#226) |
 | Anthropic auto-cache had one breakpoint, after the last message | independent requests over a shared system prompt paid 25% more input | fixed in `1f2eed6` (#226), see B2 |
-| Public Suffix List download | one outbound HTTPS request per fresh process | **open** |
+| Public Suffix List download | one outbound HTTPS request per fresh process | fixed in v0.4.1 (#227) |
 
 ## B. Performance and cost
 
@@ -477,8 +475,8 @@ SHA-256 it prints with the one cited above each table).
 
 The held-out corpus is `python -m scripts.bench.pii_corpus --seed 20261016 --out <dir>`;
 score it with `pii_score run` as `run_all.sh` does. The shim runs start each process
-with an empty `tldextract` cache, as a fresh container does; set `TLDEXTRACT_CACHE` to
-reuse one, and A3 then records no Public Suffix List download.
+with an empty `tldextract` cache, as a fresh container does, so A3 still shows the
+Public Suffix List download on builds before v0.4.1.
 
 **Presidio is built from source.** The compose file builds the Presidio analyzer and
 anonymizer from Microsoft's own Dockerfiles at git tag `2.2.364`, the version shim
