@@ -21,14 +21,15 @@ Everything here can be re-run from this repository with
 
 > **Status:** sections A and B2 ran on 2026-10-15, on v0.4.0 and again on `main` at
 > `1f2eed6`, which fixes what the first run found ([found by this
-> benchmark](#found-by-this-benchmark)). B1 is **pending an idle run**: its latency
-> numbers are only taken on an idle machine.
+> benchmark](#found-by-this-benchmark)). On 2026-10-16 A1, A2 and A3 ran again on
+> v0.4.1 (`8e87dcd`, released as `fcdb645`): detection and evasion are identical to
+> `1f2eed6`, and egress is now zero. B1 ran on v0.4.1 on 2026-10-16.
 
 ## Systems under test
 
 | System | Version | How it runs |
 | --- | --- | --- |
-| shim | `main` at `1f2eed6` (after the fixes) | in-process for detection; the repository `Dockerfile` for latency |
+| shim | v0.4.1 (`fcdb645`; `main` at `1f2eed6` and `8e87dcd` before the release) | in-process for detection; the repository `Dockerfile` for latency |
 | shim | v0.4.0 (`f33a59d`) | in-process |
 | shim | v0.3.0 (`ca6b2e9`) | in-process from that commit; `ghcr.io/getshim/shim:0.3.0@sha256:9d8153451522…b57b59` |
 | LiteLLM | v1.103.2, published 2026-10-01 | `ghcr.io/berriai/litellm:v1.103.2@sha256:f63fb81b831b…30bbfd`, one worker, no database |
@@ -275,7 +276,7 @@ disguise not in this list is not measured.
 
 | Deployment | Containers for detection | Image size | Memory |
 | --- | ---: | ---: | ---: |
-| shim | 1 (the gateway) | pending the B1 run | pending the B1 run |
+| shim | 1 (the gateway) | 827 MB | 398 MiB after the B1 load run |
 | LiteLLM + Presidio | 3 (proxy, analyzer, anonymizer) | 1.68 GB + 1.53 GB + 356 MB | 606 + 796 + 61 MiB after the A1 and A2 runs |
 
 ### Found by this benchmark
@@ -340,22 +341,73 @@ only a measure of Presidio's default; both arms are reported, labelled. Two is t
 the 3.8 GiB Docker VM holds: each analyzer worker loads its own spaCy model, about
 800 MiB.
 
-Results: **pending an idle run.**
+#### Results (2026-10-16, v0.4.1)
 
-**Last published in-process run** (2026-10-11, `ca6b2e9` plus the script, Apple M1,
-8 cores, 8 GB, macOS 26.4, Python 3.13.5, idle; 200 requests and 20 warm-up per size;
-two runs on `ca6b2e9` and one on the night-1 branch gave the same medians, this is the
-second `ca6b2e9` run):
+Each block started with load average below 2. The over-HTTP p50 is the median of three
+sweeps, with the lowest and highest sweep in brackets. Raw samples went to
+`scripts/bench/results/2026-10-16/`, which is not committed ([how to
+reproduce](#how-to-reproduce)).
 
-| ms | chat wall p50 | p95 | p99 | `X-Shim-Latency-Ms` p50 | p95 | p99 | `scan` p50 | p95 | p99 | privacy share |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 KB | 8.5 | 9.0 | 9.6 | 8.0 | 8.0 | 8.0 | 6.7 | 6.9 | 7.3 | 79% |
-| 32 KB | 104.4 | 107.1 | 128.1 | 103.0 | 105.0 | 126.6 | 102.3 | 104.4 | 109.0 | 98% |
-| 50 KB | 160.9 | 192.9 | 278.2 | 159.0 | 189.6 | 276.0 | 158.6 | 163.3 | 177.5 | 99% |
+**PII detection on, one request at a time** (p50, ms):
 
-Privacy dominates and grows roughly linearly with size, about 3.2 ms per KB at the
-median. **shim's own budget is under 100 ms for prompts up to 32 KB, and it is not met
-yet**: it is crossed at about 30 KB of this PII-dense text.
+| Prompt | shim v0.4.1 | LiteLLM + Presidio | LiteLLM + Presidio, 2 workers | shim faster |
+| --- | ---: | ---: | ---: | ---: |
+| 1 KB | 12.5 (12.4–16.1) | 43.7 (38.8–50.2) | 37.2 (37.0–42.0) | 3.5× |
+| 4 KB | 26.3 (22.5–42.1) | 83.5 (82.7–94.2) | 82.8 (81.6–86.9) | 3.2× |
+| 16 KB | 81.1 (65.3–81.6) | 269.2 (268.2–345.9) | 269.4 (265.5–285.2) | 3.3× |
+| 32 KB | 129.2 (119.0–153.2) | 631.6 (554.9–815.0) | 565.0 (556.8–604.7) | 4.9× |
+| 50 KB | 243.0 (181.6–295.2) | 1,112.6 (915.5–1,138.6) | 943.2 (912.4–987.7) | 4.6× |
+
+**PII detection on, eight requests at once** (p50, ms; requests per second in brackets):
+
+| Prompt | shim v0.4.1 | LiteLLM + Presidio | LiteLLM + Presidio, 2 workers |
+| --- | ---: | ---: | ---: |
+| 1 KB | 125.1 (64/s) | 289.2 (27/s) | 236.0 (33/s) |
+| 4 KB | 214.7 (36/s) | 680.4 (11/s) | 594.6 (13/s) |
+| 16 KB | 713.8 (11/s) | 2,421.7 (3/s) | 2,118.4 (4/s) |
+| 32 KB | 1,605.9 (5/s) | 4,460.3 (2/s) | 4,536.2 (2/s) |
+| 50 KB | 1,729.2 (5/s) | 7,315.0 (1/s) | 7,383.2 (1/s) |
+
+No request failed in any block.
+
+**Without detection** both gateways are fast. shim with every entity type off has a p50 of
+4.5–8.4 ms one at a time and 20–50 ms at eight at once. LiteLLM without its guardrail has
+7.1–9.6 ms and 36–46 ms. Detection is 68–98% of shim's added time and 84–99% of
+LiteLLM's, so the comparison above is a comparison of detectors.
+
+**What it costs to run:** shim is one container: an 827 MB image, using 398 MiB after the
+load run. LiteLLM with its guardrail is three: 1.68 GB, 1.53 GB and 356 MB of images,
+using about 1.4 GiB. A second Presidio worker per service adds about 800 MiB and, at
+eight requests at once, gains 12–18% at 1–16 KB and nothing at 32–50 KB.
+
+**Where shim is weak:**
+- It runs one process, and detection is CPU-bound. At eight requests at once its
+  latency grows about eightfold, the same as LiteLLM's. More workers per container is
+  the upgrade path.
+- **shim's own budget is under 100 ms for prompts up to 32 KB, and it is not met
+  yet**: 106.6 ms in-process and 129 ms over HTTP at 32 KB of this PII-dense text.
+- Over HTTP, v0.4.1 and v0.3.0 are within each other's sweep-to-sweep spread at every
+  size (32 KB one at a time: 129.2 and 120.5 ms). In-process, below, they time the
+  same. The added evasion handling of v0.4.1 has no measurable cost.
+
+**In-process** (200 requests and 20 warm-up per size; p50 / p95 / p99, ms):
+
+| Prompt | v0.4.1 chat wall | v0.4.1 `scan` | v0.3.0 chat wall | v0.3.0 `scan` | v0.4.1 privacy share |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 KB | 8.8 / 10.6 / 13.5 | 6.7 / 7.8 / 9.1 | 8.5 / 8.9 / 9.6 | 6.8 / 6.9 / 7.4 | 77% |
+| 4 KB | 18.1 / 19.9 / 21.9 | 16.0 / 17.4 / 39.6 | 17.9 / 19.5 / 36.1 | 16.1 / 17.5 / 26.2 | 88% |
+| 16 KB | 55.9 / 58.8 / 78.3 | 52.9 / 54.2 / 57.7 | 55.5 / 59.5 / 111.9 | 53.4 / 57.5 / 77.1 | 95% |
+| 32 KB | 106.6 / 115.0 / 188.3 | 103.1 / 110.2 / 130.2 | 104.9 / 113.3 / 192.8 | 102.7 / 110.5 / 134.9 | 97% |
+| 50 KB | 163.4 / 169.5 / 276.3 | 159.5 / 165.2 / 241.2 | 161.0 / 169.6 / 298.6 | 158.6 / 163.6 / 173.5 | 98% |
+
+Privacy grows roughly linearly with size, about 3.2 ms per KB at the median.
+
+**Found while running B1.** The first sweep timed the mock upstream itself at 46 ms per
+request. Python's `http.server` sends the headers and the body as two writes, and with
+Nagle's algorithm on the body waited for the client's delayed ACK. shim's upstream calls
+paid it and LiteLLM's did not. The mock now sets `TCP_NODELAY` and answers in about
+2 ms. That sweep is discarded, and its raw file is kept as `overhead-nagle-invalid.jsonl`.
+A shim sweep started at load 4.5 is kept apart in `overhead-shim-main-busy.jsonl`.
 
 ### B2. Savings on real providers
 
