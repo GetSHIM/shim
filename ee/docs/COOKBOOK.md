@@ -200,9 +200,10 @@ Notes:
 ## Change the privacy settings
 
 Choose what shim does with each entity type for your tenant. All five group
-switches are on by default, so every type is masked, except the opt-in
-`PERSON_NAME_TR` (Turkish person names), which no switch covers: it is `off`
-until `entity_actions` sets it, as in `{"entity_actions": {"PERSON_NAME_TR": "mask"}}`.
+switches are on by default, so every type is masked. `PERSON_NAME_TR` (Turkish
+person names) is masked by default too, but no switch covers it: turning every
+switch off still masks names, and only `entity_actions` changes it, as in
+`{"entity_actions": {"PERSON_NAME_TR": "off"}}` (or `"monitor"`).
 Name detection is list based, measured on a held-out synthetic corpus written by
 a different author (precision 0.992, recall 0.952); what it misses is in the
 [community cookbook](../../docs/COOKBOOK.md#choose-what-happens-to-each-data-type).

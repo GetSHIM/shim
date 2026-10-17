@@ -29,6 +29,7 @@ from shim.privacy.pii_scrubber import (
     placeholder_period_key,
 )
 from shim.privacy.policies import (
+    PII_CONFIG_DEFAULTS,
     PrivacyAction,
     PrivacyOutcome,
     effective_entity_actions,
@@ -538,10 +539,18 @@ def test_disabled_scrubbing_allows_uninspectable_media() -> None:
             "block_credit_card": False,
             "block_secrets": False,
             "block_pii_tr": False,
-        }
+        },
+        {"PERSON_NAME_TR": "off"},
     )
     known_placeholders = {"<EMAIL_ADDRESS_deadbeef>": "alice@example.com"}
     scrubber = Mock(spec=PIIScrubberService)
+    # No switch covers names, so the switches alone leave them masked.
+    names_only = disabled | {"PERSON_NAME_TR": "mask"}
+    assert names_only == effective_entity_actions(
+        dict.fromkeys(PII_CONFIG_DEFAULTS, False)
+    )
+    with pytest.raises(HTTPException, match="opaque media"):
+        scrub_payload(payload, names_only, PIIScrubberService())
 
     safe, mapping = scrub_payload(
         payload,
@@ -1505,10 +1514,7 @@ def test_entity_actions_follow_the_switches_and_overrides_win() -> None:
         {"SECRET": "block", "PHONE_NUMBER": "monitor", "EMAIL_ADDRESS": "mask"},
     )
 
-    assert set(defaults.values()) == {"mask", "off"}
-    assert [name for name, action in defaults.items() if action == "off"] == [
-        "PERSON_NAME_TR"
-    ]
+    assert set(defaults.values()) == {"mask"}
     assert len(defaults) == 14
     assert resolved["SECRET"] == "block"
     assert resolved["DB_URI"] == "mask"
@@ -2294,16 +2300,17 @@ def test_person_names_read_both_turkish_i_letters_in_both_cases(
     assert _names(scrubber, text) == [text]
 
 
-def test_person_names_are_off_by_default_and_follow_their_action(
+def test_person_names_are_masked_by_default_and_follow_their_action(
     scrubber: PIIScrubberService,
 ) -> None:
     text = "Sayın Aykut Yılmaz'ın başvurusu"
     actions = effective_entity_actions(None, {"PERSON_NAME_TR": "monitor"})
+    off = effective_entity_actions(None, {"PERSON_NAME_TR": "off"})
     unmasked: dict[str, str] = {}
 
-    assert DEFAULT_ACTIONS["PERSON_NAME_TR"] == "off"
-    assert scrubber.scrub(text, DEFAULT_ACTIONS) == (text, {})
-    masked, mapping = scrubber.scrub(text, _NAMES_ONLY)
+    assert DEFAULT_ACTIONS["PERSON_NAME_TR"] == "mask"
+    assert scrubber.scrub(text, off) == (text, {})
+    masked, mapping = scrubber.scrub(text, DEFAULT_ACTIONS)
     assert re.fullmatch(r"Sayın <PERSON_NAME_TR_[0-9a-f]{32}>'ın başvurusu", masked)
     assert list(mapping.values()) == ["Aykut Yılmaz"]
     assert scrubber.deanonymize(masked, mapping) == text

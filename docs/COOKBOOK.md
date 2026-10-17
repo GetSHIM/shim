@@ -323,8 +323,8 @@ if scan["verdict"] == "warn":
 
 The types shim detects are `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`,
 `IBAN_CODE`, `TR_NATIONAL_ID`, `TR_VKN`, `TR_LICENSE_PLATE`, `SECRET`, `US_SSN`,
-`IP_ADDRESS`, `MAC_ADDRESS`, `DB_URI` and `FILE_PATH`, plus the opt-in
-`PERSON_NAME_TR` when its action is not `off`. The
+`IP_ADDRESS`, `MAC_ADDRESS`, `DB_URI`, `FILE_PATH` and `PERSON_NAME_TR`
+(Turkish person names). The
 [README](../README.md#what-it-does) gives examples and known false positives.
 Digits of any script count as the number they are: a TCKN, IBAN, card or phone
 number written in Arabic-Indic, Devanagari or fullwidth digits is found and
@@ -354,8 +354,8 @@ errors use the `{"detail": ...}` shape; text over the limit is 422.
 Mask most types, watch some, and refuse a request that carries a pasted key.
 
 1. Set `PII_ENTITY_ACTIONS` to a JSON object from entity type to action and
-   restart the gateway. A type you leave out is masked, except the opt-in
-   `PERSON_NAME_TR`, which stays `off` until you set it.
+   restart the gateway. A type you leave out is masked, `PERSON_NAME_TR`
+   included.
 
    | Action | What shim does |
    | --- | --- |
@@ -427,9 +427,10 @@ characters are scanned (`truncated: true` beyond); a scan that fails writes
 `"response_entities": null, "error": true`. The answer, its first token and its
 timing are unchanged.
 
-To mask Turkish person names, add `"PERSON_NAME_TR":"mask"` (or `monitor`,
-`block`). "Sayın Ahmet Yılmaz'ın başvurusu" then reaches the provider as
-"Sayın <PERSON_NAME_TR_…>'ın başvurusu", and the name is restored in the answer.
+Turkish person names are masked by default: "Sayın Ahmet Yılmaz'ın başvurusu"
+reaches the provider as "Sayın <PERSON_NAME_TR_…>'ın başvurusu", and the name is
+restored in the answer. To send them unchanged, add `"PERSON_NAME_TR":"off"`; to
+send them and count them, `"monitor"`; to refuse the request, `"block"`.
 Detection is list based (common first names, frequent surnames, cues such as
 `Sayın`, `Hanım`, `Dr.`), measured on a held-out synthetic corpus written by a
 different author: precision 0.992, recall 0.952. It does not catch a first
@@ -458,8 +459,8 @@ file data parts) cannot be scanned. With `SHIM_MEDIA_INPUTS=block`, the default,
 a request carrying one is refused with 400 `PRIVACY_POLICY_BLOCKED` ("PII
 scrubbing does not support opaque media inputs.") while any type is `mask`,
 `mask_last4` or `block`. With `SHIM_MEDIA_INPUTS=allow`, or when no type masks or
-blocks, the part reaches the provider byte for byte and unscanned: its base64 or
-data URL is never read, while its file name, title and other text are scanned as
+blocks (`PERSON_NAME_TR` included, which masks by default), the part reaches the
+provider byte for byte and unscanned: its base64 or data URL is never read, while its file name, title and other text are scanned as
 usual and its URL and file id are checked like any identifier. The usage event
 then carries `media_parts` (parts by kind: `image`, `pdf`, `docx`, `text`,
 `audio`, `video`, `other`), `media_unscanned` (parts forwarded unscanned) and, for

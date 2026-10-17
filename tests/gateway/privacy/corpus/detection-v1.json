@@ -16,6 +16,7 @@
     "MAC_ADDRESS",
     "US_SSN",
     "TR_LICENSE_PLATE",
+    "PERSON_NAME_TR",
     "PERSON",
     "LOCATION"
   ],
@@ -1266,7 +1267,12 @@
     {
       "id": "person-name",
       "text": "Ahmet Yılmaz aradı",
-      "expect": []
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ahmet Yılmaz"
+        }
+      ]
     },
     {
       "id": "street-address",

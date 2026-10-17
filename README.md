@@ -77,11 +77,11 @@ request it:
   not carry; it is never changed. Enterprise can keep chosen types as
   placeholders in the answer for every gateway key and team without a grant, so a
   call centre sees `<TR_NATIONAL_ID_…>` where a risk analyst sees the number.
-  Turkish person names (`PERSON_NAME_TR`) are opt-in: `off` until an action
-  turns them on. Detection is list based, never a model: a common first name
-  with a frequent surname or another capitalised word (`Selin Arıkan`), or a cue
-  (`Sayın`, `Sn.`, `Bay`, `Hanım`, `Bey`, `Dr.`, `Prof.`, `Av.`) next to a listed
-  name; a first name alone is never matched. Measured on a held-out synthetic
+  Turkish person names (`PERSON_NAME_TR`) are masked by default; set the type to
+  `off` or `monitor` to change that. Detection is list based, never a model: a
+  common first name with a frequent surname or another capitalised word
+  (`Selin Arıkan`), or a cue (`Sayın`, `Sn.`, `Bay`, `Hanım`, `Bey`, `Dr.`,
+  `Prof.`, `Av.`) next to a listed name; a first name alone is never matched. Measured on a held-out synthetic
   corpus written by a different author: precision 0.992, recall 0.952. Rare
   first names, two first names without a surname, and names written surname
   first are missed.

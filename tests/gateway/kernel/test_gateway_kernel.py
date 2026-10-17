@@ -5,6 +5,7 @@ from dataclasses import replace
 from decimal import Decimal
 import io
 import json
+import re
 from types import SimpleNamespace
 import zipfile
 import zlib
@@ -3058,7 +3059,9 @@ async def test_an_enforced_record_mask_hides_the_name_and_a_tckn_stays_typed(
     sent = json.loads(calls[0].content)["messages"][0]["content"]
     assert response.status_code == 200
     assert "İsmail Işık" not in sent and "MUS000001" not in sent
-    assert sent.count("<RECORD_") == 2 and "<TR_NATIONAL_ID_" in sent
+    # The name is a built-in value now, so its placeholder keeps the built-in type.
+    assert sent.count("<RECORD_") == 1
+    assert "<PERSON_NAME_TR_" in sent and "<TR_NATIONAL_ID_" in sent
     assert line["rule_matches"] == [
         {
             "rule_id": "customers",
@@ -3101,7 +3104,11 @@ async def test_a_monitor_record_rule_counts_and_leaves_the_payload_as_sent(
     )
 
     assert monitored.status_code == 200
-    assert json.loads(calls[0].content)["messages"][0]["content"] == text
+    # Only the default name mask touches the text; the monitor rule changes nothing.
+    assert re.fullmatch(
+        r"MUS000000 numaralı <PERSON_NAME_TR_[0-9a-f]{32}> için not",
+        json.loads(calls[0].content)["messages"][0]["content"],
+    )
     assert [(match["state"], match["count"]) for match in line["rule_matches"]] == [
         ("monitor", 1)
     ]
