@@ -4,7 +4,7 @@
 case: the detected spans and, for a gateway, the request body that reached the
 upstream. `report` turns result files into the tables in docs/BENCHMARKS.md.
 
-    python -m scripts.bench.pii_score run --system shim --corpus C --out R [--names]
+    python -m scripts.bench.pii_score run --system shim --corpus C --out R [--names on|off]
     python -m scripts.bench.pii_score run --system presidio --corpus C --out R
     python -m scripts.bench.pii_score run --system litellm --corpus C --out R --captures D
     python -m scripts.bench.pii_score report --corpus C --evasion E R1 R2 ...
@@ -90,7 +90,7 @@ def base_meta(system: str, corpus: Path) -> dict:
     }
 
 
-async def run_shim(cases: list[dict], names: bool) -> tuple[dict, list[dict]]:
+async def run_shim(cases: list[dict], names: str | None) -> tuple[dict, list[dict]]:
     # A fresh container has no tldextract cache; nor does this run, unless one is given.
     os.environ.setdefault(
         "TLDEXTRACT_CACHE", tempfile.mkdtemp(prefix="bench-tldextract-")
@@ -129,7 +129,16 @@ async def run_shim(cases: list[dict], names: bool) -> tuple[dict, list[dict]]:
         GLOBAL_RATE_LIMIT_PER_MINUTE=10_000_000,
         DEFAULT_RPM_LIMIT=10_000_000,
         DEFAULT_TPM_LIMIT=10_000_000_000,
-        **({"PII_ENTITY_ACTIONS": {"PERSON_NAME_TR": "mask"}} if names else {}),
+        # None keeps the build's default: off before v0.4.2, mask from it.
+        **(
+            {
+                "PII_ENTITY_ACTIONS": {
+                    "PERSON_NAME_TR": "mask" if names == "on" else "off"
+                }
+            }
+            if names
+            else {}
+        ),
         _env_file=None,
     )
     app = create_community_app(
@@ -173,7 +182,7 @@ async def run_shim(cases: list[dict], names: bool) -> tuple[dict, list[dict]]:
     package = Path(shim.__file__).parent
     meta = {
         "label": f"shim {version('shim-gateway')} ({git_commit(package)})"
-        + (" + PERSON_NAME_TR" if names else ""),
+        + (f", PERSON_NAME_TR {names}" if names else ""),
         "egress": {
             "chat_requests": len(cases),
             "upstream_calls": len(upstream),
@@ -525,7 +534,7 @@ def main() -> None:
     runner.add_argument("--corpus", type=Path, required=True)
     runner.add_argument("--out", type=Path, required=True)
     runner.add_argument(
-        "--names", action="store_true", help="shim: PERSON_NAME_TR=mask"
+        "--names", choices=["on", "off"], help="shim: PERSON_NAME_TR mask or off"
     )
     runner.add_argument("--url", default="http://127.0.0.1:4000", help="LiteLLM proxy")
     runner.add_argument(

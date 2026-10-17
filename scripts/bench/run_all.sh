@@ -69,7 +69,7 @@ score() {  # score <corpus file>
   local corpus=$1 name
   name=$(basename "$corpus" .jsonl)
   py scripts.bench.pii_score run --system shim --corpus "$corpus" --out "$OUT/$name-shim-main.jsonl"
-  py scripts.bench.pii_score run --system shim --names --corpus "$corpus" --out "$OUT/$name-shim-main-names.jsonl"
+  py scripts.bench.pii_score run --system shim --names off --corpus "$corpus" --out "$OUT/$name-shim-main-names-off.jsonl"
   uv run --locked --project "$BASE" python -m scripts.bench.pii_score run --system shim \
     --corpus "$corpus" --out "$OUT/$name-shim-v030.jsonl"
   uv run --locked --with "$SPACY_MODEL" python -m scripts.bench.pii_score run --system presidio \
