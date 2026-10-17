@@ -8,6 +8,7 @@ import json
 import re
 import time
 import timeit
+import zipfile
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -33,9 +34,11 @@ from shim.privacy.policies import (
     PrivacyOutcome,
     effective_entity_actions,
 )
-from shim.privacy.presidio_analyzer import person_names
+from shim.privacy.presidio_analyzer import english_person_names, person_names
 from shim.rules import validate_rule_set
 from shim.rules.content import ContentRules, content_rules
+
+from scripts import person_names_en as person_names_script
 
 
 DEFAULT_ACTIONS = effective_entity_actions()
@@ -2374,6 +2377,245 @@ def test_person_name_data_is_reviewed_and_consistent() -> None:
     for name in names.first | names.surnames:
         assert name not in names.stop_words, name
         assert not any(name.startswith(prefix) for prefix in names.stop_prefixes), name
+
+
+_ENGLISH_ONLY = _OFF | {"PERSON_NAME_EN": "mask"}
+
+
+def _english(scrubber: PIIScrubberService, text: str) -> list[str]:
+    return [
+        text[finding["start"] : finding["end"]]
+        for finding in scrubber.analyze(text, _ENGLISH_ONLY)
+        if finding["type"] == "PERSON_NAME_EN"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        # Leading cue: the listed names after it; a greeting needs more than a word.
+        ("Dear Siobhan O'Brien, thank you.", ["Siobhan O'Brien"]),
+        ("Ms. Nguyen will call back.", ["Nguyen"]),
+        ("Mr. Green called twice.", ["Green"]),
+        ("Dear Grace, welcome.", ["Grace"]),
+        ("ATTN: MR. DAVID HARRIS", ["DAVID HARRIS"]),
+        ("Dear All, the office is closed.", []),
+        ("Dear Sales Team, see below.", []),
+        ("Dear Sir or Madam, I write to complain.", []),
+        ("Dear Valued Customer, renew today.", []),
+        # A listed first name, an optional listed middle name, a listed surname.
+        ("Michael Thompson approved it.", ["Michael Thompson"]),
+        ("Hans Peter Schmidt is the holder.", ["Hans Peter Schmidt"]),
+        # An initial before a listed surname.
+        ("Approved: J. Thompson, finance", ["J. Thompson"]),
+        # A non-ambiguous first name and an unlisted capitalised word of the same form.
+        ("Priya Raghunathan leads the team.", ["Priya Raghunathan"]),
+        ("BENEFICIARY CARLOS MENDOZA", ["CARLOS MENDOZA"]),
+        ("Priya RAGHUNATHAN called.", []),
+        # Apostrophes: a capital joins the word, a lowercase letter starts a suffix.
+        ("Mr. O'Brien's account is overdue.", ["O'Brien"]),
+        ("Rebecca Smith's laptop was replaced.", ["Rebecca Smith"]),
+        ("Sophie Laurent'a dosyayı ilettim.", ["Sophie Laurent"]),
+        ("Gianni D'Angelo approved the design.", ["Gianni D'Angelo"]),
+        ("CONOR O'MALLEY, ROOM 214", ["CONOR O'MALLEY"]),
+        # Hyphens join two capitalised words.
+        ("Anna-Lena Schmidt joined.", ["Anna-Lena Schmidt"]),
+        ("Ahmed Al-Sayed presented.", ["Ahmed Al-Sayed"]),
+        ("Jennifer Lopez-Garcia approved.", ["Jennifer Lopez-Garcia"]),
+        # Internal capitals and accents.
+        ("Lisa McAllister signed.", ["Lisa McAllister"]),
+        ("José Hernández translated it.", ["José Hernández"]),
+        ("Klaus Müller joined the call.", ["Klaus Müller"]),
+        # An ambiguous first name needs a cue or a listed surname that is no word.
+        ("Will you send it?", []),
+        ("May I ask a question?", []),
+        ("Mark Down the old stock.", []),
+        ("Rose Gold is popular.", []),
+        ("Mark Jennings will review it.", ["Mark Jennings"]),
+        ("Mrs. May Hollister phoned.", ["May Hollister"]),
+        # Never a first name alone, never across a line.
+        ("Thanks, Sarah", []),
+        ("Michael\nThompson", []),
+        # Places, institutions, brands and characters named after people.
+        ("Henry Ford Hospital opened a wing.", []),
+        ("Grace Hospital on Washington Street", []),
+        ("The Michael Thompson Foundation pays.", []),
+        ("I bought a Calvin Klein jacket.", []),
+        ("Order a Dr Pepper with it.", []),
+        ("Johnnie Walker Black Label", []),
+        ("Harry Potter fans queued.", []),
+        # Turkish text is left to PERSON_NAME_TR.
+        ("Sayın Ahmet Yılmaz'ın başvurusu", []),
+        ("Selin Kozmetik indirim yapıyor.", []),
+        ("Ali Usta Döner Salonu açıldı.", []),
+    ],
+)
+def test_english_person_names_follow_the_rules(
+    scrubber: PIIScrubberService, text: str, names: list[str]
+) -> None:
+    assert _english(scrubber, text) == names
+
+
+def test_english_person_names_are_off_by_default_and_follow_their_action(
+    scrubber: PIIScrubberService,
+) -> None:
+    text = "Dear Abigail Abernathy, your card has shipped."
+    unmasked: dict[str, str] = {}
+
+    assert DEFAULT_ACTIONS["PERSON_NAME_EN"] == "off"
+    assert scrubber.scrub(text, DEFAULT_ACTIONS) == (text, {})
+    masked, mapping = scrubber.scrub(text, _ENGLISH_ONLY)
+    assert re.fullmatch(
+        r"Dear <PERSON_NAME_EN_[0-9a-f]{32}>, your card has shipped\.", masked
+    )
+    assert list(mapping.values()) == ["Abigail Abernathy"]
+    assert scrubber.deanonymize(masked, mapping) == text
+    monitored = effective_entity_actions(None, {"PERSON_NAME_EN": "monitor"})
+    assert scrubber.scrub(text, monitored, unmasked=unmasked) == (text, {})
+    assert unmasked == {"Abigail Abernathy": "PERSON_NAME_EN"}
+    blocked = effective_entity_actions(None, {"PERSON_NAME_EN": "block"})
+    assert {finding["action"] for finding in scrubber.analyze(text, blocked)} == {
+        "block"
+    }
+
+
+@pytest.mark.parametrize(
+    ("overrides", "found"),
+    [
+        # Every other detector wins a shared span: the local part stays an e-mail.
+        (
+            {"PERSON_NAME_EN": "mask"},
+            [("EMAIL_ADDRESS", "Thompson@example.com")],
+        ),
+        # The Turkish type wins a tie, and the stronger action wins first.
+        (
+            {"PERSON_NAME_EN": "mask", "PERSON_NAME_TR": "mask"},
+            [("PERSON_NAME_TR", "Ali Kaya")],
+        ),
+        (
+            {"PERSON_NAME_EN": "mask", "PERSON_NAME_TR": "monitor"},
+            [("PERSON_NAME_EN", "Ali Kaya")],
+        ),
+        (
+            {"PERSON_NAME_EN": "monitor", "PERSON_NAME_TR": "mask"},
+            [("PERSON_NAME_TR", "Ali Kaya")],
+        ),
+    ],
+)
+def test_english_names_lose_shared_spans_to_other_types(
+    scrubber: PIIScrubberService,
+    overrides: dict[str, str],
+    found: list[tuple[str, str]],
+) -> None:
+    text = (
+        "Contact Michael Thompson@example.com today"
+        if "PERSON_NAME_TR" not in overrides
+        else "Ali Kaya aradı"
+    )
+    actions = effective_entity_actions(None, overrides)
+
+    assert [
+        (finding["type"], text[finding["start"] : finding["end"]])
+        for finding in scrubber.analyze(text, actions)
+    ] == found
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Michael Thompson Smith " * 1500,
+        "Dear " * 20000,
+        "A" * 100_000,
+        "Ab-" * 33_000,
+        "O'B" * 33_000,
+        "J. " * 33_000,
+        "Mary " * 20_000,
+    ],
+)
+def test_english_person_names_stay_linear(
+    scrubber: PIIScrubberService, text: str
+) -> None:
+    # CPU time with collection paused, as in test_adversarial_runs_stay_linear.
+    assert (
+        timeit.timeit(
+            lambda: scrubber.analyze(text, _ENGLISH_ONLY),
+            timer=time.thread_time,
+            number=1,
+        )
+        < 5
+    )
+
+
+def test_english_person_name_data_is_reviewed_and_consistent() -> None:
+    data = json.loads(
+        (
+            Path(pii_scrubber_module.__file__).parent / "data" / "en_person_names.json"
+        ).read_text(encoding="utf-8")
+    )
+    names = english_person_names()
+    turkish = person_names()
+
+    assert (data["format"], data["version"]) == ("shim.person-names", 1)
+    assert set(data["source"]) == {
+        "first_names",
+        "team_first_names",
+        "ambiguous_first_names",
+        "surnames",
+        "following_stopwords",
+        "ambiguous_surnames",
+        "not_names",
+    }
+    for key in ("first_names", "surnames"):
+        assert "sha256" in data["source"][key] and "retrieved" in data["source"][key]
+    assert names.ambiguous <= names.first
+    assert names.ambiguous_surnames <= names.surnames
+    assert len(data["ambiguous_first_names"]) >= 150
+    assert len(data["surnames"]) >= 50_000
+    assert {"will", "may", "mark", "grace", "chase", "austin", "paris"} <= (
+        names.ambiguous
+    )
+    # Turkish given names are left to PERSON_NAME_TR, unless the US Census 1990 lists them.
+    assert {"zeynep", "selin", "mehmet"}.isdisjoint(names.first)
+    assert "zeynep" in turkish.first
+    for name in names.first | names.surnames:
+        assert name not in names.stop_words, name
+    assert all(len(phrase.split()) >= 2 for phrase in names.not_names)
+    data_file = (
+        Path(pii_scrubber_module.__file__).parent / "data" / "en_person_names.json"
+    )
+    assert data_file.stat().st_size < 1_000_000
+
+
+def test_the_name_list_script_rebuilds_the_sourced_lists(tmp_path: Path) -> None:
+    with zipfile.ZipFile(tmp_path / "names.zip", "w") as ssa:
+        ssa.writestr("yob1990.txt", "Olivia,F,1500\nZeynep,F,3000\nRare,F,10\n")
+        ssa.writestr("yob1991.txt", "Olivia,F,600\nStreet,M,5000\n")
+        ssa.writestr("NationalReadMe.pdf", "")
+    (tmp_path / "dist.female.first").write_text("MARY           2.629  2.629      1\n")
+    (tmp_path / "dist.male.first").write_text("JAMES          3.318  3.318      1\n")
+    with zipfile.ZipFile(tmp_path / "census2010-names.zip", "w") as census:
+        census.writestr(
+            "Names_2010Census.csv",
+            "name,rank,count\nSMITH,1,2442977\nSTREET,2,100\nOCONNELL,3,90\n"
+            "ALL OTHER NAMES,0,29312001\n",
+        )
+    team = {
+        "format": "shim.person-names",
+        "version": 1,
+        "source": {"following_stopwords": "team"},
+        "team_first_names": ["Priya"],
+        "following_stopwords": ["Street"],
+    }
+    turkish = {"first_names": ["Zeynep"], "team_first_names": ["Mary"]}
+
+    built = person_names_script.build(team, turkish, tmp_path, 2000, "2026-10-17")
+
+    assert built["first_names"] == ["James", "Mary", "Olivia"]
+    assert built["surnames"] == ["Oconnell", "Smith"]
+    assert built["team_first_names"] == ["Priya"]
+    assert "at least 2000 births" in built["source"]["first_names"]
+    assert "ranks 1 to 50000" in built["source"]["surnames"]
+    assert built["source"]["following_stopwords"] == "team"
 
 
 def test_the_restore_map_leaves_out_withheld_types_tails_and_labels_alike() -> None:

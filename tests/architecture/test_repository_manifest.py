@@ -474,7 +474,7 @@ def test_mixed_license_boundary_is_exact() -> None:
     assert enterprise["license-files"] == ["LICENSE", "NOTICE"]
     expected_hashes = {
         "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
-        "NOTICE": "51fc9ca91ff7e4ce3f417d85693ee73cc6167bb34add44d2df14423cc011531d",
+        "NOTICE": "f282bd00490bc38b53b14a65cdb661fe0b593c0a4d63d1c2261bd6ee5bdc6937",
         "ee/LICENSE": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
         "ee/NOTICE": "4e0f381df25ed1544459e600db6d4a3a3900bd2a5048e9e5477ea168d5a6ce07",
     }

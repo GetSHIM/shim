@@ -1932,7 +1932,13 @@ async def test_a_failing_scan_is_recorded_and_the_request_goes_on(monkeypatch) -
 _TCKN = "10000000146"
 
 
-def _destination(action="mask", state="enforced", kinds=("external",), scope=None):
+def _destination(
+    action="mask",
+    state="enforced",
+    kinds=("external",),
+    scope=None,
+    entity="TR_NATIONAL_ID",
+):
     from shim.rules import validate_rule_set
 
     return validate_rule_set(
@@ -1948,7 +1954,7 @@ def _destination(action="mask", state="enforced", kinds=("external",), scope=Non
                     "scope": {"deployment_kinds": list(kinds)}
                     if scope is None
                     else scope,
-                    "match": {"entity_types": ["TR_NATIONAL_ID"]},
+                    "match": {"entity_types": [entity]},
                 }
             ],
         }
@@ -3059,6 +3065,54 @@ async def test_an_enforced_record_mask_hides_the_name_and_a_tckn_stays_typed(
     assert response.status_code == 200
     assert "İsmail Işık" not in sent and "MUS000001" not in sent
     assert sent.count("<RECORD_") == 2 and "<TR_NATIONAL_ID_" in sent
+    assert line["rule_matches"] == [
+        {
+            "rule_id": "customers",
+            "kind": "record_set",
+            "action": "mask",
+            "state": "enforced",
+            "count": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_record_name_masked_as_an_english_name_is_one_placeholder(
+    monkeypatch,
+) -> None:
+    from shim.privacy.record_match import (
+        RecordField,
+        RecordSetIndex,
+        normalize,
+        record_hash,
+    )
+
+    key = bytes(range(32))
+    customers = RecordSetIndex.records(
+        key,
+        (RecordField("tckn", primary=True), RecordField("name")),
+        array(
+            "Q",
+            (
+                record_hash(key, "tckn", normalize("tckn", _TCKN)),
+                record_hash(key, "name", normalize("name", "Abigail Abernathy")),
+            ),
+        ),
+    )
+
+    response, calls, [line] = await _call_with_rules(
+        monkeypatch,
+        _record_rules("mask"),
+        "chat",
+        text=f"Customer Abigail Abernathy, TCKN {_TCKN}, called.",
+        record_sets={_SET_ID: customers},
+        settings={"PII_ENTITY_ACTIONS": json.dumps({"PERSON_NAME_EN": "mask"})},
+    )
+
+    sent = json.loads(calls[0].content)["messages"][0]["content"]
+    assert response.status_code == 200
+    assert "Abernathy" not in sent and _TCKN not in sent and "<RECORD_" not in sent
+    assert sent.count("<PERSON_NAME_EN_") == sent.count("<TR_NATIONAL_ID_") == 1
     assert line["rule_matches"] == [
         {
             "rule_id": "customers",
@@ -4486,6 +4540,43 @@ async def test_a_target_chosen_after_privacy_never_skips_its_destination_rules(
     else:
         assert call.url.host == "api.openai.com"
         assert verdicts["gateway.attempt"] == "ATTEMPT_DESTINATION_CHANGED"
+
+
+_ENGLISH_NAME = "Abigail Abernathy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kinds", "masked", "refused"),
+    [
+        (("external", "external"), True, False),
+        (("internal", "internal"), False, False),
+        # Privacy ran for the internal target, where the rule is not in scope.
+        (("internal", "external"), False, True),
+    ],
+)
+async def test_a_destination_rule_detects_english_names_the_base_leaves_off(
+    kinds, masked, refused
+) -> None:
+    before, after = kinds
+    policy = _StubPolicy(after_privacy=_moved_to(after)) if after != before else None
+
+    response, calls, [line] = await _call_with_destination(
+        _destination(entity="PERSON_NAME_EN"),
+        kind=before,
+        actions={"PERSON_NAME_EN": "off"},
+        payload=_ROUTES["chat"][2](f"Dear {_ENGLISH_NAME}, your card has shipped."),
+        policy=policy,
+    )
+
+    assert response.status_code == 200 and len(calls) == 1
+    sent = calls[0].content.decode()
+    assert (_ENGLISH_NAME not in sent) is masked
+    assert ("<PERSON_NAME_EN_" in sent) is masked
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    assert (verdicts.get("gateway.attempt") == "ATTEMPT_DESTINATION_CHANGED") is refused
+    if masked:
+        assert line["privacy_counts"] == {"PERSON_NAME_EN": 1}
 
 
 @pytest.mark.asyncio

@@ -533,16 +533,19 @@ class ShimTurkishPlateRecognizer(PatternRecognizer):
 
 _UPPER = "A-ZÇĞİÖŞÜÂÎÛ"
 _LOWER = "a-zçğıöşüâîû"
-_NAME_ENTRY = re.compile(rf"[{_UPPER}{_LOWER}'’-]+")
-_STOPWORD_ENTRY = re.compile(rf"[{_UPPER}{_LOWER}'’.-]+")
-_LATIN_NAME_ENTRY = regex.compile(r"[\p{Latin}\p{M}'’-]+")
-_LATIN_STOPWORD_ENTRY = regex.compile(r"[\p{Latin}\p{M}'’.-]+")
-_LATIN_PHRASE_ENTRY = regex.compile(r"[\p{Latin}\p{M}'’-]+(?: [\p{Latin}\p{M}'’-]+)+")
+_NAME_ENTRY = re.compile(rf"[{_UPPER}{_LOWER}'’-]+").fullmatch
+_STOPWORD_ENTRY = re.compile(rf"[{_UPPER}{_LOWER}'’.-]+").fullmatch
+_LATIN_NAME_ENTRY = regex.compile(r"[\p{Latin}\p{M}'’-]+").fullmatch
+_LATIN_STOPWORD_ENTRY = regex.compile(r"[\p{Latin}\p{M}'’.-]+").fullmatch
+_LATIN_PHRASE_ENTRY = regex.compile(
+    r"[\p{Latin}\p{M}'’-]+(?: [\p{Latin}\p{M}'’-]+)+"
+).fullmatch
 # A shorter stopword must match a whole word: "Muş" is not the start of "Musa".
 _MIN_STOPWORD_PREFIX = 5
 _NAME_JOINERS = str.maketrans("", "", "'’-")
 
-type _Shape = re.Pattern[str] | regex.Pattern[str]
+# A pattern's fullmatch: (text) or (text, start, end).
+type _Shape = Callable[..., object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,8 +583,7 @@ def _name_lists(
     for key, shape in shapes.items():
         entries = data[key]
         if len(set(entries)) != len(entries) or not all(
-            shape.fullmatch(item) and unicodedata.is_normalized("NFC", item)
-            for item in entries
+            shape(item) and unicodedata.is_normalized("NFC", item) for item in entries
         ):
             raise ValueError(f"{file}: invalid {key}")
     return data
@@ -610,8 +612,10 @@ def person_names() -> PersonNames:
         ),
         stop_dotted=tuple(sorted(word for word in stopwords if "." in word)),
         fold=turkish_fold,
-        title_word=re.compile(rf"[{_UPPER}][{_LOWER}]+(?:-[{_UPPER}][{_LOWER}]+)*"),
-        capital_word=re.compile(rf"[{_UPPER}]{{2,}}(?:-[{_UPPER}]{{2,}})*"),
+        title_word=re.compile(
+            rf"[{_UPPER}][{_LOWER}]+(?:-[{_UPPER}][{_LOWER}]+)*"
+        ).fullmatch,
+        capital_word=re.compile(rf"[{_UPPER}]{{2,}}(?:-[{_UPPER}]{{2,}})*").fullmatch,
         # Address forms and titles; folded, so "Doç" is "doc".
         leading_cues=frozenset(
             {
@@ -667,10 +671,12 @@ def english_person_names() -> PersonNames:
         stop_prefixes=frozenset(),
         stop_dotted=tuple(sorted(word for word in stopwords if "." in word)),
         fold=english_fold,
-        title_word=regex.compile(r"(?=\p{Latin})\p{Lu}(?=.*\p{Ll})[\p{Latin}'’-]+"),
+        title_word=regex.compile(
+            r"(?=\p{Latin})\p{Lu}(?=.*\p{Ll})[\p{Latin}'’-]+"
+        ).fullmatch,
         capital_word=regex.compile(
             r"(?=\p{Latin})(?!.*\p{Ll})(?=.+\p{L})[\p{Latin}'’-]+"
-        ),
+        ).fullmatch,
         leading_cues=frozenset(
             {"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "sir", "dame", "dear"}
         ),
@@ -727,9 +733,9 @@ def _person_names(text: str, names: PersonNames) -> list[tuple[int, int, float]]
         start, end = words[index]
         if suffix(index):
             return None
-        if names.title_word.fullmatch(text, start, end):
+        if names.title_word(text, start, end):
             return "title"
-        return "capitals" if names.capital_word.fullmatch(text, start, end) else None
+        return "capitals" if names.capital_word(text, start, end) else None
 
     def next_to(index: int, after_dot: bool = False) -> bool:
         """The next word follows on the same line, after spaces only."""

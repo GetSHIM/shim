@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 from statistics import median, quantiles
@@ -60,7 +61,9 @@ def percentiles(samples: list[float]) -> str:
     return f"{cuts[49]:7.1f} {cuts[94]:7.1f} {cuts[98]:7.1f}"
 
 
-async def main(sizes: list[int], requests: int, warmup: int) -> None:
+async def main(
+    sizes: list[int], requests: int, warmup: int, entity_actions: dict
+) -> None:
     logging.disable(logging.INFO)
 
     async def upstream(_: httpx.Request) -> httpx.Response:
@@ -73,6 +76,7 @@ async def main(sizes: list[int], requests: int, warmup: int) -> None:
         GLOBAL_RATE_LIMIT_PER_MINUTE=10_000_000,
         DEFAULT_RPM_LIMIT=10_000_000,
         DEFAULT_TPM_LIMIT=10_000_000_000,
+        PII_ENTITY_ACTIONS=entity_actions,
         _env_file=None,
     )
     app = create_community_app(
@@ -133,5 +137,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--warmup", type=int, default=20, help="discarded requests per size"
     )
+    parser.add_argument(
+        "--entity-actions",
+        type=json.loads,
+        default={},
+        help='PII_ENTITY_ACTIONS as JSON, e.g. \'{"PERSON_NAME_EN": "mask"}\'',
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.sizes, args.requests, args.warmup))
+    asyncio.run(main(args.sizes, args.requests, args.warmup, args.entity_actions))
