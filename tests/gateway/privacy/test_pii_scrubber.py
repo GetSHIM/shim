@@ -1507,9 +1507,10 @@ def test_entity_actions_follow_the_switches_and_overrides_win() -> None:
 
     assert set(defaults.values()) == {"mask", "off"}
     assert [name for name, action in defaults.items() if action == "off"] == [
-        "PERSON_NAME_TR"
+        "PERSON_NAME_EN",
+        "PERSON_NAME_TR",
     ]
-    assert len(defaults) == 14
+    assert len(defaults) == 15
     assert resolved["SECRET"] == "block"
     assert resolved["DB_URI"] == "mask"
     assert resolved["PHONE_NUMBER"] == "monitor"
@@ -1525,6 +1526,7 @@ def test_entity_actions_follow_the_switches_and_overrides_win() -> None:
         ({"SECRET": "warn"}, "unknown entity action: warn"),
         ({"EMAIL_ADDRESS": "mask_last4"}, "mask_last4 is only for CREDIT_CARD"),
         ({"PERSON_NAME_TR": "mask_last4"}, "mask_last4 is only for CREDIT_CARD"),
+        ({"PERSON_NAME_EN": "mask_last4"}, "mask_last4 is only for CREDIT_CARD"),
     ],
 )
 def test_entity_actions_reject_unknown_types_and_actions(overrides, message) -> None:

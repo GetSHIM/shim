@@ -556,6 +556,8 @@ class PIIScrubberService:
             # ten digits the phone rule claims are a phone, unless a tax word is in front.
             "TR_VKN": -1,
             "PERSON_NAME_TR": -1,
+            # Below the Turkish type, which wins a tie.
+            "PERSON_NAME_EN": -2,
         }
         ordered = sorted(items, key=lambda item: (item.start, item.end))
         selected: list[RecognizerResult] = []

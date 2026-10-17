@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import cache, lru_cache
 from importlib.resources import files
-from typing import Literal, cast
+from typing import Any, Literal, cast
 import unicodedata
 
 from presidio_analyzer import (
@@ -30,6 +30,7 @@ from presidio_analyzer.predefined_recognizers import (
     TrNationalIdRecognizer,
     UsSsnRecognizer,
 )
+import regex
 import tldextract
 
 from shim.rules.content import turkish_fold
@@ -532,17 +533,16 @@ class ShimTurkishPlateRecognizer(PatternRecognizer):
 
 _UPPER = "A-ZÇĞİÖŞÜÂÎÛ"
 _LOWER = "a-zçğıöşüâîû"
-_TITLE_WORD = re.compile(rf"[{_UPPER}][{_LOWER}]+")
-_CAPITAL_WORD = re.compile(rf"[{_UPPER}]{{2,}}")
 _NAME_ENTRY = re.compile(rf"[{_UPPER}{_LOWER}'’-]+")
 _STOPWORD_ENTRY = re.compile(rf"[{_UPPER}{_LOWER}'’.-]+")
-# Address forms and titles; folded, so "Doç" is "doc".
-_LEADING_CUES = frozenset(
-    {"sayin", "sn", "bay", "bayan", "hn", "dr", "doc", "prof", "av", "op", "uzm"}
-)
-_TRAILING_CUES = frozenset({"bey", "hanim", "hanimefendi"})
+_LATIN_NAME_ENTRY = regex.compile(r"[\p{Latin}\p{M}'’-]+")
+_LATIN_STOPWORD_ENTRY = regex.compile(r"[\p{Latin}\p{M}'’.-]+")
+_LATIN_PHRASE_ENTRY = regex.compile(r"[\p{Latin}\p{M}'’-]+(?: [\p{Latin}\p{M}'’-]+)+")
 # A shorter stopword must match a whole word: "Muş" is not the start of "Musa".
 _MIN_STOPWORD_PREFIX = 5
+_NAME_JOINERS = str.maketrans("", "", "'’-")
+
+type _Shape = re.Pattern[str] | regex.Pattern[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,27 +553,44 @@ class PersonNames:
     stop_words: frozenset[str]
     stop_prefixes: frozenset[str]
     stop_dotted: tuple[str, ...]
+    fold: Callable[[str], str]
+    title_word: _Shape
+    capital_word: _Shape
+    leading_cues: frozenset[str]
+    trailing_cues: frozenset[str]
+    # Cues a common word may follow: "Dear All", "Dear Sales Team".
+    greetings: frozenset[str] = frozenset()
+    # Surnames that are common words: "Rose Gold" is a colour, "Mark Down" a format.
+    ambiguous_surnames: frozenset[str] = frozenset()
+    # Names that are brands, characters or places: "Calvin Klein", "Harry Potter".
+    not_names: frozenset[str] = frozenset()
+
+
+def _name_lists(
+    file: str, entry: _Shape, stop_entry: _Shape, **more: _Shape
+) -> dict[str, Any]:
+    data = json.loads(files("shim.privacy").joinpath(f"data/{file}").read_text("utf-8"))
+    shapes = {
+        "first_names": entry,
+        "team_first_names": entry,
+        "ambiguous_first_names": entry,
+        "surnames": entry,
+        "following_stopwords": stop_entry,
+    } | more
+    for key, shape in shapes.items():
+        entries = data[key]
+        if len(set(entries)) != len(entries) or not all(
+            shape.fullmatch(item) and unicodedata.is_normalized("NFC", item)
+            for item in entries
+        ):
+            raise ValueError(f"{file}: invalid {key}")
+    return data
 
 
 @cache
 def person_names() -> PersonNames:
     """`data/tr_person_names.json`, validated and folded; read once per process."""
-    data = json.loads(
-        files("shim.privacy").joinpath("data/tr_person_names.json").read_text("utf-8")
-    )
-    for key, shape in (
-        ("first_names", _NAME_ENTRY),
-        ("team_first_names", _NAME_ENTRY),
-        ("ambiguous_first_names", _NAME_ENTRY),
-        ("surnames", _NAME_ENTRY),
-        ("following_stopwords", _STOPWORD_ENTRY),
-    ):
-        entries = data[key]
-        if len(set(entries)) != len(entries) or not all(
-            shape.fullmatch(entry) and unicodedata.is_normalized("NFC", entry)
-            for entry in entries
-        ):
-            raise ValueError(f"tr_person_names.json: invalid {key}")
+    data = _name_lists("tr_person_names.json", _NAME_ENTRY, _STOPWORD_ENTRY)
     stopwords = {turkish_fold(entry) for entry in data["following_stopwords"]}
     return PersonNames(
         first=frozenset(
@@ -592,20 +609,114 @@ def person_names() -> PersonNames:
             if "." not in word and len(word) >= _MIN_STOPWORD_PREFIX
         ),
         stop_dotted=tuple(sorted(word for word in stopwords if "." in word)),
+        fold=turkish_fold,
+        title_word=re.compile(rf"[{_UPPER}][{_LOWER}]+(?:-[{_UPPER}][{_LOWER}]+)*"),
+        capital_word=re.compile(rf"[{_UPPER}]{{2,}}(?:-[{_UPPER}]{{2,}})*"),
+        # Address forms and titles; folded, so "Doç" is "doc".
+        leading_cues=frozenset(
+            {
+                "sayin",
+                "sn",
+                "bay",
+                "bayan",
+                "hn",
+                "dr",
+                "doc",
+                "prof",
+                "av",
+                "op",
+                "uzm",
+            }
+        ),
+        trailing_cues=frozenset({"bey", "hanim", "hanimefendi"}),
     )
 
 
-def _turkish_person_names(
-    text: str, names: PersonNames
-) -> list[tuple[int, int, float]]:
+def english_fold(text: str) -> str:
+    """Accents and case dropped, apostrophes and hyphens removed: "O'Connell" is the
+    Census's "OCONNELL"."""
+
+    if not text.isascii():
+        text = "".join(
+            character
+            for character in unicodedata.normalize("NFKD", text)
+            if not unicodedata.combining(character)
+        )
+    return text.casefold().translate(_NAME_JOINERS)
+
+
+@cache
+def english_person_names() -> PersonNames:
+    """`data/en_person_names.json`, validated and folded; read once per process."""
+    data = _name_lists(
+        "en_person_names.json",
+        _LATIN_NAME_ENTRY,
+        _LATIN_STOPWORD_ENTRY,
+        ambiguous_surnames=_LATIN_NAME_ENTRY,
+        not_names=_LATIN_PHRASE_ENTRY,
+    )
+    stopwords = {english_fold(entry) for entry in data["following_stopwords"]}
+    return PersonNames(
+        first=frozenset(
+            map(english_fold, data["first_names"] + data["team_first_names"])
+        ),
+        ambiguous=frozenset(map(english_fold, data["ambiguous_first_names"])),
+        surnames=frozenset(map(english_fold, data["surnames"])),
+        # English adds no suffixes: "Church" is not the start of "Churchill".
+        stop_words=frozenset(word for word in stopwords if "." not in word),
+        stop_prefixes=frozenset(),
+        stop_dotted=tuple(sorted(word for word in stopwords if "." in word)),
+        fold=english_fold,
+        title_word=regex.compile(r"(?=\p{Latin})\p{Lu}(?=.*\p{Ll})[\p{Latin}'’-]+"),
+        capital_word=regex.compile(
+            r"(?=\p{Latin})(?!.*\p{Ll})(?=.+\p{L})[\p{Latin}'’-]+"
+        ),
+        leading_cues=frozenset(
+            {"mr", "mrs", "ms", "miss", "mx", "dr", "prof", "sir", "dame", "dear"}
+        ),
+        trailing_cues=frozenset(),
+        greetings=frozenset({"dear"}),
+        ambiguous_surnames=frozenset(map(english_fold, data["ambiguous_surnames"])),
+        not_names=frozenset(
+            " ".join(map(english_fold, entry.split())) for entry in data["not_names"]
+        ),
+    )
+
+
+def _person_names(text: str, names: PersonNames) -> list[tuple[int, int, float]]:
     """(start, end, score) of each name; one pass over the words, set lookups only."""
-    words = [match.span() for match in re.finditer(r"\w+", text)]
+    words: list[tuple[int, int]] = []
+    for match in re.finditer(r"\w+", text):
+        start, end = match.span()
+        gap = text[words[-1][1] : start] if words else ""
+        if (
+            # "O'Brien", "O'BRIEN"; "Yılmaz'ın" and "YILMAZ'IN" end in a suffix.
+            gap in ("'", "’")
+            and text[start].isupper()
+            and (words[-1][1] - words[-1][0] == 1 or not text[start:end].isupper())
+        ) or (gap == "-" and text[words[-1][0]].isupper() and text[start].isupper()):
+            words[-1] = (words[-1][0], end)
+        else:
+            words.append((start, end))
     dotted_length = max(map(len, names.stop_dotted), default=0)
+    prefix_length = max(map(len, names.stop_prefixes), default=0)
 
     @cache
     def fold(index: int) -> str:
         start, end = words[index]
-        return turkish_fold(text[start:end])
+        return names.fold(text[start:end])
+
+    @cache
+    def parts(index: int) -> tuple[str, ...]:
+        start, end = words[index]
+        return tuple(map(names.fold, text[start:end].split("-")))
+
+    def among(index: int, listed: frozenset[str]) -> bool:
+        """ "Anna-Lena" is a first name when "Anna-Lena" is, or "Anna" and "Lena" are."""
+        if fold(index) in listed:
+            return True
+        start, end = words[index]
+        return "-" in text[start:end] and all(part in listed for part in parts(index))
 
     def suffix(index: int) -> bool:
         start = words[index][0]
@@ -616,9 +727,9 @@ def _turkish_person_names(
         start, end = words[index]
         if suffix(index):
             return None
-        if _TITLE_WORD.fullmatch(text, start, end):
+        if names.title_word.fullmatch(text, start, end):
             return "title"
-        return "capitals" if _CAPITAL_WORD.fullmatch(text, start, end) else None
+        return "capitals" if names.capital_word.fullmatch(text, start, end) else None
 
     def next_to(index: int, after_dot: bool = False) -> bool:
         """The next word follows on the same line, after spaces only."""
@@ -631,17 +742,20 @@ def _turkish_person_names(
 
     @cache
     def stop(index: int) -> bool:
-        start = words[index][0]
-        if turkish_fold(text[start : start + dotted_length]).startswith(
-            names.stop_dotted
-        ):
+        start, end = words[index]
+        # Every dotted stopword has its first dot right after its first word: "A.Ş.".
+        if text[end : end + 1] == "." and names.fold(
+            text[start : start + dotted_length]
+        ).startswith(names.stop_dotted):
             return True
         word = fold(index)
         return form(index) is not None and (
             word in names.stop_words
             or any(
                 word[:length] in names.stop_prefixes
-                for length in range(_MIN_STOPWORD_PREFIX, len(word) + 1)
+                for length in range(
+                    _MIN_STOPWORD_PREFIX, min(len(word), prefix_length) + 1
+                )
             )
         )
 
@@ -650,14 +764,19 @@ def _turkish_person_names(
             index < len(words)
             and form(index) is not None
             and not stop(index)
-            and fold(index) not in _TRAILING_CUES
+            and fold(index) not in names.trailing_cues
+            and fold(index) not in names.leading_cues
         )
 
     def cue_after(index: int) -> bool:
-        return next_to(index) and fold(index + 1) in _TRAILING_CUES
+        return next_to(index) and fold(index + 1) in names.trailing_cues
 
     def listed(index: int) -> bool:
-        return fold(index) in names.first or fold(index) in names.surnames
+        return among(index, names.first) or among(index, names.surnames)
+
+    def a_word(index: int) -> bool:
+        """A surname that is also a common word, and no first name."""
+        return among(index, names.ambiguous_surnames) and not among(index, names.first)
 
     def surname_after(index: int) -> int | None:
         """The end of "[first name] listed surname" right after `index`."""
@@ -665,17 +784,17 @@ def _turkish_person_names(
             return None
         given = index + 1
         if (
-            fold(given) in names.first
+            among(given, names.first)
             and next_to(given)
             and token(given + 1)
-            and fold(given + 1) in names.surnames
+            and among(given + 1, names.surnames)
         ):
             return given + 1
-        return given if fold(given) in names.surnames else None
+        return given if among(given, names.surnames) else None
 
     def name_at(index: int) -> tuple[int, int, float] | None:
         word = fold(index)
-        if word in _LEADING_CUES and not suffix(index):
+        if word in names.leading_cues and not suffix(index):
             last = index
             while (
                 last - index < 3
@@ -684,11 +803,15 @@ def _turkish_person_names(
             ):
                 last += 1
             # "Sayın Yetkili" holds no name; "SAYIN AYŞE YILMAZ ADINA" ends at the surname.
-            known = [part for part in range(index + 1, last + 1) if listed(part)]
+            known = [
+                part
+                for part in range(index + 1, last + 1)
+                if listed(part) and not (word in names.greetings and a_word(part))
+            ]
             if not known:
                 return None
             end = known[-1]
-            if end < last and fold(end) not in names.surnames:
+            if end < last and not among(end, names.surnames):
                 end += 1
             return index + 1, end, 0.85
         start, end = words[index]
@@ -697,25 +820,32 @@ def _turkish_person_names(
             return None if surname is None else (index, surname, 0.85)
         if not token(index):
             return None
-        if cue_after(index) and (word in names.first or word in names.surnames):
+        if cue_after(index) and listed(index):
             return index, index, 0.8
         if next_to(index) and token(index + 1) and cue_after(index + 1):
-            return (index, index + 1, 0.8) if word in names.first else None
-        if word not in names.first:
+            return (index, index + 1, 0.8) if among(index, names.first) else None
+        if not among(index, names.first):
             return None
-        middle = next_to(index) and token(index + 1) and fold(index + 1) in names.first
+        middle = next_to(index) and token(index + 1) and among(index + 1, names.first)
         for given in (index + 1, index) if middle else (index,):
             surname = given + 1
             if not (next_to(given) and token(surname)):
                 continue
-            if fold(surname) in names.surnames:
+            if among(surname, names.surnames) and not (
+                among(index, names.ambiguous)
+                and among(surname, names.ambiguous_surnames)
+            ):
                 second = next_to(surname) and token(surname + 1)
-                if second and fold(surname + 1) in names.surnames:
+                if (
+                    second
+                    and among(surname + 1, names.surnames)
+                    and not among(surname + 1, names.ambiguous_surnames)
+                ):
                     return index, surname + 1, 0.85
                 return index, surname, 0.85
             if (
-                word not in names.ambiguous
-                and fold(surname) not in names.first
+                not among(index, names.ambiguous)
+                and not among(surname, names.first)
                 and len({form(part) for part in range(index, surname + 1)}) == 1
             ):
                 # "Ahmet Necdet Sezer": with no middle first name, a third title-case word that is none.
@@ -725,7 +855,7 @@ def _turkish_person_names(
                     and form(index) == "title"
                     and next_to(surname)
                     and token(third)
-                    and fold(third) not in names.first
+                    and not among(third, names.first)
                     and form(third) == "title"
                 ):
                     return index, third, 0.6
@@ -743,6 +873,19 @@ def _turkish_person_names(
                 return False
         return False
 
+    def not_a_person(first: int, last: int) -> bool:
+        """ "Calvin Klein", "Dr Pepper", "Johnnie Walker Black": a listed non-person
+        starts at the name or at the word before it."""
+        for start in (first - 1, first) if first else (first,):
+            phrase = fold(start)
+            for end in range(start + 1, min(last, start + 3) + 1):
+                if not next_to(end - 1, after_dot=True):
+                    break
+                phrase += " " + fold(end)
+                if phrase in names.not_names:
+                    return True
+        return False
+
     found: list[tuple[int, int, float]] = []
     index = 0
     while index < len(words):
@@ -751,7 +894,7 @@ def _turkish_person_names(
             index += 1
             continue
         first, last, score = name
-        if not inside_a_place(last):
+        if not (inside_a_place(last) or not_a_person(first, last)):
             if any(form(part) == "capitals" for part in range(first, last + 1)):
                 score = 0.6
             found.append((words[first][0], words[last][1], score))
@@ -759,17 +902,19 @@ def _turkish_person_names(
     return found
 
 
-class ShimTurkishPersonNameRecognizer(EntityRecognizer):
-    """Turkish full names from name lists and address cues; opt-in, never a first name alone."""
+class ShimPersonNameRecognizer(EntityRecognizer):
+    """Full names from name lists and address cues; opt-in, never a first name alone."""
 
-    def __init__(self) -> None:
+    def __init__(self, entity: str, names: Callable[[], PersonNames]) -> None:
+        self._entity, self._names = entity, names()
         super().__init__(
-            supported_entities=["PERSON_NAME_TR"],
+            supported_entities=[entity],
+            name=f"ShimPersonNameRecognizer[{entity}]",
             supported_language=_LANGUAGE,
         )
 
     def load(self) -> None:
-        self._names = person_names()
+        pass
 
     def analyze(
         self,
@@ -777,13 +922,13 @@ class ShimTurkishPersonNameRecognizer(EntityRecognizer):
         entities: list[str],
         nlp_artifacts: NlpArtifacts | None,
     ) -> list[RecognizerResult]:
-        if "PERSON_NAME_TR" not in entities:
+        if self._entity not in entities:
             return []
         return [
             RecognizerResult(
-                entity_type="PERSON_NAME_TR", start=start, end=end, score=score
+                entity_type=self._entity, start=start, end=end, score=score
             )
-            for start, end, score in _turkish_person_names(text, self._names)
+            for start, end, score in _person_names(text, self._names)
         ]
 
 
@@ -822,7 +967,8 @@ def _custom_recognizers() -> list[EntityRecognizer]:
             supported_language=_LANGUAGE,
             context=["email", "e-posta", "mail"],
         ),
-        ShimTurkishPersonNameRecognizer(),
+        ShimPersonNameRecognizer("PERSON_NAME_TR", person_names),
+        ShimPersonNameRecognizer("PERSON_NAME_EN", english_person_names),
     ]
 
 
