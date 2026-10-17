@@ -23,7 +23,9 @@ Everything here can be re-run from this repository with
 > `1f2eed6`, which fixes what the first run found ([found by this
 > benchmark](#found-by-this-benchmark)). On 2026-10-16 A1, A2 and A3 ran again on
 > v0.4.1 (`8e87dcd`, released as `fcdb645`): detection and evasion are identical to
-> `1f2eed6`, and egress is now zero. B1 ran on v0.4.1 on 2026-10-16.
+> `1f2eed6`, and egress is now zero. B1 ran on v0.4.1 on 2026-10-16. On 2026-10-17
+> A1, A2 and A3 ran on v0.4.2 (`de2b0de`), which masks Turkish person names by default:
+> its defaults now score what the "Turkish names on" column scored, and nothing else moved.
 
 ## Systems under test
 
@@ -97,15 +99,16 @@ hashes, UUIDs, ticket and case numbers. They make precision mean something.
 **Names are held out.** No name in the corpus was used to tune shim's Turkish name
 detector. Most Turkish ones are common names and appear in the dictionary shim ships
 (derived from Faker's `tr_TR` data): 44 of 50 male and 32 of 35 female first names, 46
-of 51 surnames. shim has no English name detector, and its Turkish one is off by
-default. The headline row is shim with its defaults; a second row has Turkish person
-names on (`PERSON_NAME_TR=mask`). English names are published as measured.
+of 51 surnames. shim has no English name detector. Its Turkish one masks by default
+since v0.4.2 (it was opt-in before), so the headline column is shim with its defaults,
+and a second column keeps v0.4.1's defaults (Turkish names off) for comparison.
+English names are published as measured.
 
 **How each system is scored.** The same 480 texts go to each:
 
 - shim in-process: spans from `/v1/scan`, and the body that reached a recording
   upstream from `/v1/chat/completions`. Default settings, and again with
-  `PERSON_NAME_TR` set to `mask`.
+  `PERSON_NAME_TR` set to `off` (v0.4.1's default).
 - Plain Presidio: the spans `AnalyzerEngine().analyze(text, language="en")` returns.
 - LiteLLM: a chat request with the guardrail on; the spans are what the Presidio
   analyzer answered LiteLLM (recorded by a relay), the body is what the mock upstream
@@ -120,11 +123,12 @@ types elsewhere (Presidio's `DATE_TIME` or `LOCATION` in prose) are counted but 
 scored. **Leaked** means the whole identifier can still be read in what reached the
 provider; for the plain library, in the text with its detections masked.
 
-Results, 2026-10-15, corpus sha256
+Results, 2026-10-15 on `1f2eed6` and rerun 2026-10-17 on v0.4.2 (`de2b0de`, identical
+numbers), corpus sha256
 `55b25333a34c5638e58441970c0a05a9aadbf8fc3760db1e96c7aea1a3584dc1`. The headline column
-is shim `main` with its defaults; v0.4.0 is the release before the fixes.
+is shim v0.4.2 with its defaults; v0.4.0 is the release before the fixes.
 
-| Recall | n | **shim `1f2eed6`** | shim `1f2eed6`, Turkish names on | shim v0.4.0 | shim v0.3.0 | Presidio | LiteLLM + Presidio |
+| Recall | n | **shim v0.4.2** (defaults) | shim v0.4.1 defaults (names off) | shim v0.4.0 | shim v0.3.0 | Presidio | LiteLLM + Presidio |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | TCKN | 210 | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% |
 | VKN | 90 | 100.0% | 100.0% | 100.0% | 90.0% | 100.0% | 100.0% |
@@ -134,16 +138,16 @@ is shim `main` with its defaults; v0.4.0 is the release before the fixes.
 | Email | 240 | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% |
 | IP | 60 | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% |
 | Secret (AWS key, GitHub token, JWT) | 180 | 100.0% | 100.0% | 100.0% | 100.0% | 7.8% | 7.8% |
-| Person, Turkish | 270 | 0.0% | 88.5% | 0.0% | 0.0% | 54.1% | 54.1% |
+| Person, Turkish | 270 | 88.5% | 0.0% | 0.0% | 0.0% | 54.1% | 54.1% |
 | Person, English | 150 | 0.0% | 0.0% | 0.0% | 0.0% | 95.3% | 95.3% |
-| **all identifiers** | 1,620 | 74.0% | 88.8% | 74.0% | 73.4% | 80.0% | 80.0% |
+| **all identifiers** | 1,620 | 88.8% | 74.0% | 74.0% | 73.4% | 80.0% | 80.0% |
 | false positives | | 40 | 40 | 147 | 147 | 2,228 | 2,394 |
-| **precision** | | 96.8% | 97.3% | 89.1% | 89.0% | 36.8% | 35.1% |
-| **F1** | | 0.839 | 0.928 | 0.808 | 0.804 | 0.504 | 0.488 |
+| **precision** | | 97.3% | 96.8% | 89.1% | 89.0% | 36.8% | 35.1% |
+| **F1** | | 0.928 | 0.839 | 0.808 | 0.804 | 0.504 | 0.488 |
 
 v0.4.0 with Turkish names on scored 88.8% recall and 90.7% precision (F1 0.897).
 
-| Hard negatives masked | n | shim `1f2eed6` | shim v0.4.0 and v0.3.0 | Presidio | LiteLLM + Presidio |
+| Hard negatives masked | n | shim v0.4.2 | shim v0.4.0 and v0.3.0 | Presidio | LiteLLM + Presidio |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | invoice number, fails the VKN checksum | 90 | 7.8% | 86.7% | 100.0% | 100.0% |
 | order number, fails the TCKN checksum | 240 | 5.4% | 8.3% | 100.0% | 100.0% |
@@ -155,15 +159,15 @@ v0.4.0 with Turkish names on scored 88.8% recall and 90.7% precision (F1 0.897).
 | price | 240 | 0.4% | 0.4% | 1.7% | 7.5% |
 | barcode, case number, ticket number, UUID | 120 | 0.0% | 0.0% | 84.2% | 85.0% |
 
-| Leaked to the provider | n | shim `1f2eed6` | shim `1f2eed6`, Turkish names on | shim v0.4.0 | shim v0.3.0 | Presidio | LiteLLM + Presidio |
+| Leaked to the provider | n | **shim v0.4.2** (defaults) | shim v0.4.1 defaults (names off) | shim v0.4.0 | shim v0.3.0 | Presidio | LiteLLM + Presidio |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | TCKN, IBAN, email, IP | 600 | 0 | 0 | 0 | 0 | 0 | 0 |
 | VKN | 90 | 0 | 0 | 0 | 9 | 0 | 0 |
 | Card | 90 | 0 | 0 | 0 | 0 | 14 | 14 |
 | Phone | 240 | 0 | 0 | 0 | 0 | 1 | 1 |
 | Secret | 180 | 0 | 0 | 0 | 0 | 157 | 157 |
-| Person | 420 | 420 | 181 | 420 | 420 | 110 | 110 |
-| **all** | 1,620 | 420 | 181 | 420 | 429 | 282 | 282 |
+| Person | 420 | 181 | 420 | 420 | 420 | 110 | 110 |
+| **all** | 1,620 | 181 | 420 | 420 | 429 | 282 | 282 |
 
 What this says:
 
@@ -174,13 +178,17 @@ What this says:
 - **Precision: shim masks far less that is not personal data.** 40 false positives
   against 2,394 for LiteLLM's guardrail, which masked every order, invoice, tracking,
   ticket and case number, every date and every timestamp in the corpus.
-- **shim's weak spot is names.** shim has no English person-name detector, and its
-  Turkish one is opt-in, off by default, so with its defaults shim masks no names.
-  With Turkish names on, it finds 88.5% of Turkish names and adds no false positive;
-  English names still pass. Presidio's spaCy model finds 95.3% of English and 54.1%
-  of Turkish names, while tagging Turkish words as names elsewhere. By the leak count,
-  LiteLLM's guardrail lets 282 identifiers through, shim with defaults 420 (all of
-  them names), shim with Turkish names on 181 (150 of them English names).
+- **Overall, shim now finds more than LiteLLM's guardrail and masks far less by
+  mistake:** 88.8% recall and 97.3% precision (F1 0.928), against 80.0% and 35.1%
+  (F1 0.488). By the leak count, 181 identifiers reach the provider through shim and
+  282 through LiteLLM's guardrail.
+- **shim's weak spot is English names.** shim has no English person-name detector, so
+  150 of those 181 are English names. Its Turkish detector finds 88.5% of Turkish names
+  and adds no false positive; it masks by default since v0.4.2 (v0.4.1 masked no names
+  by default: 74.0% recall, 420 leaked). Presidio's spaCy model finds 95.3% of English
+  and 54.1% of Turkish names, while tagging Turkish words as names elsewhere. An
+  English detector built from US name lists (PRD S69) missed its bar on an independent
+  corpus (precision 0.871, recall 0.818) and is not shipped.
 - **The fixes cut shim's false positives from 147 to 40** with no recall lost. v0.4.0
   masked 86.7% of invoice numbers as phone numbers ("Fatura no: 6726182317": it read
   "no" as a phone cue) and 10% of dates; `1f2eed6` masks 7.8% and none.
@@ -548,8 +556,8 @@ print them. The latency steps refuse to start while the load average is above 2.
 - **Not Presidio's best.** Plain Presidio runs with defaults, and LiteLLM's Presidio
   with what the two projects ship. Custom recognizers, a transformer NER model or
   tuned thresholds would score higher, for any system that adds them.
-- **Not English names.** shim has no English person-name detector, and its Turkish
-  one is opt-in (`PERSON_NAME_TR`, off by default). Both gaps are reported as measured.
+- **Not English names.** shim has no English person-name detector; its Turkish one
+  masks by default since v0.4.2 (`PERSON_NAME_TR`). The gap is reported as measured.
 - **Not production latency.** Latency is one machine, one worker per process and a
   mock provider that answers at once. Network, TLS and the provider's own time are
   not in it. Throughput at higher concurrency or with more workers, streaming, cold
