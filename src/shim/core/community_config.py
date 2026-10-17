@@ -32,7 +32,7 @@ AZURE_DEPLOYMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 class CommunitySettings(BaseSettings):
     PROJECT_NAME: str = "shim trust-boundary gateway"
-    VERSION: str = "0.4.1"
+    VERSION: str = "0.4.2"
     ENVIRONMENT: Literal["development", "test", "production"] = "development"
     IS_DEBUG: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
