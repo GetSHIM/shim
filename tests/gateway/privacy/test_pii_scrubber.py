@@ -2333,6 +2333,8 @@ def test_every_other_detector_wins_a_span_shared_with_a_name(
         "Aykut Yılmaz Kaya " * 1800,
         "Sayın " * 5400,
         "Aykut" * 20000,
+        # One title-case word: the stopword prefix scan ran over every prefix length.
+        pytest.param("A" + "y" * 300_000, id="one-long-word"),
     ],
 )
 def test_person_names_stay_linear(scrubber: PIIScrubberService, text: str) -> None:
