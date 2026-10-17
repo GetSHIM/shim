@@ -544,13 +544,15 @@ def test_disabled_scrubbing_allows_uninspectable_media() -> None:
     )
     known_placeholders = {"<EMAIL_ADDRESS_deadbeef>": "alice@example.com"}
     scrubber = Mock(spec=PIIScrubberService)
-    # No switch covers names, so the switches alone leave them masked.
-    names_only = disabled | {"PERSON_NAME_TR": "mask"}
-    assert names_only == effective_entity_actions(
-        dict.fromkeys(PII_CONFIG_DEFAULTS, False)
-    )
+    # No switch covers names, so the switches alone leave them masked; that alone
+    # does not refuse media, one switch-covered type that masks does.
+    names_only = effective_entity_actions(dict.fromkeys(PII_CONFIG_DEFAULTS, False))
+    assert names_only == disabled | {"PERSON_NAME_TR": "mask"}
+    assert scrub_payload(payload, names_only, PIIScrubberService())[0] == payload
     with pytest.raises(HTTPException, match="opaque media"):
-        scrub_payload(payload, names_only, PIIScrubberService())
+        scrub_payload(
+            payload, names_only | {"EMAIL_ADDRESS": "mask"}, PIIScrubberService()
+        )
 
     safe, mapping = scrub_payload(
         payload,

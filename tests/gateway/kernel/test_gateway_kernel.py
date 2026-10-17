@@ -2895,6 +2895,13 @@ async def test_an_embeddings_span_names_its_operation(
         ([[1, 2, 3]], {"TR_NATIONAL_ID": "mask"}, True),
         ([1, 2, 3], {"TR_NATIONAL_ID": "block"}, True),
         ([[1, 2, 3]], {name: "monitor" for name in effective_entity_actions()}, False),
+        # Masking names alone does not refuse them.
+        (
+            [[1, 2, 3]],
+            {name: "off" for name in effective_entity_actions()}
+            | {"PERSON_NAME_TR": "mask"},
+            False,
+        ),
     ],
 )
 async def test_token_ids_cannot_be_scanned_so_masking_refuses_them(

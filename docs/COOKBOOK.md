@@ -150,7 +150,8 @@ when the vectors stay in your own store, list the types in
 `PII_EMBEDDINGS_MONITOR` (comma-separated, for example `TR_NATIONAL_ID,IBAN_CODE`):
 for embeddings those types are only counted and sent unchanged, while chat keeps
 masking them. Token ids (`input` of integers) cannot be scanned, so they are refused
-with 400 `PRIVACY_POLICY_BLOCKED` while any type is masked or blocked, or an enforced
+with 400 `PRIVACY_POLICY_BLOCKED` while any type other than `PERSON_NAME_TR` is
+masked or blocked, or an enforced
 tenant rule in scope masks, blocks or holds text. The texts of one request are
 scanned in one pass, unless a tenant rule is in scope (a record match must not join
 two texts). Errors on `/v1/embeddings` come in OpenAI's own error shape. The usage
@@ -457,11 +458,13 @@ see the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 Images, PDFs and other files (image, file, document, audio and Gemini inline or
 file data parts) cannot be scanned. With `SHIM_MEDIA_INPUTS=block`, the default,
 a request carrying one is refused with 400 `PRIVACY_POLICY_BLOCKED` ("PII
-scrubbing does not support opaque media inputs.") while any type is `mask`,
-`mask_last4` or `block`. With `SHIM_MEDIA_INPUTS=allow`, or when no type masks or
-blocks (`PERSON_NAME_TR` included, which masks by default), the part reaches the
-provider byte for byte and unscanned: its base64 or data URL is never read, while its file name, title and other text are scanned as
-usual and its URL and file id are checked like any identifier. The usage event
+scrubbing does not support opaque media inputs.") while any type other than
+`PERSON_NAME_TR` is `mask`, `mask_last4` or `block`. Turkish names alone do not
+refuse media, so a gateway with every other type `off` lets it through although
+names are masked by default. With `SHIM_MEDIA_INPUTS=allow`, or when no other type
+masks or blocks, the part reaches the provider byte for byte and unscanned: its
+base64 or data URL is never read, while its file name, title and other text are
+scanned as usual and its URL and file id are checked like any identifier. The usage event
 then carries `media_parts` (parts by kind: `image`, `pdf`, `docx`, `text`,
 `audio`, `video`, `other`), `media_unscanned` (parts forwarded unscanned) and, for
 inline images with a readable header, `media_images`: `[width, height,
@@ -995,7 +998,7 @@ the step per request.
 
 Let OpenAI and Gemini 3 read images at a level that costs fewer image tokens, where your
 app did not choose one. It needs images to pass (`SHIM_MEDIA_INPUTS=allow`, or a
-gateway that masks nothing; see [choose what happens to each data type](#choose-what-happens-to-each-data-type)).
+gateway that masks nothing but Turkish names; see [choose what happens to each data type](#choose-what-happens-to-each-data-type)).
 
 1. Set `SHIM_IMAGE_DETAIL_OPENAI` to `low` or `high` and `SHIM_IMAGE_DETAIL_GEMINI` to
    `low` or `medium` (both `off` by default).

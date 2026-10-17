@@ -2055,10 +2055,12 @@ def _term(action: str, state: str = "enforced") -> dict:
 
 
 _OFF_ALL = dict.fromkeys(_MONITOR_ALL, "off")
+# Masking names alone does not refuse media.
+_NAMES_ONLY = _OFF_ALL | {"PERSON_NAME_TR": "mask"}
 
 
 @pytest.mark.parametrize("media_inputs", ["block", "allow"])
-@pytest.mark.parametrize("actions", [None, _MONITOR_ALL, _OFF_ALL])
+@pytest.mark.parametrize("actions", [None, _MONITOR_ALL, _OFF_ALL, _NAMES_ONLY])
 @pytest.mark.parametrize(
     "rules",
     [

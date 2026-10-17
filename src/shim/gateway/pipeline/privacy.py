@@ -40,6 +40,7 @@ from shim.privacy.policies import (
     EntityAction,
     PrivacyAction,
     PrivacyOutcome,
+    UNSWITCHED_ENTITY_ACTIONS,
     block_code,
     effective_entity_actions,
     is_protocol_field,
@@ -65,6 +66,18 @@ logger = logging.getLogger(__name__)
 
 # Actions that keep a value from the provider.
 _HIDING = frozenset({"mask", "mask_last4", "block"})
+
+
+def _refuses_unreadable(actions: Mapping[str, EntityAction]) -> bool:
+    """Whether the actions refuse input no scan reads: media parts and token ids.
+
+    A type no switch covers does not, so masking Turkish names alone lets it through.
+    """
+    return any(
+        action in _HIDING
+        for kind, action in actions.items()
+        if kind not in UNSWITCHED_ENTITY_ACTIONS
+    )
 
 
 class PrivacyStage:
@@ -205,7 +218,7 @@ class PrivacyStage:
         )
         # Token ids cannot be read, so whatever would hide or refuse text refuses them.
         if token_ids and (
-            any(action in _HIDING for action in actions.values())
+            _refuses_unreadable(actions)
             or any(
                 rule.state == "enforced"
                 and rule.action in {"mask", "block", "require_approval"}
@@ -412,7 +425,7 @@ def _base_actions(value: PreparedInference) -> Mapping[str, EntityAction]:
 def media_refused(value: PreparedInference, tags: Sequence[str]) -> bool:
     """Whether the privacy stage will refuse the request's media parts.
 
-    The same test as `scrub_payload`'s `protects`, from the rules in scope for `tags`.
+    The same test as `scrub_payload`'s `refuse_media`, from the rules in scope for `tags`.
     """
     if value.media_inputs == "allow":
         return False
@@ -424,7 +437,7 @@ def media_refused(value: PreparedInference, tags: Sequence[str]) -> bool:
     ]
     destinations = [rule for rule in rules if rule.kind == "destination"]
     actions = destination_actions(_base_actions(value), destinations)
-    return any(action in _HIDING for action in actions.values()) or any(
+    return _refuses_unreadable(actions) or any(
         rule.state == "enforced"
         and (
             rule.action == "block"
@@ -509,11 +522,11 @@ def scrub_payload(
     media = classify_media(payload) if media is None else media
     # Monitored values pass unchanged, so only masked or blocked types refuse
     # what cannot be rewritten; media cannot be searched for tenant terms either.
-    protects = (
-        protects
-        or any(action in {"mask", "mask_last4", "block"} for action in actions.values())
-        or (content is not None and content.protects)
+    rules_protect = protects or (content is not None and content.protects)
+    refuse_media = media_inputs == "block" and (
+        rules_protect or _refuses_unreadable(actions)
     )
+    protects = rules_protect or any(action in _HIDING for action in actions.values())
     # A provider reads a PDF's pages drawn: images, glyphs without text and form
     # appearances no scan saw. A tenant that hides values sends the text that was scanned.
     if protects and not native_pdf:
@@ -521,7 +534,6 @@ def scrub_payload(
     unmasked = {} if unmasked is None else unmasked
     report = DocumentReport() if report is None else report
     deadline: float | None = None
-    refuse_media = protects and media_inputs == "block"
     document_parts = {
         id(value_at(payload, part.path)): part
         for part in media
