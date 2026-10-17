@@ -3,17 +3,21 @@
 `person-tr-v1.json` and `person-en-v1.json` are written with the recognizers and
 hold every case to its label or to its recorded gap. The held-out corpora are written by an author who
 never saw the name lists or the recognizer; they are scored as written, and the
-bar must hold on them.
+bar must hold on them. `person-en-heldout-v1.json` was measured before the rules
+changed, so it is reported without a bar; `person-en-heldout-v2.json` carries it.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+import random
 from typing import Any
 
 import pytest
 
+from scripts.bench import pii_corpus
 from shim.privacy.pii_scrubber import PIIScrubberService
 from shim.privacy.policies import effective_entity_actions
 
@@ -29,12 +33,13 @@ HELD_OUT = _load("person-tr-heldout-v1.json")
 CASES: list[dict[str, Any]] = CORPUS["cases"]
 EN_CORPUS = _load("person-en-v1.json")
 EN_HELD_OUT = _load("person-en-heldout-v1.json")
-# (entity, corpus, precision bar, recall bar)
-MEASURED = {
-    "tr-v1": ("PERSON_NAME_TR", CORPUS, 0.95, 0.85),
-    "tr-held-out": ("PERSON_NAME_TR", HELD_OUT, 0.95, 0.85),
-    "en-v1": ("PERSON_NAME_EN", EN_CORPUS, 0.95, 0.90),
-    "en-held-out": ("PERSON_NAME_EN", EN_HELD_OUT, 0.95, 0.90),
+# (entity, corpus file, precision and recall bars, or None for a report only)
+MEASURED: dict[str, tuple[str, str, tuple[float, float] | None]] = {
+    "tr-v1": ("PERSON_NAME_TR", "person-tr-v1.json", (0.95, 0.85)),
+    "tr-held-out": ("PERSON_NAME_TR", "person-tr-heldout-v1.json", (0.95, 0.85)),
+    "en-v1": ("PERSON_NAME_EN", "person-en-v1.json", (0.95, 0.90)),
+    "en-held-out-v1": ("PERSON_NAME_EN", "person-en-heldout-v1.json", None),
+    "en-held-out": ("PERSON_NAME_EN", "person-en-heldout-v2.json", (0.95, 0.90)),
 }
 
 
@@ -177,9 +182,11 @@ def test_corpus_case(entity: str, case: dict[str, Any]) -> None:
 
 @pytest.mark.parametrize("measured", MEASURED.values(), ids=MEASURED.keys())
 def test_precision_and_recall_meet_the_bar(
-    measured: tuple[str, dict[str, Any], float, float],
+    measured: tuple[str, str, tuple[float, float] | None],
 ) -> None:
-    entity, corpus, precision_bar, recall_bar = measured
+    entity, name, bars = measured
+    corpus = _load(name)
+    assert corpus["entities"] == [entity]
     true_positive = false_positive = false_negative = 0
     for case in corpus["cases"]:
         if "known_gap" in case:
@@ -196,9 +203,10 @@ def test_precision_and_recall_meet_the_bar(
     precision = true_positive / (true_positive + false_positive)
     recall = true_positive / (true_positive + false_negative)
 
-    print(f"{entity}: precision {precision:.3f}, recall {recall:.3f}")
-    assert precision >= precision_bar
-    assert recall >= recall_bar
+    print(f"{entity} {name}: precision {precision:.3f}, recall {recall:.3f}")
+    if bars is not None:
+        assert precision >= bars[0]
+        assert recall >= bars[1]
 
 
 @pytest.mark.parametrize("corpus", [CORPUS, HELD_OUT], ids=["v1", "held-out"])
@@ -212,3 +220,29 @@ def test_english_names_find_nothing_but_turkish_names_in_turkish_text(
                 case["id"],
                 case["text"][start:end],
             )
+
+
+def test_turkish_names_are_unchanged_since_s41() -> None:
+    """R8: the Turkish spans recorded on cf8c454, before the engine took English data."""
+    recorded = _load("person-tr-r8-cf8c454.json")
+    rng = random.Random(pii_corpus.SEED)
+    texts = [case["text"] for case in CASES + HELD_OUT["cases"]] + [
+        pii_corpus.render(template, rng)["text"]
+        for template in pii_corpus.TEMPLATES
+        for _ in range(30)
+    ]
+    scrubber = PIIScrubberService()
+    actions = _only("PERSON_NAME_TR")
+
+    assert len(texts) == 914
+    assert (
+        hashlib.sha256("\n".join(texts).encode()).hexdigest()
+        == recorded["texts_sha256"]
+    )
+    assert [
+        [
+            [finding["start"], finding["end"]]
+            for finding in scrubber.analyze(text, actions)
+        ]
+        for text in texts
+    ] == recorded["spans"]

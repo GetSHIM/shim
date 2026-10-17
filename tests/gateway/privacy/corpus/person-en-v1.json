@@ -2224,7 +2224,14 @@
     {
       "id": "not-date-04",
       "text": "April Showers bring May Flowers.",
-      "expect": []
+      "expect": [],
+      "known_gap": "May is an ambiguous first name, and Flowers a surname too frequent (Census 2010 rank 1,000 or better) to be read as a word",
+      "known_actual": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "May Flowers"
+        }
+      ]
     },
     {
       "id": "not-date-05",
@@ -2594,6 +2601,216 @@
     {
       "id": "not-other-30",
       "text": "Pull Request merged into main.",
+      "expect": []
+    },
+    {
+      "id": "initial-06",
+      "text": "Grace E. Whitfield signed the form.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Grace E. Whitfield"
+        }
+      ]
+    },
+    {
+      "id": "initial-07",
+      "text": "Daniel R. Patterson approved the budget.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Daniel R. Patterson"
+        }
+      ]
+    },
+    {
+      "id": "initial-08",
+      "text": "K. L. Brennan will chair the meeting.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "K. L. Brennan"
+        }
+      ]
+    },
+    {
+      "id": "initial-09",
+      "text": "P.J. Donovan replied within the hour.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "P.J. Donovan"
+        }
+      ]
+    },
+    {
+      "id": "suffix-01",
+      "text": "Walter Simmons Jr. called about the claim.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Walter Simmons"
+        }
+      ]
+    },
+    {
+      "id": "suffix-02",
+      "text": "Please ask Kevin Doyle, PhD, to review it.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Kevin Doyle"
+        }
+      ]
+    },
+    {
+      "id": "suffix-03",
+      "text": "Laura Bennett MD is on call tonight.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Laura Bennett"
+        }
+      ]
+    },
+    {
+      "id": "suffix-04",
+      "text": "Henry Caldwell III inherited the account.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Henry Caldwell"
+        }
+      ]
+    },
+    {
+      "id": "particle-01",
+      "text": "Our new auditor is Emma de Vries.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Emma de Vries"
+        }
+      ]
+    },
+    {
+      "id": "particle-02",
+      "text": "Carlos dos Santos opened a ticket.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Carlos dos Santos"
+        }
+      ]
+    },
+    {
+      "id": "particle-03",
+      "text": "Ana da Costa moved to the Lisbon office.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Ana da Costa"
+        }
+      ]
+    },
+    {
+      "id": "particle-04",
+      "text": "Marco di Stefano sent the contract.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Marco di Stefano"
+        }
+      ]
+    },
+    {
+      "id": "particle-05",
+      "text": "Ms. de Souza confirmed the booking.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "de Souza"
+        }
+      ]
+    },
+    {
+      "id": "mixed-44",
+      "text": "Toplantıya Paulo dos Santos da katıldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Paulo dos Santos"
+        }
+      ]
+    },
+    {
+      "id": "pair-40",
+      "text": "Grace Young sent the invoice.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Grace Young"
+        }
+      ]
+    },
+    {
+      "id": "pair-41",
+      "text": "Hope Hill joined the support team.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Hope Hill"
+        }
+      ]
+    },
+    {
+      "id": "pair-42",
+      "text": "Will Green called twice.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Will Green"
+        }
+      ]
+    },
+    {
+      "id": "not-function-01",
+      "text": "Click See More for details.",
+      "expect": []
+    },
+    {
+      "id": "not-function-02",
+      "text": "Choose My Orders from the menu.",
+      "expect": []
+    },
+    {
+      "id": "not-function-03",
+      "text": "So Far So Good",
+      "expect": []
+    },
+    {
+      "id": "not-function-04",
+      "text": "Many Happy Returns",
+      "expect": []
+    },
+    {
+      "id": "not-function-05",
+      "text": "Meeting In Room 4",
+      "expect": []
+    },
+    {
+      "id": "not-function-06",
+      "text": "OK Google, set a timer.",
+      "expect": []
+    },
+    {
+      "id": "not-function-07",
+      "text": "Due On Monday",
+      "expect": []
+    },
+    {
+      "id": "not-date-13",
+      "text": "Sent Thu Mar 5 at noon",
       "expect": []
     }
   ]

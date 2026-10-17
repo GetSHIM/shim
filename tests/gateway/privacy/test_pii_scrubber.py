@@ -34,7 +34,11 @@ from shim.privacy.policies import (
     PrivacyOutcome,
     effective_entity_actions,
 )
-from shim.privacy.presidio_analyzer import english_person_names, person_names
+from shim.privacy.presidio_analyzer import (
+    english_fold,
+    english_person_names,
+    person_names,
+)
 from shim.rules import validate_rule_set
 from shim.rules.content import ContentRules, content_rules
 
@@ -2282,6 +2286,20 @@ def _names(scrubber: PIIScrubberService, text: str, actions=_NAMES_ONLY) -> list
         # One line, words apart only by spaces.
         ("Aykut\nOkutan", []),
         ("Aykut-Okutan", []),
+        # A cue word is a name part outside its cue position, as in S41.
+        ("Ali Sayın", ["Ali Sayın"]),
+        ("Ahmet Bay", ["Ahmet Bay"]),
+        ("Ayşe Bayan", ["Ayşe Bayan"]),
+        ("Mehmet Uzm", ["Mehmet Uzm"]),
+        ("Ahmet Sayın Yılmaz", ["Ahmet Sayın"]),
+        # A hyphen joins two name parts of one form, never a label and a name.
+        ("Ayşe-Gül Yılmaz", ["Ayşe-Gül Yılmaz"]),
+        ("Ahmet Yılmaz-Kaya", ["Ahmet Yılmaz-Kaya"]),
+        ("İK-Ayşe Yılmaz", ["Ayşe Yılmaz"]),
+        ("TR-Ahmet Yılmaz", ["Ahmet Yılmaz"]),
+        ("Müdür-Ahmet Yılmaz", ["Ahmet Yılmaz"]),
+        # An apostrophe joins only after one letter; a capitalised suffix stays out.
+        ("Ahmet Yılmaz'In Ziyareti", ["Ahmet Yılmaz"]),
     ],
 )
 def test_person_names_follow_the_rules(
@@ -2448,6 +2466,80 @@ def _english(scrubber: PIIScrubberService, text: str) -> list[str]:
         ("Sayın Ahmet Yılmaz'ın başvurusu", []),
         ("Selin Kozmetik indirim yapıyor.", []),
         ("Ali Usta Döner Salonu açıldı.", []),
+        # After "Dear", the whole name; only a greeting of words is no name.
+        ("Dear James Brown, your card has shipped.", ["James Brown"]),
+        ("Dear Sarah Hill, welcome.", ["Sarah Hill"]),
+        ("Dear Thomas White, welcome.", ["Thomas White"]),
+        ("Dear John Little, welcome.", ["John Little"]),
+        ("Dear Paul Wood, welcome.", ["Paul Wood"]),
+        ("Dear Michael Black, welcome.", ["Michael Black"]),
+        # A listed brand drops only the whole match, and never a match after a cue.
+        ("Please refund Paul Smith today.", ["Paul Smith"]),
+        ("Customer John Lewis", ["John Lewis"]),
+        ("Edward Jones called about his loan.", ["Edward Jones"]),
+        ("Tom Ford signed the lease.", ["Tom Ford"]),
+        ("Patient: Charlie Brown, age 7", ["Charlie Brown"]),
+        ("Dear Mr. Paul Smith,", ["Paul Smith"]),
+        ("Mr. Calvin Klein called.", ["Calvin Klein"]),
+        ("Raymond James Carter", ["Raymond James Carter"]),
+        ("Mary Kay Johnson", ["Mary Kay Johnson"]),
+        ("Sara Lee Thompson", ["Sara Lee Thompson"]),
+        ("My Uncle Ben Johnson called.", ["Ben Johnson"]),
+        # Function words, months and days are no names.
+        ("Status: In Progress", []),
+        ("My Account", []),
+        ("See Below", []),
+        ("So Long", []),
+        ("Many Thanks", []),
+        ("OK Cancel", []),
+        ("In London", []),
+        ("Born In Paris", []),
+        ("Thu Oct", []),
+        ("In July", []),
+        ("In June 2026", []),
+        ("Will See You Soon", []),
+        # An ambiguous first name pairs with a surname too frequent to be a word.
+        ("Mark Brown", ["Mark Brown"]),
+        ("Frank White", ["Frank White"]),
+        ("Carol King", ["Carol King"]),
+        ("Ashley Young", ["Ashley Young"]),
+        ("Taylor Green", ["Taylor Green"]),
+        ("Jack White", ["Jack White"]),
+        ("Bob Brown", ["Bob Brown"]),
+        ("Grace Brown", ["Grace Brown"]),
+        ("Jet Black paint", []),
+        # Given names Turkish shares pair with a listed surname.
+        ("Ibrahim Khan", ["Ibrahim Khan"]),
+        ("Yusuf Ahmed", ["Yusuf Ahmed"]),
+        ("Hamza Ali", ["Hamza Ali"]),
+        ("Leyla Johnson", ["Leyla Johnson"]),
+        # Suffixes are recognized and stay outside the name.
+        ("Robert Hayes Jr", ["Robert Hayes"]),
+        ("John Smith PhD", ["John Smith"]),
+        ("John Smith, Jr. called", ["John Smith"]),
+        ("John Smith Ph.D. reviewed it", ["John Smith"]),
+        ("Sarah Connor, MD", ["Sarah Connor"]),
+        ("Henry Caldwell III signed.", ["Henry Caldwell"]),
+        # Middle and leading initials join the name before a listed surname.
+        ("Michael J. Fenwick", ["Michael J. Fenwick"]),
+        ("Michael J Fenwick", ["Michael J Fenwick"]),
+        ("John A.J. Smith", ["John A.J. Smith"]),
+        ("T. R. Hollis", ["T. R. Hollis"]),
+        ("Mr. John A. Smith", ["John A. Smith"]),
+        ("Priya K. Raghunathan", []),
+        # Particles join the name before a listed surname, never the weak rule.
+        ("Mr. van der Berg", ["van der Berg"]),
+        ("J. da Silva", ["J. da Silva"]),
+        ("Mrs. Van Buren", ["Van Buren"]),
+        ("Anna van der Berg called.", ["Anna van der Berg"]),
+        ("Maria de la Cruz booked it.", ["Maria de la Cruz"]),
+        ("Maria Dela Cruz called.", ["Maria Dela Cruz"]),
+        ("Dr. van Helsing", []),
+        ("Oscar de la Renta dress", []),
+        # A label before a hyphen is not part of the name.
+        ("HR-John Smith", ["John Smith"]),
+        ("Sales-John Smith", ["John Smith"]),
+        ("Catherine Zeta-Jones was here", ["Catherine Zeta-Jones"]),
     ],
 )
 def test_english_person_names_follow_the_rules(
@@ -2477,6 +2569,28 @@ def test_english_person_names_are_off_by_default_and_follow_their_action(
     assert {finding["action"] for finding in scrubber.analyze(text, blocked)} == {
         "block"
     }
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("Toplantıya John Ahmet Yılmaz katıldı.", "John Ahmet Yılmaz"),
+        ("Dr. Kaya Smith aradı.", "Kaya Smith"),
+        ("Elif Smith Kaya geldi.", "Elif Smith Kaya"),
+    ],
+)
+def test_a_name_both_languages_find_in_part_is_one_turkish_name(
+    scrubber: PIIScrubberService, text: str, name: str
+) -> None:
+    actions = effective_entity_actions(
+        None, {"PERSON_NAME_EN": "mask", "PERSON_NAME_TR": "mask"}
+    )
+
+    masked, mapping = scrubber.scrub(text, actions)
+
+    assert list(mapping.values()) == [name]
+    assert re.fullmatch(r"<PERSON_NAME_TR_[0-9a-f]{32}>", next(iter(mapping)))
+    assert scrubber.deanonymize(masked, mapping) == text
 
 
 @pytest.mark.parametrize(
@@ -2530,6 +2644,11 @@ def test_english_names_lose_shared_spans_to_other_types(
         "O'B" * 33_000,
         "J. " * 33_000,
         "Mary " * 20_000,
+        "Anna van der " * 1_500,
+        "Mr. de la " * 9_000,
+        "John A.B.C.D.E. " * 1_500,
+        "John Smith Jr. " * 1_500,
+        "Sales-John\n" * 9_000,
     ],
 )
 def test_english_person_names_stay_linear(
@@ -2564,6 +2683,9 @@ def test_english_person_name_data_is_reviewed_and_consistent() -> None:
         "following_stopwords",
         "ambiguous_surnames",
         "not_names",
+        "function_words",
+        "name_suffixes",
+        "particles",
     }
     for key in ("first_names", "surnames"):
         assert "sha256" in data["source"][key] and "retrieved" in data["source"][key]
@@ -2574,9 +2696,27 @@ def test_english_person_name_data_is_reviewed_and_consistent() -> None:
     assert {"will", "may", "mark", "grace", "chase", "austin", "paris"} <= (
         names.ambiguous
     )
-    # Turkish given names are left to PERSON_NAME_TR, unless the US Census 1990 lists them.
+    # Turkish given names SSA lacks are left to PERSON_NAME_TR; those it counts and
+    # the Census 1990 lists lack pair only with a listed surname.
     assert {"zeynep", "selin", "mehmet"}.isdisjoint(names.first)
     assert "zeynep" in turkish.first
+    assert {"ibrahim", "yusuf", "hamza", "mustafa", "leyla", "aylin"} <= names.ambiguous
+    # Function words never start a name; as surnames they are words.
+    function_words = set(map(english_fold, data["function_words"]))
+    assert {"in", "my", "so", "see", "many", "ok", "soon", "miss"} <= function_words
+    assert function_words.isdisjoint(names.first)
+    assert function_words & names.surnames <= names.ambiguous_surnames
+    calendar = {"may", "june", "july", "oct", "thu", "march", "monday", "jan"}
+    assert calendar & names.first <= names.ambiguous
+    assert calendar & names.surnames <= names.ambiguous_surnames
+    # Frequent surnames are names, not words: "Mark Brown".
+    assert {"brown", "white", "young", "king", "green"}.isdisjoint(
+        names.ambiguous_surnames
+    )
+    assert {"jr", "ii", "iii", "phd"}.isdisjoint(names.surnames)
+    assert {"jr", "sr", "iii", "md", "phd", "esq"} <= names.suffixes
+    assert {"van", "der", "da", "de", "la", "bin"} <= names.particles
+    assert {"paul smith", "tom ford", "charlie brown"}.isdisjoint(names.not_names)
     for name in names.first | names.surnames:
         assert name not in names.stop_words, name
     assert all(len(phrase.split()) >= 2 for phrase in names.not_names)
@@ -2588,15 +2728,21 @@ def test_english_person_name_data_is_reviewed_and_consistent() -> None:
 
 def test_the_name_list_script_rebuilds_the_sourced_lists(tmp_path: Path) -> None:
     with zipfile.ZipFile(tmp_path / "names.zip", "w") as ssa:
-        ssa.writestr("yob1990.txt", "Olivia,F,1500\nZeynep,F,3000\nRare,F,10\n")
-        ssa.writestr("yob1991.txt", "Olivia,F,600\nStreet,M,5000\n")
+        ssa.writestr(
+            "yob1990.txt",
+            "Olivia,F,1500\nZeynep,F,1000\nYusuf,M,2500\nRare,F,10\nMay,F,4000\n",
+        )
+        ssa.writestr("yob1991.txt", "Olivia,F,600\nStreet,M,5000\nSoon,F,9000\n")
         ssa.writestr("NationalReadMe.pdf", "")
-    (tmp_path / "dist.female.first").write_text("MARY           2.629  2.629      1\n")
+    (tmp_path / "dist.female.first").write_text(
+        "MARY           2.629  2.629      1\nMY             0.003 90.000   4000\n"
+    )
     (tmp_path / "dist.male.first").write_text("JAMES          3.318  3.318      1\n")
     with zipfile.ZipFile(tmp_path / "census2010-names.zip", "w") as census:
         census.writestr(
             "Names_2010Census.csv",
-            "name,rank,count\nSMITH,1,2442977\nSTREET,2,100\nOCONNELL,3,90\n"
+            "name,rank,count\nSMITH,1,2442977\nSTREET,2,100\nBROWN,4,90\n"
+            "OCONNELL,1500,90\nGOLD,1928,80\nJR,2000,70\nMAY,304,60\nIN,18507,50\n"
             "ALL OTHER NAMES,0,29312001\n",
         )
     team = {
@@ -2604,18 +2750,29 @@ def test_the_name_list_script_rebuilds_the_sourced_lists(tmp_path: Path) -> None
         "version": 1,
         "source": {"following_stopwords": "team"},
         "team_first_names": ["Priya"],
+        "ambiguous_first_names": ["Mary"],
         "following_stopwords": ["Street"],
+        "ambiguous_surnames": ["Brown", "Gold"],
+        "function_words": ["In", "My", "Soon"],
+        "name_suffixes": ["Jr"],
     }
-    turkish = {"first_names": ["Zeynep"], "team_first_names": ["Mary"]}
+    turkish = {"first_names": ["Zeynep", "Yusuf"], "team_first_names": ["Mary"]}
 
     built = person_names_script.build(team, turkish, tmp_path, 2000, "2026-10-17")
 
-    assert built["first_names"] == ["James", "Mary", "Olivia"]
-    assert built["surnames"] == ["Oconnell", "Smith"]
+    # Function words and stopwords never; a Turkish name SSA counts is kept, ambiguous.
+    assert built["first_names"] == ["James", "Mary", "May", "Olivia", "Yusuf"]
+    assert built["ambiguous_first_names"] == ["Mary", "May", "Yusuf"]
+    # Suffixes are no surnames; a frequent surname is no word, a date or function word is.
+    assert built["surnames"] == ["Brown", "Gold", "In", "May", "Oconnell", "Smith"]
+    assert built["ambiguous_surnames"] == ["Gold", "In", "May"]
     assert built["team_first_names"] == ["Priya"]
     assert "at least 2000 births" in built["source"]["first_names"]
     assert "ranks 1 to 50000" in built["source"]["surnames"]
     assert built["source"]["following_stopwords"] == "team"
+    assert (
+        person_names_script.build(built, turkish, tmp_path, 2000, "2026-10-17") == built
+    )
 
 
 def test_the_restore_map_leaves_out_withheld_types_tails_and_labels_alike() -> None:
