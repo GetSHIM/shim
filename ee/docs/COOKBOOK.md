@@ -203,8 +203,9 @@ Choose what shim does with each entity type for your tenant. All five group
 switches are on by default, so every type is masked. `PERSON_NAME_TR` (Turkish
 person names) is masked by default too, but no switch covers it: turning every
 switch off still masks names, and only `entity_actions` changes it, as in
-`{"entity_actions": {"PERSON_NAME_TR": "off"}}` (or `"monitor"`). Names alone do
-not refuse images, files or token ids.
+`{"entity_actions": {"PERSON_NAME_TR": "off"}}` (or `"monitor"`). Names masked by
+default do not refuse images, files or token ids; names `entity_actions` sets to
+`mask` or `block` do.
 Name detection is list based, measured on a held-out synthetic corpus written by
 a different author (precision 0.992, recall 0.952); what it misses is in the
 [community cookbook](../../docs/COOKBOOK.md#choose-what-happens-to-each-data-type).
@@ -265,9 +266,9 @@ is 422. Adding a type records `tenant.privacy_protection_relaxed` with
 `embeddings_monitor_types.<TYPE>`; removing one does not.
 
 Images and files are a [gateway setting](#change-the-gateway-settings),
-`media_inputs`: `block` (default) refuses a request carrying one while any type
-other than `PERSON_NAME_TR` is masked or blocked, or an enforced `mask`, `block` or
-`require_approval` rule applies; `allow` forwards it unchanged and unscanned, and the request list counts
+`media_inputs`: `block` (default) refuses a request carrying one while any type is
+masked or blocked (`PERSON_NAME_TR` only when `entity_actions` sets it), or an
+enforced `mask`, `block` or `require_approval` rule applies; `allow` forwards it unchanged and unscanned, and the request list counts
 it in `media_parts` and `media_unscanned`. Turning it to `allow` records
 `tenant.privacy_protection_relaxed` with `media_inputs`. What "unscanned" means and
 how such requests are sized is in the

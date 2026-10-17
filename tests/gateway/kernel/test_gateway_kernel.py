@@ -2895,12 +2895,21 @@ async def test_an_embeddings_span_names_its_operation(
         ([[1, 2, 3]], {"TR_NATIONAL_ID": "mask"}, True),
         ([1, 2, 3], {"TR_NATIONAL_ID": "block"}, True),
         ([[1, 2, 3]], {name: "monitor" for name in effective_entity_actions()}, False),
-        # Masking names alone does not refuse them.
+        # Names masked by default do not refuse them; names set to mask do.
+        (
+            [[1, 2, 3]],
+            {
+                name: "off"
+                for name in effective_entity_actions()
+                if name != "PERSON_NAME_TR"
+            },
+            False,
+        ),
         (
             [[1, 2, 3]],
             {name: "off" for name in effective_entity_actions()}
             | {"PERSON_NAME_TR": "mask"},
-            False,
+            True,
         ),
     ],
 )
@@ -4690,6 +4699,32 @@ def _media_sent(route: str, call: httpx.Request) -> object:
 
 
 _ALL_MONITOR = json.dumps(dict.fromkeys(effective_entity_actions(), "monitor"))
+_ALL_OFF = dict.fromkeys(effective_entity_actions(), "off")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("actions", "refused"),
+    [
+        ({name: "off" for name in _ALL_OFF if name != "PERSON_NAME_TR"}, False),
+        (_ALL_OFF | {"PERSON_NAME_TR": "mask"}, True),
+        (_ALL_OFF | {"PERSON_NAME_TR": "block"}, True),
+        (
+            {name: "off" for name in _ALL_OFF if name != "PERSON_NAME_TR"}
+            | {"EMAIL_ADDRESS": "mask"},
+            True,
+        ),
+    ],
+)
+async def test_names_masked_only_by_default_do_not_refuse_media(
+    actions, refused
+) -> None:
+    response, calls, _ = await _call_with_media(
+        "chat", _png_b64(), PII_ENTITY_ACTIONS=json.dumps(actions)
+    )
+
+    assert response.status_code == (400 if refused else 200)
+    assert len(calls) == (0 if refused else 1)
 
 
 @pytest.mark.asyncio

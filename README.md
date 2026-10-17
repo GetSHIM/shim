@@ -234,9 +234,9 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
   per process.
 - shim validates the routing, privacy and admission fields of a provider
   payload. The rest of the provider's JSON passes through unvalidated.
-- Images and most files cannot be scanned. While any type other than Turkish
-  person names is masked or blocked, a request carrying one is refused with 400,
-  unless `SHIM_MEDIA_INPUTS=allow` (enterprise: the `media_inputs` gateway
+- Images and most files cannot be scanned. While any type is masked or blocked
+  (Turkish person names only when set, not by their default), a request carrying
+  one is refused with 400, unless `SHIM_MEDIA_INPUTS=allow` (enterprise: the `media_inputs` gateway
   setting) forwards it unchanged and unscanned; the usage event counts such parts.
   PDF, Word and text files are read and checked like message text when
   `SHIM_DOCUMENTS` (enterprise: `documents`) is `scan` or `scan_and_convert`;

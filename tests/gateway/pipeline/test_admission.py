@@ -2055,12 +2055,34 @@ def _term(action: str, state: str = "enforced") -> dict:
 
 
 _OFF_ALL = dict.fromkeys(_MONITOR_ALL, "off")
-# Masking names alone does not refuse media.
-_NAMES_ONLY = _OFF_ALL | {"PERSON_NAME_TR": "mask"}
+# Every type off but Turkish names, masked by default or because they were set.
+_DEFAULT_NAMES = {name: "off" for name in _MONITOR_ALL if name != "PERSON_NAME_TR"}
+_SET_NAMES = _OFF_ALL | {"PERSON_NAME_TR": "mask"}
+
+
+@pytest.mark.parametrize(
+    ("actions", "refused"),
+    [
+        (_DEFAULT_NAMES, False),
+        (_SET_NAMES, True),
+        (_OFF_ALL | {"PERSON_NAME_TR": "block"}, True),
+        (_DEFAULT_NAMES | {"EMAIL_ADDRESS": "mask"}, True),
+    ],
+)
+def test_names_masked_only_by_default_do_not_refuse_media(actions, refused) -> None:
+    from shim.gateway.pipeline.privacy import media_refused
+
+    prepared = _with_media(
+        _prepared("x"), _image(_png_b64()), media_inputs="block", entity_actions=actions
+    )
+
+    assert media_refused(prepared, ()) is refused
 
 
 @pytest.mark.parametrize("media_inputs", ["block", "allow"])
-@pytest.mark.parametrize("actions", [None, _MONITOR_ALL, _OFF_ALL, _NAMES_ONLY])
+@pytest.mark.parametrize(
+    "actions", [None, _MONITOR_ALL, _OFF_ALL, _DEFAULT_NAMES, _SET_NAMES]
+)
 @pytest.mark.parametrize(
     "rules",
     [
@@ -2103,6 +2125,13 @@ def test_admission_predicts_exactly_when_privacy_refuses_media(
             protects=any(
                 (rule.state, rule.action) == ("enforced", "block")
                 for rule in destinations
+            ),
+            # As the stage passes it: the names default does not count.
+            refusing=destination_actions(
+                effective_entity_actions(
+                    None, {"PERSON_NAME_TR": "off"} | (actions or {})
+                ),
+                destinations,
             ),
             media_inputs=media_inputs,
         )
