@@ -22,5 +22,6 @@ and in the public domain (17 U.S.C. 105); "source" in the file names each
 archive, its address and checksum, and the filter applied, and
 scripts/person_names_en.py rebuilds both lists from the archives. Its other
 lists ("team_first_names", "ambiguous_first_names", "ambiguous_surnames",
-"not_names", "following_stopwords") were compiled by the shim team from general
-knowledge, from no third-party dataset.
+"not_names", "following_stopwords", "function_words", "name_suffixes",
+"particles") were compiled by the shim team from general knowledge, from no
+third-party dataset.
