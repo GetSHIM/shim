@@ -25,7 +25,7 @@ Everything here can be re-run from this repository with
 > v0.4.1 (`8e87dcd`, released as `fcdb645`): detection and evasion are identical to
 > `1f2eed6`, and egress is now zero. B1 ran on v0.4.1 on 2026-10-16. On 2026-10-17
 > A1, A2 and A3 ran on v0.4.2 (`de2b0de`), which masks Turkish person names by default:
-> its defaults now score what the "Turkish names on" column scored, and nothing else moved.
+> its defaults now score what v0.4.1 scored with Turkish names on, and nothing else moved.
 
 ## Systems under test
 
