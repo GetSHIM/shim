@@ -601,6 +601,8 @@ def _turkish_person_names(
     """(start, end, score) of each name; one pass over the words, set lookups only."""
     words = [match.span() for match in re.finditer(r"\w+", text)]
     dotted_length = max(map(len, names.stop_dotted), default=0)
+    # No longer prefix is listed, so the scan stops there: linear in a long word.
+    prefix_length = max(map(len, names.stop_prefixes), default=0)
 
     @cache
     def fold(index: int) -> str:
@@ -641,7 +643,9 @@ def _turkish_person_names(
             word in names.stop_words
             or any(
                 word[:length] in names.stop_prefixes
-                for length in range(_MIN_STOPWORD_PREFIX, len(word) + 1)
+                for length in range(
+                    _MIN_STOPWORD_PREFIX, min(len(word), prefix_length) + 1
+                )
             )
         )
 

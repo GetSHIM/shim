@@ -7,12 +7,15 @@ lists or the recognizer; it is scored as written, and the bar must hold on it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+import random
 from typing import Any
 
 import pytest
 
+from scripts.bench import pii_corpus
 from shim.privacy.pii_scrubber import PIIScrubberService
 from shim.privacy.policies import effective_entity_actions
 
@@ -120,3 +123,28 @@ def test_precision_and_recall_meet_the_bar(corpus: dict[str, Any]) -> None:
     print(f"PERSON_NAME_TR: precision {precision:.3f}, recall {recall:.3f}")
     assert precision >= 0.95
     assert recall >= 0.85
+
+
+def test_turkish_names_are_unchanged_since_s41() -> None:
+    """The spans recorded on cf8c454 for both corpora and the bench corpus's texts."""
+    recorded = _load("person-tr-r8-cf8c454.json")
+    rng = random.Random(pii_corpus.SEED)
+    texts = [case["text"] for case in CASES + HELD_OUT["cases"]] + [
+        pii_corpus.render(template, rng)["text"]
+        for template in pii_corpus.TEMPLATES
+        for _ in range(30)
+    ]
+    scrubber = PIIScrubberService()
+
+    assert len(texts) == 914
+    assert (
+        hashlib.sha256("\n".join(texts).encode()).hexdigest()
+        == recorded["texts_sha256"]
+    )
+    assert [
+        [
+            [finding["start"], finding["end"]]
+            for finding in scrubber.analyze(text, ACTIONS)
+        ]
+        for text in texts
+    ] == recorded["spans"]
