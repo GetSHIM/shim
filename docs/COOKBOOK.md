@@ -324,7 +324,7 @@ if scan["verdict"] == "warn":
 The types shim detects are `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`,
 `IBAN_CODE`, `TR_NATIONAL_ID`, `TR_VKN`, `TR_LICENSE_PLATE`, `SECRET`, `US_SSN`,
 `IP_ADDRESS`, `MAC_ADDRESS`, `DB_URI` and `FILE_PATH`, plus the opt-in
-`PERSON_NAME_TR` when its action is not `off`. The
+`PERSON_NAME_TR` and `PERSON_NAME_EN` when their action is not `off`. The
 [README](../README.md#what-it-does) gives examples and known false positives.
 Digits of any script count as the number they are: a TCKN, IBAN, card or phone
 number written in Arabic-Indic, Devanagari or fullwidth digits is found and
@@ -355,7 +355,7 @@ Mask most types, watch some, and refuse a request that carries a pasted key.
 
 1. Set `PII_ENTITY_ACTIONS` to a JSON object from entity type to action and
    restart the gateway. A type you leave out is masked, except the opt-in
-   `PERSON_NAME_TR`, which stays `off` until you set it.
+   `PERSON_NAME_TR` and `PERSON_NAME_EN`, which stay `off` until you set them.
 
    | Action | What shim does |
    | --- | --- |
@@ -438,6 +438,26 @@ geldi"), a rare first name without a cue, a first name that is also a word
 ("Deniz", "Umut") without a cue or a listed surname, or a name written surname
 first ("YILMAZ Ahmet"). A name next to a place or institution word ("Ahmet
 Yılmaz Caddesi", "Mehmet Akif Ersoy Üniversitesi") is left alone.
+
+To mask English and international person names, add `"PERSON_NAME_EN":"mask"`.
+"Dear Abigail Abernathy, your card has shipped" then reaches the provider as
+"Dear <PERSON_NAME_EN_…>, your card has shipped". Detection is list based (US
+SSA and Census first names and surnames, team-written international given
+names), measured on a held-out synthetic corpus written by a different author.
+It catches a listed first name with a listed surname ("Mark Brown"), a middle
+name or initials ("Michael J. Fenwick", "T. R. Hollis"), lowercase particles
+before a listed surname ("Anna van der Berg", "J. da Silva"), hyphenated and
+apostrophe names ("Anna-Lena Schmidt", "Siobhan O'Brien"), and a name after a cue
+(`Mr`, `Mrs`, `Ms`, `Dr`, `Prof`, `Sir`, `Dame`, `Dear`). Suffixes (`Jr.`,
+`Sr.`, `III`, `MD`, `PhD`) and possessives ("Smith's") stay outside the name.
+It does not catch a first name alone ("Thanks, Sarah"), a name written all in
+lowercase ("john smith"), family name first ("Zhang Wei", "Nguyen Thi Lan"), a
+first name in no list without a cue, or a name in a script without letter case.
+Brands and places named after people ("Calvin Klein", "Henry Ford Hospital")
+are left alone; a brand that is also a person's name ("Paul Smith") is masked.
+With both name types on, a name both find in part is masked whole, typed
+`PERSON_NAME_TR`. With either type on, many more requests carry personal data,
+so analyzers that read the answer skip them.
 
 Notes: an unknown type or action, `mask_last4` on another type, `stable`
 without a key, an invalid bulk threshold, or a `PII_RESPONSE_SCAN` other than

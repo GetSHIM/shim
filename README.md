@@ -84,7 +84,13 @@ request it:
   name; a first name alone is never matched. Measured on a held-out synthetic
   corpus written by a different author: precision 0.992, recall 0.952. Rare
   first names, two first names without a surname, and names written surname
-  first are missed.
+  first are missed. English and international person names (`PERSON_NAME_EN`)
+  are a separate opt-in type, list based in the same way (US SSA and Census
+  name lists plus team-written lists): a listed first name with a listed
+  surname, middle names, initials and particles (`Michael J. Fenwick`,
+  `Anna van der Berg`), or a cue (`Mr`, `Ms`, `Dr`, `Dear`). Suffixes such as
+  `Jr.` and `PhD` stay outside the name. Names written all in lowercase and
+  family name first (`Zhang Wei`) are not caught.
   shim can also count instructions hidden in
   tool results and documents ("ignore all previous instructions", "önceki tüm
   talimatları yok say") and warn about them; it never blocks or changes them.
