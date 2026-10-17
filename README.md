@@ -77,11 +77,11 @@ request it:
   not carry; it is never changed. Enterprise can keep chosen types as
   placeholders in the answer for every gateway key and team without a grant, so a
   call centre sees `<TR_NATIONAL_ID_…>` where a risk analyst sees the number.
-  Turkish person names (`PERSON_NAME_TR`) are opt-in: `off` until an action
-  turns them on. Detection is list based, never a model: a common first name
-  with a frequent surname or another capitalised word (`Selin Arıkan`), or a cue
-  (`Sayın`, `Sn.`, `Bay`, `Hanım`, `Bey`, `Dr.`, `Prof.`, `Av.`) next to a listed
-  name; a first name alone is never matched. Measured on a held-out synthetic
+  Turkish person names (`PERSON_NAME_TR`) are masked by default; set the type to
+  `off` or `monitor` to change that. Detection is list based, never a model: a
+  common first name with a frequent surname or another capitalised word
+  (`Selin Arıkan`), or a cue (`Sayın`, `Sn.`, `Bay`, `Hanım`, `Bey`, `Dr.`,
+  `Prof.`, `Av.`) next to a listed name; a first name alone is never matched. Measured on a held-out synthetic
   corpus written by a different author: precision 0.992, recall 0.952. Rare
   first names, two first names without a surname, and names written surname
   first are missed.
@@ -234,10 +234,10 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
   per process.
 - shim validates the routing, privacy and admission fields of a provider
   payload. The rest of the provider's JSON passes through unvalidated.
-- Images and most files cannot be scanned. While any type is masked or
-  blocked, a request carrying one is refused with 400, unless
-  `SHIM_MEDIA_INPUTS=allow` (enterprise: the `media_inputs` gateway setting)
-  forwards it unchanged and unscanned; the usage event counts such parts.
+- Images and most files cannot be scanned. While any type is masked or blocked
+  (Turkish person names only when set, not by their default), a request carrying
+  one is refused with 400, unless `SHIM_MEDIA_INPUTS=allow` (enterprise: the `media_inputs` gateway
+  setting) forwards it unchanged and unscanned; the usage event counts such parts.
   PDF, Word and text files are read and checked like message text when
   `SHIM_DOCUMENTS` (enterprise: `documents`) is `scan` or `scan_and_convert`;
   PDFs need `shim-gateway[documents]`, which the published image includes. Scanned PDFs without a text layer are not

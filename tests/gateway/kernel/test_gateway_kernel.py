@@ -5,6 +5,7 @@ from dataclasses import replace
 from decimal import Decimal
 import io
 import json
+import re
 from types import SimpleNamespace
 import zipfile
 import zlib
@@ -2894,6 +2895,22 @@ async def test_an_embeddings_span_names_its_operation(
         ([[1, 2, 3]], {"TR_NATIONAL_ID": "mask"}, True),
         ([1, 2, 3], {"TR_NATIONAL_ID": "block"}, True),
         ([[1, 2, 3]], {name: "monitor" for name in effective_entity_actions()}, False),
+        # Names masked by default do not refuse them; names set to mask do.
+        (
+            [[1, 2, 3]],
+            {
+                name: "off"
+                for name in effective_entity_actions()
+                if name != "PERSON_NAME_TR"
+            },
+            False,
+        ),
+        (
+            [[1, 2, 3]],
+            {name: "off" for name in effective_entity_actions()}
+            | {"PERSON_NAME_TR": "mask"},
+            True,
+        ),
     ],
 )
 async def test_token_ids_cannot_be_scanned_so_masking_refuses_them(
@@ -3058,7 +3075,9 @@ async def test_an_enforced_record_mask_hides_the_name_and_a_tckn_stays_typed(
     sent = json.loads(calls[0].content)["messages"][0]["content"]
     assert response.status_code == 200
     assert "İsmail Işık" not in sent and "MUS000001" not in sent
-    assert sent.count("<RECORD_") == 2 and "<TR_NATIONAL_ID_" in sent
+    # The name is a built-in value now, so its placeholder keeps the built-in type.
+    assert sent.count("<RECORD_") == 1
+    assert "<PERSON_NAME_TR_" in sent and "<TR_NATIONAL_ID_" in sent
     assert line["rule_matches"] == [
         {
             "rule_id": "customers",
@@ -3101,7 +3120,11 @@ async def test_a_monitor_record_rule_counts_and_leaves_the_payload_as_sent(
     )
 
     assert monitored.status_code == 200
-    assert json.loads(calls[0].content)["messages"][0]["content"] == text
+    # Only the default name mask touches the text; the monitor rule changes nothing.
+    assert re.fullmatch(
+        r"MUS000000 numaralı <PERSON_NAME_TR_[0-9a-f]{32}> için not",
+        json.loads(calls[0].content)["messages"][0]["content"],
+    )
     assert [(match["state"], match["count"]) for match in line["rule_matches"]] == [
         ("monitor", 1)
     ]
@@ -4676,6 +4699,32 @@ def _media_sent(route: str, call: httpx.Request) -> object:
 
 
 _ALL_MONITOR = json.dumps(dict.fromkeys(effective_entity_actions(), "monitor"))
+_ALL_OFF = dict.fromkeys(effective_entity_actions(), "off")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("actions", "refused"),
+    [
+        ({name: "off" for name in _ALL_OFF if name != "PERSON_NAME_TR"}, False),
+        (_ALL_OFF | {"PERSON_NAME_TR": "mask"}, True),
+        (_ALL_OFF | {"PERSON_NAME_TR": "block"}, True),
+        (
+            {name: "off" for name in _ALL_OFF if name != "PERSON_NAME_TR"}
+            | {"EMAIL_ADDRESS": "mask"},
+            True,
+        ),
+    ],
+)
+async def test_names_masked_only_by_default_do_not_refuse_media(
+    actions, refused
+) -> None:
+    response, calls, _ = await _call_with_media(
+        "chat", _png_b64(), PII_ENTITY_ACTIONS=json.dumps(actions)
+    )
+
+    assert response.status_code == (400 if refused else 200)
+    assert len(calls) == (0 if refused else 1)
 
 
 @pytest.mark.asyncio

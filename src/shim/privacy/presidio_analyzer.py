@@ -764,7 +764,7 @@ def _turkish_person_names(
 
 
 class ShimTurkishPersonNameRecognizer(EntityRecognizer):
-    """Turkish full names from name lists and address cues; opt-in, never a first name alone."""
+    """Turkish full names from name lists and address cues; never a first name alone."""
 
     def __init__(self) -> None:
         super().__init__(

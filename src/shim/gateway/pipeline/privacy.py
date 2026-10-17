@@ -40,6 +40,7 @@ from shim.privacy.policies import (
     EntityAction,
     PrivacyAction,
     PrivacyOutcome,
+    UNSWITCHED_ENTITY_ACTIONS,
     block_code,
     effective_entity_actions,
     is_protocol_field,
@@ -60,6 +61,7 @@ from shim.privacy.injection import scan_payload
 from shim.rules.content import CONTENT_KINDS, ContentRules, content_rules
 from shim.rules.destination import destination_actions
 from shim.rules.evaluate import in_scope
+from shim.rules.model import Rule
 
 logger = logging.getLogger(__name__)
 
@@ -203,9 +205,10 @@ class PrivacyStage:
             and not isinstance(value.payload["input"], str)
             and not isinstance(value.payload["input"][0], str)
         )
+        refusing = _unreadable_actions(value, destinations)
         # Token ids cannot be read, so whatever would hide or refuse text refuses them.
         if token_ids and (
-            any(action in _HIDING for action in actions.values())
+            any(action in _HIDING for action in refusing.values())
             or any(
                 rule.state == "enforced"
                 and rule.action in {"mask", "block", "require_approval"}
@@ -235,6 +238,7 @@ class PrivacyStage:
             if value.protocol in EMBEDDINGS_PROTOCOLS
             else (),
             media=media,
+            refusing=refusing,
             media_inputs=value.media_inputs,
             documents=value.documents,
             convert_clean=frozenset(
@@ -396,8 +400,14 @@ class PrivacyStage:
         return output.privacy.trace_metadata()
 
 
-def _base_actions(value: PreparedInference) -> Mapping[str, EntityAction]:
-    actions = effective_entity_actions(value.pii_config, value.entity_actions)
+def _base_actions(
+    value: PreparedInference, *, unswitched_defaults: bool = True
+) -> Mapping[str, EntityAction]:
+    """Without `unswitched_defaults`, a type no switch covers is `off` unless set."""
+    overrides = value.entity_actions or {}
+    if not unswitched_defaults:
+        overrides = dict.fromkeys(UNSWITCHED_ENTITY_ACTIONS, "off") | dict(overrides)
+    actions = effective_entity_actions(value.pii_config, overrides)
     if value.protocol not in EMBEDDINGS_PROTOCOLS:
         return actions
     # The tenant's embeddings relaxation: listed types are only counted.
@@ -409,10 +419,23 @@ def _base_actions(value: PreparedInference) -> Mapping[str, EntityAction]:
     }
 
 
+def _unreadable_actions(
+    value: PreparedInference, destinations: Sequence[Rule]
+) -> Mapping[str, EntityAction]:
+    """The actions that decide whether input no scan reads is refused: media, token ids.
+
+    The default of a type no switch covers does not count, so Turkish names masked
+    by default let it through; names the settings or a destination rule turn on do.
+    """
+    return destination_actions(
+        _base_actions(value, unswitched_defaults=False), destinations
+    )
+
+
 def media_refused(value: PreparedInference, tags: Sequence[str]) -> bool:
     """Whether the privacy stage will refuse the request's media parts.
 
-    The same test as `scrub_payload`'s `protects`, from the rules in scope for `tags`.
+    The same test as `scrub_payload`'s `refuse_media`, from the rules in scope for `tags`.
     """
     if value.media_inputs == "allow":
         return False
@@ -423,7 +446,7 @@ def media_refused(value: PreparedInference, tags: Sequence[str]) -> bool:
         if in_scope(rule, value, tags)
     ]
     destinations = [rule for rule in rules if rule.kind == "destination"]
-    actions = destination_actions(_base_actions(value), destinations)
+    actions = _unreadable_actions(value, destinations)
     return any(action in _HIDING for action in actions.values()) or any(
         rule.state == "enforced"
         and (
@@ -487,6 +510,7 @@ def scrub_payload(
     protects: bool = False,
     batch: Sequence[str] = (),
     media: Sequence[MediaPart] | None = None,
+    refusing: Mapping[str, EntityAction] | None = None,
     media_inputs: Literal["block", "allow"] = "block",
     documents: Literal["as_media", "scan", "scan_and_convert"] = "as_media",
     convert_clean: frozenset[str] = frozenset(),
@@ -496,6 +520,7 @@ def scrub_payload(
     """`batch`: texts scanned together in one analyzer pass before the walk.
 
     `media`: the payload's media parts (`classify_media`), found here when None.
+    `refusing`: the actions that decide whether media is refused, `actions` when None.
     `documents`: whether inline PDF, Word and text files are read and scanned;
     `convert_clean` names the kinds sent as text even when nothing was masked, and
     `native_pdf` keeps a clean PDF native for a tenant that hides values;
@@ -509,11 +534,15 @@ def scrub_payload(
     media = classify_media(payload) if media is None else media
     # Monitored values pass unchanged, so only masked or blocked types refuse
     # what cannot be rewritten; media cannot be searched for tenant terms either.
-    protects = (
-        protects
-        or any(action in {"mask", "mask_last4", "block"} for action in actions.values())
-        or (content is not None and content.protects)
+    rules_protect = protects or (content is not None and content.protects)
+    refuse_media = media_inputs == "block" and (
+        rules_protect
+        or any(
+            action in _HIDING
+            for action in (actions if refusing is None else refusing).values()
+        )
     )
+    protects = rules_protect or any(action in _HIDING for action in actions.values())
     # A provider reads a PDF's pages drawn: images, glyphs without text and form
     # appearances no scan saw. A tenant that hides values sends the text that was scanned.
     if protects and not native_pdf:
@@ -521,7 +550,6 @@ def scrub_payload(
     unmasked = {} if unmasked is None else unmasked
     report = DocumentReport() if report is None else report
     deadline: float | None = None
-    refuse_media = protects and media_inputs == "block"
     document_parts = {
         id(value_at(payload, part.path)): part
         for part in media

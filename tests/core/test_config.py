@@ -80,12 +80,12 @@ def test_pii_entity_actions_are_parsed_from_json_and_default_to_none() -> None:
     assert CommunitySettings(_env_file=None).PII_ENTITY_ACTIONS == {}
     settings = CommunitySettings(
         _env_file=None,
-        PII_ENTITY_ACTIONS='{"SECRET": "block", "EMAIL_ADDRESS": "monitor", "PERSON_NAME_TR": "mask"}',
+        PII_ENTITY_ACTIONS='{"SECRET": "block", "EMAIL_ADDRESS": "monitor", "PERSON_NAME_TR": "off"}',
     )
     assert settings.PII_ENTITY_ACTIONS == {
         "SECRET": "block",
         "EMAIL_ADDRESS": "monitor",
-        "PERSON_NAME_TR": "mask",
+        "PERSON_NAME_TR": "off",
     }
 
 

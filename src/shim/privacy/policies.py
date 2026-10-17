@@ -170,9 +170,9 @@ def effective_pii_config(config: Mapping[str, Any] | None = None) -> dict[str, b
 # this order is a relaxation.
 EntityAction = Literal["off", "monitor", "mask_last4", "mask", "block"]
 
-# Types no switch covers: off until an override turns them on.
-OPT_IN_ENTITY_TYPES: Mapping[str, EntityAction] = MappingProxyType(
-    {"PERSON_NAME_TR": "off"}
+# Types no pii_config switch covers, with their default action.
+UNSWITCHED_ENTITY_ACTIONS: Mapping[str, EntityAction] = MappingProxyType(
+    {"PERSON_NAME_TR": "mask"}
 )
 
 
@@ -185,7 +185,7 @@ def effective_entity_actions(
         entity_type: "mask" if switches[setting] else "off"
         for setting, entity_types in _PII_CONFIG_ENTITIES.items()
         for entity_type in entity_types
-    } | dict(OPT_IN_ENTITY_TYPES)
+    } | dict(UNSWITCHED_ENTITY_ACTIONS)
     for entity_type, action in (overrides or {}).items():
         if entity_type not in actions:
             raise ValueError(f"unknown entity type: {entity_type}")
