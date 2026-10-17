@@ -1322,8 +1322,9 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
     assert defaults.entity_actions == {}
     assert {
         name for name, action in defaults.effective_actions.items() if action != "mask"
-    } == {"PERSON_NAME_TR"}
+    } == {"PERSON_NAME_TR", "PERSON_NAME_EN"}
     assert defaults.effective_actions["PERSON_NAME_TR"] == "off"
+    assert defaults.effective_actions["PERSON_NAME_EN"] == "off"
 
     updated = management.configuration.PrivacySettings.model_validate(
         await management.configuration.update_privacy_settings(
@@ -1333,6 +1334,7 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
                     "SECRET": "block",
                     "PHONE_NUMBER": "monitor",
                     "PERSON_NAME_TR": "mask",
+                    "PERSON_NAME_EN": "mask",
                 },
             ),
             request,
@@ -1361,8 +1363,10 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
         "SECRET": "block",
         "PHONE_NUMBER": "monitor",
         "PERSON_NAME_TR": "mask",
+        "PERSON_NAME_EN": "mask",
     }
     assert updated.effective_actions["PERSON_NAME_TR"] == "mask"
+    assert updated.effective_actions["PERSON_NAME_EN"] == "mask"
     assert updated.effective_actions["SECRET"] == "block"
     assert updated.effective_actions["PHONE_NUMBER"] == "monitor"
     assert updated.effective_actions["EMAIL_ADDRESS"] == "off"
@@ -1380,6 +1384,7 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
         "SECRET": "block",
         "PHONE_NUMBER": "monitor",
         "PERSON_NAME_TR": "mask",
+        "PERSON_NAME_EN": "mask",
     }
     assert "effective_actions" not in policy_updates[0]["after"]
 
@@ -1392,6 +1397,7 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
         {"entity_actions": {"SECRET": "warn"}},
         {"entity_actions": {"SECRET": "mask_last4"}},
         {"entity_actions": {"EMAIL_ADDRESS": "mask_last4"}},
+        {"entity_actions": {"PERSON_NAME_EN": "mask_last4"}},
     ],
 )
 def test_privacy_patch_rejects_null_and_unknown_entity_actions(body) -> None:
@@ -1420,6 +1426,12 @@ def test_privacy_patch_rejects_null_and_unknown_entity_actions(body) -> None:
             {"PERSON_NAME_TR": "block"},
             {"PERSON_NAME_TR": "monitor"},
             ["entity_actions.PERSON_NAME_TR"],
+        ),
+        ({}, {"PERSON_NAME_EN": "mask"}, None),
+        (
+            {"PERSON_NAME_EN": "mask"},
+            {"PERSON_NAME_EN": "off"},
+            ["entity_actions.PERSON_NAME_EN"],
         ),
     ],
 )

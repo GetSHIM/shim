@@ -172,7 +172,7 @@ EntityAction = Literal["off", "monitor", "mask_last4", "mask", "block"]
 
 # Types no switch covers: off until an override turns them on.
 OPT_IN_ENTITY_TYPES: Mapping[str, EntityAction] = MappingProxyType(
-    {"PERSON_NAME_TR": "off"}
+    {"PERSON_NAME_TR": "off", "PERSON_NAME_EN": "off"}
 )
 
 

@@ -1,0 +1,2817 @@
+{
+  "format": "shim.detection.corpus",
+  "version": 1,
+  "claim_scope": "Synthetic fixture-bound evidence only; not a real-world statistical claim.",
+  "entities": [
+    "PERSON_NAME_EN"
+  ],
+  "cases": [
+    {
+      "id": "cue-01",
+      "text": "Dear Siobhan O'Brien, thank you for your order.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Siobhan O'Brien"
+        }
+      ]
+    },
+    {
+      "id": "cue-02",
+      "text": "Dear Mr. Patterson, your refund has been processed.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Patterson"
+        }
+      ]
+    },
+    {
+      "id": "cue-03",
+      "text": "Ms. Nguyen will call you back tomorrow morning.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Nguyen"
+        }
+      ]
+    },
+    {
+      "id": "cue-04",
+      "text": "Dr. Rachel Goldberg reviewed the scan on Tuesday.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Rachel Goldberg"
+        }
+      ]
+    },
+    {
+      "id": "cue-05",
+      "text": "Prof. Martin Keller teaches the compliance course.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Martin Keller"
+        }
+      ]
+    },
+    {
+      "id": "cue-06",
+      "text": "Please forward the signed copy to Mrs. Hendricks.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Hendricks"
+        }
+      ]
+    },
+    {
+      "id": "cue-07",
+      "text": "Sir Alan Whitmore opened the conference.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Alan Whitmore"
+        }
+      ]
+    },
+    {
+      "id": "cue-08",
+      "text": "Dame Judith Carrington chaired the panel.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Judith Carrington"
+        }
+      ]
+    },
+    {
+      "id": "cue-09",
+      "text": "Miss Eleanor Vance arrived late to the interview.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Eleanor Vance"
+        }
+      ]
+    },
+    {
+      "id": "cue-10",
+      "text": "Mx. Jordan Avery submitted the expense form.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Jordan Avery"
+        }
+      ]
+    },
+    {
+      "id": "cue-11",
+      "text": "Dear Grace, I hope this finds you well.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Grace"
+        }
+      ]
+    },
+    {
+      "id": "cue-12",
+      "text": "Hi Dr. Patel, the lab results are attached.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Patel"
+        }
+      ]
+    },
+    {
+      "id": "cue-13",
+      "text": "Dear Ms Kowalczyk, please find the invoice enclosed.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Kowalczyk"
+        }
+      ]
+    },
+    {
+      "id": "cue-14",
+      "text": "ATTN: MR. DAVID HARRIS, ACCOUNTS PAYABLE",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "DAVID HARRIS"
+        }
+      ]
+    },
+    {
+      "id": "cue-15",
+      "text": "Mr Fitzgerald asked for a callback after five.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Fitzgerald"
+        }
+      ]
+    },
+    {
+      "id": "cue-16",
+      "text": "Dear Prof. Okonkwo, thank you for the reference letter.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Okonkwo"
+        }
+      ]
+    },
+    {
+      "id": "cue-17",
+      "text": "Dr. Will Barnes is on call tonight.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Will Barnes"
+        }
+      ]
+    },
+    {
+      "id": "cue-18",
+      "text": "Mrs. May Hollister phoned about the delivery.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "May Hollister"
+        }
+      ]
+    },
+    {
+      "id": "cue-19",
+      "text": "Dear Hope, congratulations on the promotion!",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Hope"
+        }
+      ]
+    },
+    {
+      "id": "cue-20",
+      "text": "Ms. Rose Delgado has updated her address.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Rose Delgado"
+        }
+      ]
+    },
+    {
+      "id": "pair-01",
+      "text": "Please contact Michael Thompson in accounting.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Michael Thompson"
+        }
+      ]
+    },
+    {
+      "id": "pair-02",
+      "text": "The ticket was reassigned to Kevin O'Connell.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Kevin O'Connell"
+        }
+      ]
+    },
+    {
+      "id": "pair-03",
+      "text": "Our CEO, Sarah Mitchell, will present the results.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Sarah Mitchell"
+        }
+      ]
+    },
+    {
+      "id": "pair-04",
+      "text": "Invoice approved by Daniel Rosenberg on 3 March.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Daniel Rosenberg"
+        }
+      ]
+    },
+    {
+      "id": "pair-05",
+      "text": "Call Jessica Nguyen at the front desk.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Jessica Nguyen"
+        }
+      ]
+    },
+    {
+      "id": "pair-06",
+      "text": "I spoke with Isabella Rossi and Marco Bianchi yesterday.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Isabella Rossi"
+        },
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Marco Bianchi"
+        }
+      ]
+    },
+    {
+      "id": "pair-07",
+      "text": "José Hernández will translate the contract.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "José Hernández"
+        }
+      ]
+    },
+    {
+      "id": "pair-08",
+      "text": "Jürgen Müller from the Munich office joined the call.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Jürgen Müller"
+        }
+      ]
+    },
+    {
+      "id": "pair-09",
+      "text": "The draft was reviewed by Zoë Fischer.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Zoë Fischer"
+        }
+      ]
+    },
+    {
+      "id": "pair-10",
+      "text": "Ryan McKenzie signed the lease on Friday.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Ryan McKenzie"
+        }
+      ]
+    },
+    {
+      "id": "pair-11",
+      "text": "Andrew Sullivan and Emma Robertson are out this week.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Andrew Sullivan"
+        },
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Emma Robertson"
+        }
+      ]
+    },
+    {
+      "id": "pair-12",
+      "text": "The account belongs to Christopher Lawson.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Christopher Lawson"
+        }
+      ]
+    },
+    {
+      "id": "pair-13",
+      "text": "Laura Bennett requested a password reset.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Laura Bennett"
+        }
+      ]
+    },
+    {
+      "id": "pair-14",
+      "text": "Escalate this to Brian Caldwell if it fails again.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Brian Caldwell"
+        }
+      ]
+    },
+    {
+      "id": "pair-15",
+      "text": "Customer: Patricia Holloway, premium tier",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Patricia Holloway"
+        }
+      ]
+    },
+    {
+      "id": "pair-16",
+      "text": "Thanks to Victoria Chambers for the quick turnaround.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Victoria Chambers"
+        }
+      ]
+    },
+    {
+      "id": "pair-17",
+      "text": "Matthew Hughes and Olivia Turner reviewed the pull request.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Matthew Hughes"
+        },
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Olivia Turner"
+        }
+      ]
+    },
+    {
+      "id": "pair-18",
+      "text": "From: Nathan Brooks <billing desk>",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Nathan Brooks"
+        }
+      ]
+    },
+    {
+      "id": "pair-19",
+      "text": "The shipment is addressed to Katherine Doyle.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Katherine Doyle"
+        }
+      ]
+    },
+    {
+      "id": "pair-20",
+      "text": "Steven Marshall will cover the night shift.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Steven Marshall"
+        }
+      ]
+    },
+    {
+      "id": "pair-21",
+      "text": "Ask Amanda Russell about the vendor contract.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Amanda Russell"
+        }
+      ]
+    },
+    {
+      "id": "pair-22",
+      "text": "Gregory Palmer's laptop needs a new battery.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Gregory Palmer"
+        }
+      ]
+    },
+    {
+      "id": "pair-23",
+      "text": "Contact person: Melissa Grant",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Melissa Grant"
+        }
+      ]
+    },
+    {
+      "id": "pair-24",
+      "text": "Jason Fletcher approved the change request.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Jason Fletcher"
+        }
+      ]
+    },
+    {
+      "id": "pair-25",
+      "text": "Heidi Lindqvist leads the Stockholm branch.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Heidi Lindqvist"
+        }
+      ]
+    },
+    {
+      "id": "pair-26",
+      "text": "The complaint was filed by Thomas Brennan.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Thomas Brennan"
+        }
+      ]
+    },
+    {
+      "id": "pair-27",
+      "text": "Lucia Moretti sent the revised quote.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Lucia Moretti"
+        }
+      ]
+    },
+    {
+      "id": "pair-28",
+      "text": "Our auditor, Frank Delaney, flagged two entries.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Frank Delaney"
+        }
+      ]
+    },
+    {
+      "id": "pair-29",
+      "text": "Sophie Laurent manages the Paris account.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Sophie Laurent"
+        }
+      ]
+    },
+    {
+      "id": "pair-30",
+      "text": "Henrik Larsen will travel to Oslo next week.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Henrik Larsen"
+        }
+      ]
+    },
+    {
+      "id": "pair-31",
+      "text": "Alejandro Torres confirmed the meeting.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Alejandro Torres"
+        }
+      ]
+    },
+    {
+      "id": "pair-32",
+      "text": "Please copy Rebecca Sutton on every reply.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Rebecca Sutton"
+        }
+      ]
+    },
+    {
+      "id": "pair-33",
+      "text": "Grace Kelly booked the conference room.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Grace Kelly"
+        }
+      ]
+    },
+    {
+      "id": "pair-34",
+      "text": "Mark Jennings will review the budget.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Mark Jennings"
+        }
+      ]
+    },
+    {
+      "id": "pair-35",
+      "text": "Bill Henderson retired last spring.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Bill Henderson"
+        }
+      ]
+    },
+    {
+      "id": "pair-36",
+      "text": "June Carter called about her pension.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "June Carter"
+        }
+      ]
+    },
+    {
+      "id": "pair-37",
+      "text": "Chase Morrison owns the deployment pipeline.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Chase Morrison"
+        }
+      ]
+    },
+    {
+      "id": "pair-38",
+      "text": "Ivy Coleman joined as a junior analyst.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Ivy Coleman"
+        }
+      ]
+    },
+    {
+      "id": "pair-39",
+      "text": "Austin Reynolds is the new product owner.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Austin Reynolds"
+        }
+      ]
+    },
+    {
+      "id": "middle-01",
+      "text": "Hans Peter Schmidt is the account holder.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Hans Peter Schmidt"
+        }
+      ]
+    },
+    {
+      "id": "middle-02",
+      "text": "Mary Elizabeth Johnson updated her beneficiary.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Mary Elizabeth Johnson"
+        }
+      ]
+    },
+    {
+      "id": "middle-03",
+      "text": "Benefits for John Michael Davis were renewed.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "John Michael Davis"
+        }
+      ]
+    },
+    {
+      "id": "middle-04",
+      "text": "Anna Maria Lombardi signed as witness.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Anna Maria Lombardi"
+        }
+      ]
+    },
+    {
+      "id": "middle-05",
+      "text": "The policy covers Sarah Jane Collins.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Sarah Jane Collins"
+        }
+      ]
+    },
+    {
+      "id": "middle-06",
+      "text": "JAMES ROBERT WILSON, DATE OF BIRTH ON FILE",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "JAMES ROBERT WILSON"
+        }
+      ]
+    },
+    {
+      "id": "middle-07",
+      "text": "Emily Rose Harper starts on Monday.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Emily Rose Harper"
+        }
+      ]
+    },
+    {
+      "id": "middle-08",
+      "text": "David Alexander Ross requested a statement.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "David Alexander Ross"
+        }
+      ]
+    },
+    {
+      "id": "initial-01",
+      "text": "Report prepared by L. Fitzgerald.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "L. Fitzgerald"
+        }
+      ]
+    },
+    {
+      "id": "initial-02",
+      "text": "Approved: J. Thompson, finance",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "J. Thompson"
+        }
+      ]
+    },
+    {
+      "id": "initial-03",
+      "text": "Please ask K. Robinson for the keys.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "K. Robinson"
+        }
+      ]
+    },
+    {
+      "id": "initial-04",
+      "text": "Minutes taken by M. Gallagher-Hayes.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "M. Gallagher-Hayes"
+        }
+      ]
+    },
+    {
+      "id": "initial-05",
+      "text": "Reviewer: A. Henderson",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "A. Henderson"
+        }
+      ]
+    },
+    {
+      "id": "apostrophe-01",
+      "text": "Mr. O'Brien's account is overdue.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "O'Brien"
+        }
+      ]
+    },
+    {
+      "id": "apostrophe-02",
+      "text": "Rebecca Smith's laptop was replaced.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Rebecca Smith"
+        }
+      ]
+    },
+    {
+      "id": "apostrophe-03",
+      "text": "Liam O'Sullivan will lead the workshop.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Liam O'Sullivan"
+        }
+      ]
+    },
+    {
+      "id": "apostrophe-04",
+      "text": "Gianni D'Angelo approved the design.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Gianni D'Angelo"
+        }
+      ]
+    },
+    {
+      "id": "apostrophe-05",
+      "text": "Dear Ms. O'Hara, your card has shipped.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "O'Hara"
+        }
+      ]
+    },
+    {
+      "id": "apostrophe-06",
+      "text": "Megan O'Leary's flight lands at noon.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Megan O'Leary"
+        }
+      ]
+    },
+    {
+      "id": "apostrophe-07",
+      "text": "We met Patrick O'Donnell at the fair.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Patrick O'Donnell"
+        }
+      ]
+    },
+    {
+      "id": "apostrophe-08",
+      "text": "CONOR O'MALLEY, ROOM 214",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "CONOR O'MALLEY"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-01",
+      "text": "Anna-Lena Schmidt joined the Berlin team.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Anna-Lena Schmidt"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-02",
+      "text": "Jennifer Lopez-Garcia approved the budget.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Jennifer Lopez-Garcia"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-03",
+      "text": "Ahmed Al-Sayed will present the Q3 numbers.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Ahmed Al-Sayed"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-04",
+      "text": "Jean-Pierre Martin is the new controller.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Jean-Pierre Martin"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-05",
+      "text": "Mary-Kate Sullivan requested leave.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Mary-Kate Sullivan"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-06",
+      "text": "Catherine Zeta-Jones was mentioned in the article.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Catherine Zeta-Jones"
+        }
+      ]
+    },
+    {
+      "id": "hyphen-07",
+      "text": "Mei-Ling Chen leads quality assurance.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Mei-Ling Chen"
+        }
+      ]
+    },
+    {
+      "id": "mc-01",
+      "text": "Fiona McAdams sent the brief.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Fiona McAdams"
+        }
+      ]
+    },
+    {
+      "id": "mc-02",
+      "text": "Dear Mr. McGregor, thank you for your patience.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "McGregor"
+        }
+      ]
+    },
+    {
+      "id": "mc-03",
+      "text": "Duncan MacLeod is on leave.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Duncan MacLeod"
+        }
+      ]
+    },
+    {
+      "id": "mc-04",
+      "text": "Siobhan McCarthy updated the roster.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Siobhan McCarthy"
+        }
+      ]
+    },
+    {
+      "id": "capitals-01",
+      "text": "PATIENT: SUSAN WRIGHT",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "SUSAN WRIGHT"
+        }
+      ]
+    },
+    {
+      "id": "capitals-02",
+      "text": "BENEFICIARY CARLOS MENDOZA",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "CARLOS MENDOZA"
+        }
+      ]
+    },
+    {
+      "id": "capitals-03",
+      "text": "PREPARED BY KAREN PHILLIPS",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "KAREN PHILLIPS"
+        }
+      ]
+    },
+    {
+      "id": "capitals-04",
+      "text": "SHIP TO: ROBERT GARCIA",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "ROBERT GARCIA"
+        }
+      ]
+    },
+    {
+      "id": "international-01",
+      "text": "Priya Raghunathan leads the data team.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Priya Raghunathan"
+        }
+      ]
+    },
+    {
+      "id": "international-02",
+      "text": "Oluwaseun Adeyemi sent the slides.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Oluwaseun Adeyemi"
+        }
+      ]
+    },
+    {
+      "id": "international-03",
+      "text": "Kenji Watanabe confirmed the shipment.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Kenji Watanabe"
+        }
+      ]
+    },
+    {
+      "id": "international-04",
+      "text": "Dmitri Volkov will join remotely.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Dmitri Volkov"
+        }
+      ]
+    },
+    {
+      "id": "international-05",
+      "text": "Thabo Nkosi handles the Johannesburg clients.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Thabo Nkosi"
+        }
+      ]
+    },
+    {
+      "id": "international-06",
+      "text": "Wojciech Szczepański fixed the build.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Wojciech Szczepański"
+        }
+      ]
+    },
+    {
+      "id": "international-07",
+      "text": "Chiamaka Eze joined the risk team.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Chiamaka Eze"
+        }
+      ]
+    },
+    {
+      "id": "international-08",
+      "text": "Rajesh Venkataraman owns the integration.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Rajesh Venkataraman"
+        }
+      ]
+    },
+    {
+      "id": "international-09",
+      "text": "Svetlana Kuznetsova approved the transfer.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Svetlana Kuznetsova"
+        }
+      ]
+    },
+    {
+      "id": "international-10",
+      "text": "Nnamdi Okonkwo is our Lagos partner.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Nnamdi Okonkwo"
+        }
+      ]
+    },
+    {
+      "id": "international-11",
+      "text": "Yuki Tanaka translated the manual.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Yuki Tanaka"
+        }
+      ]
+    },
+    {
+      "id": "international-12",
+      "text": "Anjali Deshpande reviewed the model.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Anjali Deshpande"
+        }
+      ]
+    },
+    {
+      "id": "international-13",
+      "text": "Kwame Mensah sent a follow-up.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Kwame Mensah"
+        }
+      ]
+    },
+    {
+      "id": "international-14",
+      "text": "Agnieszka Kowalska booked the hotel.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Agnieszka Kowalska"
+        }
+      ]
+    },
+    {
+      "id": "international-15",
+      "text": "Mohammed Rahman asked about the refund.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Mohammed Rahman"
+        }
+      ]
+    },
+    {
+      "id": "international-16",
+      "text": "Ngozi Chukwu presented the roadmap.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Ngozi Chukwu"
+        }
+      ]
+    },
+    {
+      "id": "international-17",
+      "text": "Hiroshi Nakamura is visiting from Osaka.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Hiroshi Nakamura"
+        }
+      ]
+    },
+    {
+      "id": "international-18",
+      "text": "Aoife Brennan will chair the meeting.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Aoife Brennan"
+        }
+      ]
+    },
+    {
+      "id": "international-19",
+      "text": "Niamh Gallagher sent her apologies.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Niamh Gallagher"
+        }
+      ]
+    },
+    {
+      "id": "international-20",
+      "text": "Vikram Malhotra flagged the anomaly.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Vikram Malhotra"
+        }
+      ]
+    },
+    {
+      "id": "international-21",
+      "text": "Fatima Benali signed the NDA.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Fatima Benali"
+        }
+      ]
+    },
+    {
+      "id": "international-22",
+      "text": "Olga Ivanova manages vendor payments.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Olga Ivanova"
+        }
+      ]
+    },
+    {
+      "id": "international-23",
+      "text": "Tomasz Wiśniewski is the on-call engineer.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Tomasz Wiśniewski"
+        }
+      ]
+    },
+    {
+      "id": "international-24",
+      "text": "Deepika Iyer requested access.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Deepika Iyer"
+        }
+      ]
+    },
+    {
+      "id": "international-25",
+      "text": "Sanjay Gupta will call back.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Sanjay Gupta"
+        }
+      ]
+    },
+    {
+      "id": "international-26",
+      "text": "Mei Wong prepared the forecast.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Mei Wong"
+        }
+      ]
+    },
+    {
+      "id": "international-27",
+      "text": "Kofi Boateng approved the hire.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Kofi Boateng"
+        }
+      ]
+    },
+    {
+      "id": "international-28",
+      "text": "Ekaterina Sokolova reviewed the logs.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Ekaterina Sokolova"
+        }
+      ]
+    },
+    {
+      "id": "international-29",
+      "text": "Linda Park updated the wiki.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Linda Park"
+        }
+      ],
+      "known_gap": "Park is a following stopword",
+      "known_actual": []
+    },
+    {
+      "id": "international-30",
+      "text": "Thanks, Sarah",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Sarah"
+        }
+      ],
+      "known_gap": "a first name alone without a cue",
+      "known_actual": []
+    },
+    {
+      "id": "mixed-01",
+      "text": "Toplantıya Michael Brown ve Ayşe Yılmaz katıldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Michael Brown"
+        }
+      ]
+    },
+    {
+      "id": "mixed-02",
+      "text": "John Peterson'a raporu gönderdim.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "John Peterson"
+        }
+      ]
+    },
+    {
+      "id": "mixed-03",
+      "text": "Yarın Emily Clarke ile görüşeceğiz.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Emily Clarke"
+        }
+      ]
+    },
+    {
+      "id": "mixed-04",
+      "text": "Sayın Robert Fischer, başvurunuz alınmıştır.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Robert Fischer"
+        }
+      ]
+    },
+    {
+      "id": "mixed-05",
+      "text": "Müşterimiz Sarah Collins kartını kaybetti.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Sarah Collins"
+        }
+      ]
+    },
+    {
+      "id": "mixed-06",
+      "text": "Proje yöneticisi David Kim bu hafta izinde.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "David Kim"
+        }
+      ]
+    },
+    {
+      "id": "mixed-07",
+      "text": "Hesap sahibi: Laura Mitchell",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Laura Mitchell"
+        }
+      ]
+    },
+    {
+      "id": "mixed-08",
+      "text": "Kargo Thomas Wright adına teslim edildi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Thomas Wright"
+        }
+      ]
+    },
+    {
+      "id": "mixed-09",
+      "text": "Lütfen Jessica Taylor'ın faturasını kontrol et.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Jessica Taylor"
+        }
+      ]
+    },
+    {
+      "id": "mixed-10",
+      "text": "Dr. Andrew Miller hastanede nöbette.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Andrew Miller"
+        }
+      ]
+    },
+    {
+      "id": "mixed-11",
+      "text": "Ekipte Priya Sharma, Mehmet Demir ve Lucas Martin var.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Priya Sharma"
+        },
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Lucas Martin"
+        }
+      ]
+    },
+    {
+      "id": "mixed-12",
+      "text": "Toplantı notlarını Hannah Becker'a ilet.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Hannah Becker"
+        }
+      ]
+    },
+    {
+      "id": "mixed-13",
+      "text": "Kevin Brooks ile Zeynep Arslan aynı projede.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Kevin Brooks"
+        }
+      ]
+    },
+    {
+      "id": "mixed-14",
+      "text": "Mr. Anderson'ın siparişi gecikti.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Anderson"
+        }
+      ]
+    },
+    {
+      "id": "mixed-15",
+      "text": "Ms. Rivera bugün ofiste değil.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Rivera"
+        }
+      ]
+    },
+    {
+      "id": "mixed-16",
+      "text": "Bu e-postayı Olivia Turner yazmış.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Olivia Turner"
+        }
+      ]
+    },
+    {
+      "id": "mixed-17",
+      "text": "Sözleşmeyi Matthew Hughes imzaladı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Matthew Hughes"
+        }
+      ]
+    },
+    {
+      "id": "mixed-18",
+      "text": "Faturayı Natalie Cooper'a kes.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Natalie Cooper"
+        }
+      ]
+    },
+    {
+      "id": "mixed-19",
+      "text": "Stajyerimiz Ethan Walsh çok başarılı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Ethan Walsh"
+        }
+      ]
+    },
+    {
+      "id": "mixed-20",
+      "text": "Anna Kowalski İstanbul ofisine geldi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Anna Kowalski"
+        }
+      ]
+    },
+    {
+      "id": "mixed-21",
+      "text": "Pierre Dubois ve Ahmet Kaya toplantıda.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Pierre Dubois"
+        }
+      ]
+    },
+    {
+      "id": "mixed-22",
+      "text": "Yeni müdürümüz Hiroshi Tanaka pazartesi başlıyor.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Hiroshi Tanaka"
+        }
+      ]
+    },
+    {
+      "id": "mixed-23",
+      "text": "Lütfen Benjamin Clark'a geri dön.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Benjamin Clark"
+        }
+      ]
+    },
+    {
+      "id": "mixed-24",
+      "text": "Rapor Charlotte Evans tarafından hazırlandı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Charlotte Evans"
+        }
+      ]
+    },
+    {
+      "id": "mixed-25",
+      "text": "Müşteri adı: Christopher Lee",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Christopher Lee"
+        }
+      ]
+    },
+    {
+      "id": "mixed-26",
+      "text": "Sophia Rodriguez'in hesabı bloke edildi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Sophia Rodriguez"
+        }
+      ]
+    },
+    {
+      "id": "mixed-27",
+      "text": "Gönderen: William Scott",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "William Scott"
+        }
+      ]
+    },
+    {
+      "id": "mixed-28",
+      "text": "Teknik destekten Ryan Foster aradı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Ryan Foster"
+        }
+      ]
+    },
+    {
+      "id": "mixed-29",
+      "text": "Lucas Schneider'in uçuşu iptal oldu.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Lucas Schneider"
+        }
+      ]
+    },
+    {
+      "id": "mixed-30",
+      "text": "Toplantıyı Amelia Ward yönetecek.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Amelia Ward"
+        }
+      ]
+    },
+    {
+      "id": "mixed-31",
+      "text": "İK'dan Rachel Green bilgi istedi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Rachel Green"
+        }
+      ]
+    },
+    {
+      "id": "mixed-32",
+      "text": "Kredi başvurusu Samuel Price adına yapıldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Samuel Price"
+        }
+      ]
+    },
+    {
+      "id": "mixed-33",
+      "text": "Paolo Rossi'ye teşekkürler.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Paolo Rossi"
+        }
+      ]
+    },
+    {
+      "id": "mixed-34",
+      "text": "Rahul Mehta yarın İzmir'de olacak.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Rahul Mehta"
+        }
+      ]
+    },
+    {
+      "id": "mixed-35",
+      "text": "Elena Petrova Ankara şubesinde çalışıyor.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Elena Petrova"
+        }
+      ]
+    },
+    {
+      "id": "mixed-36",
+      "text": "Aleksandra Nowak'ın pasaportu yenilendi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Aleksandra Nowak"
+        }
+      ]
+    },
+    {
+      "id": "mixed-37",
+      "text": "James O'Neill ile dün görüştüm.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "James O'Neill"
+        }
+      ]
+    },
+    {
+      "id": "mixed-38",
+      "text": "Liam Murphy ve Selin Aydın evlendi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Liam Murphy"
+        }
+      ]
+    },
+    {
+      "id": "mixed-39",
+      "text": "Hasta: Margaret Wilson, 72 yaşında.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Margaret Wilson"
+        }
+      ]
+    },
+    {
+      "id": "mixed-40",
+      "text": "Toplantıya Noah Johnson katılamayacak.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Noah Johnson"
+        }
+      ]
+    },
+    {
+      "id": "mixed-41",
+      "text": "MÜŞTERİ: DANIEL WHITE",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "DANIEL WHITE"
+        }
+      ]
+    },
+    {
+      "id": "mixed-42",
+      "text": "Sophie Laurent'a dosyayı ilettim.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Sophie Laurent"
+        }
+      ]
+    },
+    {
+      "id": "mixed-43",
+      "text": "Daniel Craig'in imzası eksik.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Daniel Craig"
+        }
+      ]
+    },
+    {
+      "id": "not-institution-01",
+      "text": "She was treated at Johns Hopkins Hospital last year.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-02",
+      "text": "The office is on Martin Luther King Jr. Boulevard.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-03",
+      "text": "He studied at George Washington University.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-04",
+      "text": "Henry Ford Hospital opened a new wing.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-05",
+      "text": "We landed at John F. Kennedy International Airport.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-06",
+      "text": "Grace Hospital on Washington Street is closed on Sundays.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-07",
+      "text": "Florence Nightingale Hospital has a new clinic.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-08",
+      "text": "Take the train from Victoria Station.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-09",
+      "text": "The Thomas Jefferson Memorial is lit at night.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-10",
+      "text": "James Madison University announced new scholarships.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-11",
+      "text": "The Andrew Carnegie Foundation funds the library.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-12",
+      "text": "Meet me at Abraham Lincoln High School.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-13",
+      "text": "Walter Reed Medical Center is in Bethesda.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-14",
+      "text": "The Smithsonian Institution reopened.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-15",
+      "text": "Visit the Robert Wood Johnson Foundation website.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-16",
+      "text": "Queen Elizabeth Hospital has free parking.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-17",
+      "text": "Our hotel is near Columbus Circle.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-18",
+      "text": "The Kennedy Center hosts the gala.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-19",
+      "text": "Drive down Elm Street and turn left.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-20",
+      "text": "The parcel went to 42 Victoria Road.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-21",
+      "text": "Charles River Laboratories ran the study.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-22",
+      "text": "Brigham and Women's Hospital is in Boston.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-23",
+      "text": "The event is at Madison Square Garden.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-24",
+      "text": "Lincoln Center announced its season.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-25",
+      "text": "The Edward Jenner Institute published a paper.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-01",
+      "text": "I bought a Calvin Klein jacket on sale.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-02",
+      "text": "Johnnie Walker Black Label is on the shelf.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-03",
+      "text": "Morgan Stanley raised its forecast.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-04",
+      "text": "Wells Fargo closed the branch.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-05",
+      "text": "Order a Dr Pepper with the meal.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-06",
+      "text": "Mercedes-Benz recalled the model.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-07",
+      "text": "Goldman Sachs led the round.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-08",
+      "text": "Ralph Lauren reported strong sales.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-09",
+      "text": "The Tommy Hilfiger store is downstairs.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-10",
+      "text": "Louis Vuitton opened a pop-up.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-11",
+      "text": "Charles Schwab cut its fees.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-12",
+      "text": "Harley Davidson unveiled an electric bike.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-13",
+      "text": "We use Johnson Controls for the HVAC.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-14",
+      "text": "Estée Lauder launched a serum.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-15",
+      "text": "Hugo Boss suits are expensive.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-16",
+      "text": "Ford Motor Company reported earnings.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-17",
+      "text": "Ben & Jerry's released a new flavor.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-18",
+      "text": "The Sherwin Williams paint arrived.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-19",
+      "text": "Install Spring Boot before the demo.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-20",
+      "text": "Format the notes in Mark Down please.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-21",
+      "text": "The ring is Sterling Silver.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-22",
+      "text": "Apple Music subscription renewed.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-23",
+      "text": "Open the Jira board and assign the ticket.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-24",
+      "text": "Amazon Web Services billing changed.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-25",
+      "text": "Download the Adobe Acrobat reader.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-01",
+      "text": "Will you send the report by Friday?",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-02",
+      "text": "May I ask for an extension?",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-03",
+      "text": "Mark Down the price of the old stock.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-04",
+      "text": "Grace Period ends on the first of the month.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-05",
+      "text": "Hope Street is closed for repairs.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-06",
+      "text": "Rose Gold is the most popular color.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-07",
+      "text": "Bill Payment failed for account 1042.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-08",
+      "text": "Chase Bank sent a fraud alert.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-09",
+      "text": "Austin Texas is our second hub.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-10",
+      "text": "Paris France was the venue.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-11",
+      "text": "Jordan River tours start at nine.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-12",
+      "text": "Summer Sale ends Sunday.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-13",
+      "text": "Faith Based Organizations may apply.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-14",
+      "text": "Joy Division released the album in 1979.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-15",
+      "text": "Sterling Pound fell against the dollar.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-16",
+      "text": "Royal Mail delivery is delayed.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-17",
+      "text": "Hunter Green is the theme color.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-18",
+      "text": "Major League Baseball season opens.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-19",
+      "text": "Unknown Error occurred while saving.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-20",
+      "text": "Happy Birthday from the whole team!",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-21",
+      "text": "Junior Developer position is open.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-22",
+      "text": "General Motors cut production.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-23",
+      "text": "Crystal Clear audio is guaranteed.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-24",
+      "text": "Ruby Gems need an update.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-25",
+      "text": "Amber Alert issued for the county.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-26",
+      "text": "Iris Scanner failed to authenticate.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-27",
+      "text": "Ivy League schools raised tuition.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-28",
+      "text": "Dawn Patrol starts at five.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-29",
+      "text": "Holly Jolly songs are playing.",
+      "expect": []
+    },
+    {
+      "id": "not-ambiguous-30",
+      "text": "Robin Hood is a classic story.",
+      "expect": []
+    },
+    {
+      "id": "not-heading-01",
+      "text": "Release Notes for version 4.2",
+      "expect": []
+    },
+    {
+      "id": "not-heading-02",
+      "text": "Kind Regards, The Support Team",
+      "expect": []
+    },
+    {
+      "id": "not-heading-03",
+      "text": "Best Regards from the Billing Department",
+      "expect": []
+    },
+    {
+      "id": "not-heading-04",
+      "text": "Quarterly Business Review",
+      "expect": []
+    },
+    {
+      "id": "not-heading-05",
+      "text": "Terms And Conditions apply.",
+      "expect": []
+    },
+    {
+      "id": "not-heading-06",
+      "text": "Customer Service Agent Training Schedule",
+      "expect": []
+    },
+    {
+      "id": "not-heading-07",
+      "text": "Frequently Asked Questions",
+      "expect": []
+    },
+    {
+      "id": "not-heading-08",
+      "text": "Executive Summary",
+      "expect": []
+    },
+    {
+      "id": "not-heading-09",
+      "text": "Privacy Policy Update",
+      "expect": []
+    },
+    {
+      "id": "not-heading-10",
+      "text": "Action Items From Last Meeting",
+      "expect": []
+    },
+    {
+      "id": "not-heading-11",
+      "text": "Thank You For Your Order",
+      "expect": []
+    },
+    {
+      "id": "not-heading-12",
+      "text": "Welcome To The New Portal",
+      "expect": []
+    },
+    {
+      "id": "not-heading-13",
+      "text": "Annual General Meeting Agenda",
+      "expect": []
+    },
+    {
+      "id": "not-heading-14",
+      "text": "Incident Report Template",
+      "expect": []
+    },
+    {
+      "id": "not-heading-15",
+      "text": "Dear Customer, your statement is ready.",
+      "expect": []
+    },
+    {
+      "id": "not-heading-16",
+      "text": "Dear Valued Member, renew today.",
+      "expect": []
+    },
+    {
+      "id": "not-heading-17",
+      "text": "Dear Hiring Manager, please find my CV attached.",
+      "expect": []
+    },
+    {
+      "id": "not-heading-18",
+      "text": "Dear Sir or Madam, I am writing to complain.",
+      "expect": []
+    },
+    {
+      "id": "not-heading-19",
+      "text": "Dear Team, the release is live.",
+      "expect": []
+    },
+    {
+      "id": "not-heading-20",
+      "text": "Dear All, the office is closed tomorrow.",
+      "expect": []
+    },
+    {
+      "id": "not-date-01",
+      "text": "The payment is due in January.",
+      "expect": []
+    },
+    {
+      "id": "not-date-02",
+      "text": "June and July are our busiest months.",
+      "expect": []
+    },
+    {
+      "id": "not-date-03",
+      "text": "August Bank Holiday falls on Monday.",
+      "expect": []
+    },
+    {
+      "id": "not-date-04",
+      "text": "April Showers bring May Flowers.",
+      "expect": [],
+      "known_gap": "May is an ambiguous first name, and Flowers a surname too frequent (Census 2010 rank 1,000 or better) to be read as a word",
+      "known_actual": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "May Flowers"
+        }
+      ]
+    },
+    {
+      "id": "not-date-05",
+      "text": "See you on Sunday Morning.",
+      "expect": []
+    },
+    {
+      "id": "not-date-06",
+      "text": "Black Friday deals start Thursday.",
+      "expect": []
+    },
+    {
+      "id": "not-date-07",
+      "text": "Christmas Eve hours are shorter.",
+      "expect": []
+    },
+    {
+      "id": "not-date-08",
+      "text": "Easter Monday is a holiday.",
+      "expect": []
+    },
+    {
+      "id": "not-date-09",
+      "text": "Labor Day Weekend sale",
+      "expect": []
+    },
+    {
+      "id": "not-date-10",
+      "text": "New Year's Day falls on a Thursday.",
+      "expect": []
+    },
+    {
+      "id": "not-date-11",
+      "text": "March Madness brackets are due.",
+      "expect": []
+    },
+    {
+      "id": "not-date-12",
+      "text": "Valentine's Day dinner reservations",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-01",
+      "text": "Deniz Kuvvetleri komutanı açıklama yaptı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-02",
+      "text": "Umut Sigorta poliçesi yenilendi.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-03",
+      "text": "Ziraat Bankası şubesine gittim.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-04",
+      "text": "Koç Holding hisseleri yükseldi.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-05",
+      "text": "Kemal Paşa Caddesi trafiğe kapatıldı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-06",
+      "text": "Mehmet Akif Ersoy Üniversitesi'nden mezun oldu.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-07",
+      "text": "Fatih Sultan Mehmet Köprüsü'nde trafik var.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-08",
+      "text": "Can Yayınları yeni kitabını çıkardı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-09",
+      "text": "Pınar Süt fiyatlarına zam geldi.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-10",
+      "text": "Barış görüşmeleri yeniden başladı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-11",
+      "text": "Güneş Enerjisi santrali kuruldu.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-12",
+      "text": "Bahar geldi, havalar ısındı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-13",
+      "text": "Can sıkıcı bir durum yaşandı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-14",
+      "text": "Yeşil Kart başvurusu yaptım.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-15",
+      "text": "Gül Bahçesi çok güzel.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-16",
+      "text": "Atatürk Caddesi No 12 Kadıköy",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-17",
+      "text": "Cumhuriyet Mahallesi, Gül Sokak No 5",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-18",
+      "text": "Adnan Menderes Havalimanı'na indik.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-19",
+      "text": "Ocak ayında ödeme yapılacak.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-20",
+      "text": "Nisan Yağmuru şarkısını dinledim.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-21",
+      "text": "Sayın Yetkili, ekteki belgeleri incelemenizi rica ederim.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-22",
+      "text": "Sayın Müşterimiz, kartınız gönderilmiştir.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-23",
+      "text": "Kredi Kartı Başvuru Formu",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-24",
+      "text": "Türkiye Cumhuriyeti Merkez Bankası faizleri sabit tuttu.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-25",
+      "text": "Selamlar, Hayırlı Cumalar.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-26",
+      "text": "Yeni Yıl Kampanyası başladı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-27",
+      "text": "Kaya Holding yeni fabrika açtı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-28",
+      "text": "Ali Usta Döner Salonu yeni şube açtı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-29",
+      "text": "Emre Mobilya'dan koltuk aldık.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-30",
+      "text": "Selin Kozmetik indirim yapıyor.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-31",
+      "text": "Demir Çelik fabrikası kapandı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-32",
+      "text": "Su Arıtma Cihazı bozuldu.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-33",
+      "text": "Ama Bu Konuda Haklısın.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-34",
+      "text": "Hürriyet Gazetesi'nde haber çıktı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-35",
+      "text": "Pazartesi günü şube kapalı.",
+      "expect": []
+    },
+    {
+      "id": "not-turkish-36",
+      "text": "Lütfen Kredi Notu Hesaplama Yöntemini açıkla.",
+      "expect": []
+    },
+    {
+      "id": "not-other-01",
+      "text": "Can you check the invoice from last month?",
+      "expect": []
+    },
+    {
+      "id": "not-other-02",
+      "text": "Please send the report by Friday.",
+      "expect": []
+    },
+    {
+      "id": "not-other-03",
+      "text": "The Black Sea coast is beautiful in May.",
+      "expect": []
+    },
+    {
+      "id": "not-other-04",
+      "text": "Our New York Office opens at nine.",
+      "expect": []
+    },
+    {
+      "id": "not-other-05",
+      "text": "Install Python and run the Test Suite.",
+      "expect": []
+    },
+    {
+      "id": "not-other-06",
+      "text": "The Grand Canyon trip was booked.",
+      "expect": []
+    },
+    {
+      "id": "not-other-07",
+      "text": "Use Visual Studio Code for the exercise.",
+      "expect": []
+    },
+    {
+      "id": "not-other-08",
+      "text": "Contact Customer Support via chat.",
+      "expect": []
+    },
+    {
+      "id": "not-other-09",
+      "text": "The Golden Gate Bridge was foggy.",
+      "expect": []
+    },
+    {
+      "id": "not-other-10",
+      "text": "Martin Luther King Day is a federal holiday.",
+      "expect": []
+    },
+    {
+      "id": "not-other-11",
+      "text": "We read Romeo and Juliet in class.",
+      "expect": []
+    },
+    {
+      "id": "not-other-12",
+      "text": "Harry Potter fans lined up at midnight.",
+      "expect": []
+    },
+    {
+      "id": "not-other-13",
+      "text": "Sherlock Holmes stories are in the public domain.",
+      "expect": []
+    },
+    {
+      "id": "not-other-14",
+      "text": "The Mona Lisa hangs in the Louvre.",
+      "expect": []
+    },
+    {
+      "id": "not-other-15",
+      "text": "Lake Michigan froze early this year.",
+      "expect": []
+    },
+    {
+      "id": "not-other-16",
+      "text": "Mount Everest expeditions resumed.",
+      "expect": []
+    },
+    {
+      "id": "not-other-17",
+      "text": "New Zealand Dollar rose.",
+      "expect": []
+    },
+    {
+      "id": "not-other-18",
+      "text": "United Kingdom tax rules changed.",
+      "expect": []
+    },
+    {
+      "id": "not-other-19",
+      "text": "South Africa announced new visas.",
+      "expect": []
+    },
+    {
+      "id": "not-other-20",
+      "text": "Saudi Arabia hosted the summit.",
+      "expect": []
+    },
+    {
+      "id": "not-other-21",
+      "text": "Hong Kong Stock Exchange closed higher.",
+      "expect": []
+    },
+    {
+      "id": "not-other-22",
+      "text": "Silicon Valley startups raised less.",
+      "expect": []
+    },
+    {
+      "id": "not-other-23",
+      "text": "The Supreme Court ruled on Tuesday.",
+      "expect": []
+    },
+    {
+      "id": "not-other-24",
+      "text": "World Health Organization guidance",
+      "expect": []
+    },
+    {
+      "id": "not-other-25",
+      "text": "Machine Learning Engineer, remote",
+      "expect": []
+    },
+    {
+      "id": "not-other-26",
+      "text": "Senior Software Engineer job posting",
+      "expect": []
+    },
+    {
+      "id": "not-other-27",
+      "text": "Project Manager role in Dublin",
+      "expect": []
+    },
+    {
+      "id": "not-other-28",
+      "text": "Data Protection Officer contact form",
+      "expect": []
+    },
+    {
+      "id": "not-other-29",
+      "text": "Error Code 503 Service Unavailable",
+      "expect": []
+    },
+    {
+      "id": "not-other-30",
+      "text": "Pull Request merged into main.",
+      "expect": []
+    },
+    {
+      "id": "initial-06",
+      "text": "Grace E. Whitfield signed the form.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Grace E. Whitfield"
+        }
+      ]
+    },
+    {
+      "id": "initial-07",
+      "text": "Daniel R. Patterson approved the budget.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Daniel R. Patterson"
+        }
+      ]
+    },
+    {
+      "id": "initial-08",
+      "text": "K. L. Brennan will chair the meeting.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "K. L. Brennan"
+        }
+      ]
+    },
+    {
+      "id": "initial-09",
+      "text": "P.J. Donovan replied within the hour.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "P.J. Donovan"
+        }
+      ]
+    },
+    {
+      "id": "suffix-01",
+      "text": "Walter Simmons Jr. called about the claim.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Walter Simmons"
+        }
+      ]
+    },
+    {
+      "id": "suffix-02",
+      "text": "Please ask Kevin Doyle, PhD, to review it.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Kevin Doyle"
+        }
+      ]
+    },
+    {
+      "id": "suffix-03",
+      "text": "Laura Bennett MD is on call tonight.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Laura Bennett"
+        }
+      ]
+    },
+    {
+      "id": "suffix-04",
+      "text": "Henry Caldwell III inherited the account.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Henry Caldwell"
+        }
+      ]
+    },
+    {
+      "id": "particle-01",
+      "text": "Our new auditor is Emma de Vries.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Emma de Vries"
+        }
+      ]
+    },
+    {
+      "id": "particle-02",
+      "text": "Carlos dos Santos opened a ticket.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Carlos dos Santos"
+        }
+      ]
+    },
+    {
+      "id": "particle-03",
+      "text": "Ana da Costa moved to the Lisbon office.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Ana da Costa"
+        }
+      ]
+    },
+    {
+      "id": "particle-04",
+      "text": "Marco di Stefano sent the contract.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Marco di Stefano"
+        }
+      ]
+    },
+    {
+      "id": "particle-05",
+      "text": "Ms. de Souza confirmed the booking.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "de Souza"
+        }
+      ]
+    },
+    {
+      "id": "mixed-44",
+      "text": "Toplantıya Paulo dos Santos da katıldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Paulo dos Santos"
+        }
+      ]
+    },
+    {
+      "id": "pair-40",
+      "text": "Grace Young sent the invoice.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Grace Young"
+        }
+      ]
+    },
+    {
+      "id": "pair-41",
+      "text": "Hope Hill joined the support team.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Hope Hill"
+        }
+      ]
+    },
+    {
+      "id": "pair-42",
+      "text": "Will Green called twice.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_EN",
+          "value": "Will Green"
+        }
+      ]
+    },
+    {
+      "id": "not-function-01",
+      "text": "Click See More for details.",
+      "expect": []
+    },
+    {
+      "id": "not-function-02",
+      "text": "Choose My Orders from the menu.",
+      "expect": []
+    },
+    {
+      "id": "not-function-03",
+      "text": "So Far So Good",
+      "expect": []
+    },
+    {
+      "id": "not-function-04",
+      "text": "Many Happy Returns",
+      "expect": []
+    },
+    {
+      "id": "not-function-05",
+      "text": "Meeting In Room 4",
+      "expect": []
+    },
+    {
+      "id": "not-function-06",
+      "text": "OK Google, set a timer.",
+      "expect": []
+    },
+    {
+      "id": "not-function-07",
+      "text": "Due On Monday",
+      "expect": []
+    },
+    {
+      "id": "not-date-13",
+      "text": "Sent Thu Mar 5 at noon",
+      "expect": []
+    }
+  ]
+}

@@ -13,3 +13,15 @@ Its other lists ("team_first_names", the common first names Faker lacks;
 "ambiguous_first_names"; "surnames"; "following_stopwords") were compiled by the
 shim team from general knowledge, from no third-party dataset. They are lists of
 facts, and no third-party licence applies to them.
+
+src/shim/privacy/data/en_person_names.json carries, under "first_names", the
+given names of the US Social Security Administration's national baby-name data
+and of the US Census Bureau's 1990 first-name lists, and, under "surnames", the
+US Census Bureau's 2010 surnames. These are works of the US federal government
+and in the public domain (17 U.S.C. 105); "source" in the file names each
+archive, its address and checksum, and the filter applied, and
+scripts/person_names_en.py rebuilds both lists from the archives. Its other
+lists ("team_first_names", "ambiguous_first_names", "ambiguous_surnames",
+"not_names", "following_stopwords", "function_words", "name_suffixes",
+"particles") were compiled by the shim team from general knowledge, from no
+third-party dataset.

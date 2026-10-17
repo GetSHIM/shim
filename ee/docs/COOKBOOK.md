@@ -203,8 +203,10 @@ Choose what shim does with each entity type for your tenant. All five group
 switches are on by default, so every type is masked, except the opt-in
 `PERSON_NAME_TR` (Turkish person names), which no switch covers: it is `off`
 until `entity_actions` sets it, as in `{"entity_actions": {"PERSON_NAME_TR": "mask"}}`.
-Name detection is list based, measured on a held-out synthetic corpus written by
-a different author (precision 0.992, recall 0.952); what it misses is in the
+`PERSON_NAME_EN` (English and international person names) is opt-in in the same
+way and separate from it.
+Name detection is list based, measured on held-out synthetic corpora written by
+a different author (Turkish: precision 0.992, recall 0.952); what it misses is in the
 [community cookbook](../../docs/COOKBOOK.md#choose-what-happens-to-each-data-type).
 
 1. Read the current settings with `GET /api/v1/management/settings/pii`:

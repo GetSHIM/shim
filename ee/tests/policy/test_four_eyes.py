@@ -520,6 +520,34 @@ async def test_tightening_and_neutral_direct_writes_pass(db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_turning_english_names_off_again_needs_a_plan(db) -> None:
+    users = await _organization(db, "admin")
+    await _turn_on(db, users["owner"])
+    pii = f"{MANAGEMENT}/settings/pii"
+
+    on = await _call(
+        db,
+        users["admin"],
+        "PUT",
+        pii,
+        json={"entity_actions": {"PERSON_NAME_EN": "mask"}},
+    )
+    off = await _call(
+        db,
+        users["admin"],
+        "PUT",
+        pii,
+        json={"entity_actions": {"PERSON_NAME_EN": "off"}},
+    )
+
+    assert on.status_code == 200
+    assert on.json()["effective_actions"]["PERSON_NAME_EN"] == "mask"
+    assert off.status_code == 409
+    assert off.json()["detail"]["code"] == "CHANGE_REQUIRES_APPROVAL"
+    assert off.json()["detail"]["relaxed"] == ["privacy._.entity_actions"]
+
+
+@pytest.mark.asyncio
 async def test_a_relaxing_plan_waits_for_a_second_human_administrator(db) -> None:
     users = await _organization(db, "admin", "admin2", "service")
     owner, admin, admin2 = users["owner"], users["admin"], users["admin2"]

@@ -49,6 +49,7 @@ MAX_ANALYZABLE_TEXT_LENGTH = 1_000_000
 # identifier's cue words). Presidio's context words may still reach across it, which
 # can only add a detection.
 _BATCH_SEPARATOR = "\n\n" + "." * 24 + "\n\n"
+_PERSON_NAMES = frozenset({"PERSON_NAME_TR", "PERSON_NAME_EN"})
 
 
 class PIIInputTooLarge(ValueError):
@@ -556,8 +557,27 @@ class PIIScrubberService:
             # ten digits the phone rule claims are a phone, unless a tax word is in front.
             "TR_VKN": -1,
             "PERSON_NAME_TR": -1,
+            # Below the Turkish type, which wins a tie.
+            "PERSON_NAME_EN": -2,
         }
-        ordered = sorted(items, key=lambda item: (item.start, item.end))
+        ordered: list[RecognizerResult] = []
+        # The last name span per action: a name both languages find in part is one
+        # name, typed Turkish as on a tie ("John Ahmet Yılmaz", "Dr. Kaya Smith").
+        names: dict[EntityAction, int] = {}
+        for item in sorted(items, key=lambda item: (item.start, item.end)):
+            action = actions[item.entity_type]
+            if item.entity_type in _PERSON_NAMES:
+                name = ordered[names[action]] if action in names else None
+                if name is not None and item.start < name.end:
+                    ordered[names[action]] = RecognizerResult(
+                        entity_type="PERSON_NAME_TR",
+                        start=name.start,
+                        end=max(name.end, item.end),
+                        score=max(name.score, item.score),
+                    )
+                    continue
+                names[action] = len(ordered)
+            ordered.append(item)
         selected: list[RecognizerResult] = []
         component: list[RecognizerResult] = []
         component_end = -1

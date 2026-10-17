@@ -1,0 +1,2725 @@
+{
+  "format": "shim.detection.corpus",
+  "version": 1,
+  "claim_scope": "Synthetic fixture-bound evidence only; not a real-world statistical claim.",
+  "provenance": "Held-out corpus for PERSON_NAME_EN (PRD S69 R5), written 2026-10-17 by a separate agent session that never saw en_person_names.json or any English name data file, the recognizer source, the tuning corpus person-en-v1.json, the bench corpus's name lists (EN_FIRST/EN_LAST), or the US SSA and Census name lists. Every name was written from general knowledge; all people are fictional except the tagged historical figures. Text is written the way users write, not shaped to the detection rules: it includes lowercase names (tag lower), particles (da, van der) and family-first order. Labels are scored as written and never edited to pass. Offsets were computed with code and every span checked against its text. Span conventions: the span is the person's name only; cues and titles (Mr, Mrs, Ms, Miss, Mx, Dr, Prof, Sir, Dame, Dear, Sayın) stay outside; a possessive or a Turkish suffix after an apostrophe stays outside (Smith's, Rivers', O’Connor’s, Miller'ın), including in capitals (HENDERSON'S); an apostrophe followed by a capital inside a name joins it (O'Brien, D'Souza); hyphenated names are one span; middle names, initials (with their dots) and lowercase particles inside a name are in the span; generational and professional suffixes (Jr., Sr., III, MD, PhD) stay outside. A single first name is positive only after a cue (Dear Rahul, Ms. Nguyen); a lone first name without a cue is negative. Institutions, streets, hospitals, schools, awards, laws, brands and products named after people are negative, as are e-mail local parts. Ties: a Turkish person name is never labelled PERSON_NAME_EN (it belongs to PERSON_NAME_TR), in Turkish, English or mixed text; Turkish-only texts are negatives. First measurement, 2026-10-17, on commit c47e728 (data file sha256 038ff492e36b58af496098eb2a1a549b5affc936b4711d7e7816cb450dd4f3f9, SSA threshold 2,000 births), by tests/gateway/privacy/test_person_corpus.py with only PERSON_NAME_EN on, exact spans: precision 0.941, recall 0.889 (160 true positives, 10 false positives, 20 false negatives). This misses the bar of 0.95 and 0.90, so PRD S69 is blocked. Changes that followed this measurement (2026-10-17, after an independent review and the founder's scope decision): particles, middle and leading initials, and recognized suffixes outside the span joined the rules; Turkish-shared given names returned as ambiguous first names; function words left out of the first names; month and weekday names made ambiguous; surnames ranked 1 to 1000 no longer ambiguous; not_names matched only as the whole name and cleared of names real people carry; hyphen and apostrophe joins narrowed; cue words read as name parts outside a cue. Some not_names entries also appear only in this corpus, so its independence is doubtful. It is therefore a report corpus with no bar, labels unchanged; the R5 bar is carried by person-en-heldout-v2.json, written by a third author.",
+  "entities": [
+    "PERSON_NAME_EN"
+  ],
+  "cases": [
+    {
+      "id": "pos-001-full-email",
+      "text": "Subject: Refund for order #55102\n\nHi team,\n\nI was charged twice for the same order last Tuesday. Could you please reverse one of the payments?\n\nThanks,\nMegan Holloway",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 152,
+          "end": 166
+        }
+      ]
+    },
+    {
+      "id": "pos-002-full-chat",
+      "text": "[09:41] Derek Fairbanks: the export button just spins forever\n[09:42] Support: Sorry about that, checking now.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 8,
+          "end": 23
+        }
+      ]
+    },
+    {
+      "id": "pos-003-full-ticket",
+      "text": "Ticket #77120 opened by Natalie Brennan — priority P2, product: payroll module, status: awaiting customer.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 24,
+          "end": 39
+        }
+      ]
+    },
+    {
+      "id": "pos-004-full-crm",
+      "text": "CRM note: spoke with Gregory Lambert (procurement) about renewal; he wants a 3-year quote by end of quarter.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 21,
+          "end": 36
+        }
+      ]
+    },
+    {
+      "id": "pos-005-full-meeting",
+      "text": "Meeting notes 14 Oct\nAttendees: Laura Whitfield, Kevin Osborne, Rachel Dunn\nDecision: postpone the migration to November.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 32,
+          "end": 47
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 49,
+          "end": 62
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 64,
+          "end": 75
+        }
+      ]
+    },
+    {
+      "id": "pos-006-full-code",
+      "text": "# FIXME(Trevor Banks): this retry loop hides timeouts from the caller\nfor attempt in range(3):\n    send(payload)",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 8,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "pos-007-full-commit",
+      "text": "commit 9f3c2ab\nAuthor: Melissa Grant <dev@example.com>\nDate:   Tue Oct 13 10:02:11 2026\n\n    Fix race in session refresh",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 23,
+          "end": 36
+        }
+      ]
+    },
+    {
+      "id": "pos-008-full-bank",
+      "text": "Wire transfer of $12,400 to beneficiary Douglas Pemberton was flagged by the fraud team; please call the customer before releasing it.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 40,
+          "end": 57
+        }
+      ]
+    },
+    {
+      "id": "pos-009-full-health",
+      "text": "Patient Theresa Caldwell, 67, presented with shortness of breath and was admitted for observation.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 8,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "id": "pos-010-full-ecom",
+      "text": "The package was signed for by Jason Whitmore at 3:12 PM, but the customer says nobody was home.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 30,
+          "end": 44
+        }
+      ]
+    },
+    {
+      "id": "pos-011-full-hr",
+      "text": "Offer letter for Brianna Castillo: start date Nov 3, base salary $96,000, reporting to the VP of Engineering.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 17,
+          "end": 33
+        }
+      ]
+    },
+    {
+      "id": "pos-012-full-code",
+      "text": "// Ported from the old billing service written by Samuel Prescott; do not change the rounding mode.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 50,
+          "end": 65
+        }
+      ]
+    },
+    {
+      "id": "pos-013-full-slack",
+      "text": "can someone loop in Heather Lindgren? she owns the SSO config",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 20,
+          "end": 36
+        }
+      ]
+    },
+    {
+      "id": "pos-014-full-long",
+      "text": "Hello, I have been a customer for six years and I have never had a problem like this. Last week I tried to update the shipping address on my account and the page kept returning an error. I contacted chat and the agent, Colin Mercer, told me it would be fixed in 24 hours, but it is still broken. Please escalate this to someone who can actually help.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 219,
+          "end": 231
+        }
+      ]
+    },
+    {
+      "id": "pos-015-full-signoff",
+      "text": "Please find the reconciliation attached.\n\nBest regards,\nVanessa Thornton\nSenior Accountant",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 56,
+          "end": 72
+        }
+      ]
+    },
+    {
+      "id": "pos-016-full-legal",
+      "text": "Please send the signed NDA to Patrick Donnelly before Friday.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 30,
+          "end": 46
+        }
+      ]
+    },
+    {
+      "id": "pos-017-full-form",
+      "text": "Account holder: Rebecca Ashford\nSort code: 20-45-77\nAccount: 41558890",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 16,
+          "end": 31
+        }
+      ]
+    },
+    {
+      "id": "pos-018-full-prompt",
+      "text": "Summarize the complaint from Nathan Sullivan about the late delivery and draft a polite reply.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 29,
+          "end": 44
+        }
+      ]
+    },
+    {
+      "id": "pos-019-full-json",
+      "text": "{\"customer\": {\"name\": \"Harold Bexley\", \"tier\": \"gold\", \"city\": \"Bristol\"}, \"issue\": \"double charge\"}",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 23,
+          "end": 36
+        }
+      ]
+    },
+    {
+      "id": "pos-020-full-csv",
+      "text": "id,name,city,balance\n1042,Lydia Brookes,Manchester,1830.22\n1043,Owen Prichard,Cardiff,92.10",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 26,
+          "end": 39
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 64,
+          "end": 77
+        }
+      ]
+    },
+    {
+      "id": "pos-021-full-repeat",
+      "text": "Natalie Brennan called twice today. The second time, Natalie Brennan asked for a supervisor.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 15
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 53,
+          "end": 68
+        }
+      ]
+    },
+    {
+      "id": "pos-022-full-multi",
+      "text": "Interview panel: Harriet Coleman (chair), Rajesh Patel and Ingrid Solberg. Candidate feedback is due Wednesday.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 17,
+          "end": 32
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 42,
+          "end": 54
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 59,
+          "end": 73
+        }
+      ]
+    },
+    {
+      "id": "pos-023-full-multi-long",
+      "text": "Retro, sprint 42\n\nWhat went well: Simon Avery got the cache invalidation fix out early, and Paula Jennings wrote the runbook.\nWhat did not: the staging outage on Thursday cost us a day; Marcus Doyle is writing the incident report.\nAction: Tessa Lowry to pair with Marcus Doyle on alerting.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 34,
+          "end": 45
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 92,
+          "end": 106
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 186,
+          "end": 198
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 239,
+          "end": 250
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 264,
+          "end": 276
+        }
+      ]
+    },
+    {
+      "id": "pos-024-lower",
+      "text": "talked to brian kessler yesterday, he's fine with the new price",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 10,
+          "end": 23
+        }
+      ]
+    },
+    {
+      "id": "pos-025-lower",
+      "text": "pls cc emily vargas on this thread",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 7,
+          "end": 19
+        }
+      ]
+    },
+    {
+      "id": "pos-026-cue-single",
+      "text": "Dear Mrs. Kowalski, your claim has been approved and payment will follow within five working days.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 10,
+          "end": 18
+        }
+      ]
+    },
+    {
+      "id": "pos-027-cue-single",
+      "text": "Dear Siobhan, thank you for your patience while we reviewed your account.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 5,
+          "end": 12
+        }
+      ]
+    },
+    {
+      "id": "pos-028-cue-single",
+      "text": "Ms. Nguyen called again about the duplicate charge.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 4,
+          "end": 10
+        }
+      ]
+    },
+    {
+      "id": "pos-029-cue-single",
+      "text": "Dr. Okonkwo will review the MRI results on Thursday.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 4,
+          "end": 11
+        }
+      ]
+    },
+    {
+      "id": "pos-030-cue-single",
+      "text": "Mr. Fitzgerald asked us to cancel the standing order.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 4,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "id": "pos-031-cue-single",
+      "text": "Dear Rahul,\nYour refund has been processed.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 5,
+          "end": 10
+        }
+      ]
+    },
+    {
+      "id": "pos-032-cue-single",
+      "text": "Hi Mr. Delgado, thanks for reaching out.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 7,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "id": "pos-033-cue-single",
+      "text": "Ms O'Hara has asked for the paper statements to stop.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 3,
+          "end": 9
+        }
+      ]
+    },
+    {
+      "id": "pos-034-cue-full",
+      "text": "Prof. Hiroshi Tanaka has agreed to review the paper.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 6,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "pos-035-cue-full",
+      "text": "Dear Dr Amara Mensah,\n\nWe are pleased to confirm your speaking slot.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 8,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "pos-036-cue-full",
+      "text": "Sir Edmund Ashcroft is listed as a director of the holding company.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 4,
+          "end": 19
+        }
+      ]
+    },
+    {
+      "id": "pos-037-cue-full",
+      "text": "Miss Clementine Hale has requested a copy of her statement.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 5,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "pos-038-cue-full",
+      "text": "Mx. Rowan Ellery prefers to be contacted by email.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 4,
+          "end": 16
+        }
+      ]
+    },
+    {
+      "id": "pos-039-cue-full",
+      "text": "Dame Penelope Hartley will open the conference.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 5,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "pos-040-cue-repeat",
+      "text": "Dr. Imogen Thorne reviewed the scan. Dr. Thorne recommends a follow-up in six weeks.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 4,
+          "end": 17
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 41,
+          "end": 47
+        }
+      ]
+    },
+    {
+      "id": "pos-041-cue-caps-poss",
+      "text": "MRS. HENDERSON'S ACCOUNT IS ON HOLD PENDING ID CHECK",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 5,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "id": "pos-042-poss",
+      "text": "I need Karen Whitaker's approval before I can release the payment.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 7,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "pos-043-poss",
+      "text": "Copy Michael Brandt’s notes into the ticket.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 5,
+          "end": 19
+        }
+      ]
+    },
+    {
+      "id": "pos-044-poss",
+      "text": "The bug was in Stephanie Rourke's migration script.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 15,
+          "end": 31
+        }
+      ]
+    },
+    {
+      "id": "pos-045-poss",
+      "text": "James Rivers' contract expires in March.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 12
+        }
+      ]
+    },
+    {
+      "id": "pos-046-suffix",
+      "text": "Robert Hayes Jr. disputed the late fee on his mortgage account.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 12
+        }
+      ]
+    },
+    {
+      "id": "pos-047-suffix",
+      "text": "Signed: Franklin D. Morrow III, Trustee",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 8,
+          "end": 26
+        }
+      ]
+    },
+    {
+      "id": "pos-048-suffix",
+      "text": "Please route the chart to Eleanor Vance, MD, for sign-off.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 26,
+          "end": 39
+        }
+      ]
+    },
+    {
+      "id": "pos-049-suffix",
+      "text": "Speaker: Daniel Kiplagat, PhD (University of Nairobi)",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 9,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "id": "pos-050-suffix",
+      "text": "Thomas Wade Sr. and his son both hold accounts at this branch.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 11
+        }
+      ]
+    },
+    {
+      "id": "pos-051-oapos",
+      "text": "Please escalate to Declan O'Sullivan in collections.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 19,
+          "end": 36
+        }
+      ]
+    },
+    {
+      "id": "pos-052-oapos",
+      "text": "Maureen O’Connor’s card was declined twice.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 16
+        }
+      ]
+    },
+    {
+      "id": "pos-053-oapos",
+      "text": "Reviewer: Priya D'Souza",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 10,
+          "end": 23
+        }
+      ]
+    },
+    {
+      "id": "pos-054-oapos",
+      "text": "Lorenzo D'Amico submitted the expense report late.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 15
+        }
+      ]
+    },
+    {
+      "id": "pos-055-mc",
+      "text": "Fiona MacLeod approved the budget transfer.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 13
+        }
+      ]
+    },
+    {
+      "id": "pos-056-mc",
+      "text": "Ticket assigned to Ryan McKenzie.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 19,
+          "end": 32
+        }
+      ]
+    },
+    {
+      "id": "pos-057-mc",
+      "text": "Duncan McTavish and Isla MacKinnon joined the call late.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 15
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 20,
+          "end": 34
+        }
+      ]
+    },
+    {
+      "id": "pos-058-mc",
+      "text": "Craig Macdonald wants the refund sent to his old card.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 15
+        }
+      ]
+    },
+    {
+      "id": "pos-059-hyphen",
+      "text": "Marie-Claire Dubois handles the Paris office accounts.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 19
+        }
+      ]
+    },
+    {
+      "id": "pos-060-hyphen",
+      "text": "Contact Oliver Smith-Jones for a copy of the invoice.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 8,
+          "end": 26
+        }
+      ]
+    },
+    {
+      "id": "pos-061-hyphen",
+      "text": "The contract was countersigned by Jean-Baptiste Moreau on 2 May.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 34,
+          "end": 54
+        }
+      ]
+    },
+    {
+      "id": "pos-062-hyphen",
+      "text": "Customer Khalid Al-Rashid reported that the app crashes on login.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 9,
+          "end": 25
+        }
+      ]
+    },
+    {
+      "id": "pos-063-hyphen",
+      "text": "Sophie Turner-Blake will cover the on-call shift this weekend.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 19
+        }
+      ]
+    },
+    {
+      "id": "pos-064-caps",
+      "text": "BENEFICIARY: VICTORIA HARGREAVES / AMOUNT: GBP 3,200",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 13,
+          "end": 32
+        }
+      ]
+    },
+    {
+      "id": "pos-065-caps",
+      "text": "SHIP TO: MARCUS WEBB, 18 ELM CLOSE, LEEDS LS6 2AB",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 9,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "pos-066-caps",
+      "text": "PATIENT NAME: DOLORES RAMIREZ  DOB: 04/11/1958",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 14,
+          "end": 29
+        }
+      ]
+    },
+    {
+      "id": "pos-067-caps",
+      "text": "URGENT - CALL BACK KENNETH O'NEILL ASAP",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 19,
+          "end": 34
+        }
+      ]
+    },
+    {
+      "id": "pos-068-caps",
+      "text": "CARDHOLDER JIN-WOO PARK — CARD ENDING 4421",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 11,
+          "end": 23
+        }
+      ]
+    },
+    {
+      "id": "pos-069-middle",
+      "text": "Policyholder Sarah Elizabeth Moore requested a beneficiary change.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 13,
+          "end": 34
+        }
+      ]
+    },
+    {
+      "id": "pos-070-middle",
+      "text": "The deed lists Henry James Whitcombe as the sole owner.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 15,
+          "end": 36
+        }
+      ]
+    },
+    {
+      "id": "pos-071-middle",
+      "text": "Applicant: Maria Fernanda Ortiz Delgado, nationality: Colombian.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 11,
+          "end": 39
+        }
+      ]
+    },
+    {
+      "id": "pos-072-middle",
+      "text": "John Paul Ridley called about the overdraft.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 16
+        }
+      ]
+    },
+    {
+      "id": "pos-073-initial",
+      "text": "Received by K. Abernathy at the front desk.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 12,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "id": "pos-074-initial",
+      "text": "Approved by Michael J. Fenwick on behalf of the board.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 12,
+          "end": 30
+        }
+      ]
+    },
+    {
+      "id": "pos-075-initial",
+      "text": "Authored by T. R. Hollis, reviewed by S. Iyer.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 12,
+          "end": 24
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 38,
+          "end": 45
+        }
+      ]
+    },
+    {
+      "id": "pos-076-initial",
+      "text": "Dr. L. Moreno will see you at 10:30.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 4,
+          "end": 13
+        }
+      ]
+    },
+    {
+      "id": "pos-077-initial",
+      "text": "A.J. Carter left a voicemail about the chargeback.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 11
+        }
+      ]
+    },
+    {
+      "id": "pos-078-ambig",
+      "text": "Will Thornbury asked whether the report will be ready by Monday.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "id": "pos-079-ambig",
+      "text": "May Lin from accounts payable confirmed the invoice.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 7
+        }
+      ]
+    },
+    {
+      "id": "pos-080-ambig",
+      "text": "Please forward this to Mark Ellison; mark it as urgent.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 23,
+          "end": 35
+        }
+      ]
+    },
+    {
+      "id": "pos-081-ambig",
+      "text": "Grace Okafor and Hope Brennan both signed the petition.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 12
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 17,
+          "end": 29
+        }
+      ]
+    },
+    {
+      "id": "pos-082-ambig",
+      "text": "Bill Kowalczyk will bill the client for the extra hours.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "id": "pos-083-ambig",
+      "text": "Jordan Ellsworth closed the deal with the Austin team.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 16
+        }
+      ]
+    },
+    {
+      "id": "pos-084-ambig",
+      "text": "Rose Galloway's premium rose by 12% this year.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 13
+        }
+      ]
+    },
+    {
+      "id": "pos-085-intl-es",
+      "text": "Our contact in Madrid is Alejandro Gutiérrez, who handles the English-speaking accounts.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 25,
+          "end": 44
+        }
+      ]
+    },
+    {
+      "id": "pos-086-intl-de",
+      "text": "Jürgen Hoffmann from the Munich office will join the audit.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 15
+        }
+      ]
+    },
+    {
+      "id": "pos-087-intl-fr",
+      "text": "Please refund the order placed by Camille Lefèvre.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 34,
+          "end": 49
+        }
+      ]
+    },
+    {
+      "id": "pos-088-intl-in",
+      "text": "Ananya Krishnamurthy reported a failed UPI transfer of Rs 4,500.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "pos-089-intl-in",
+      "text": "Escalation from Vikram Malhotra: the vendor Sunita Reddy has not been paid for September.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 16,
+          "end": 31
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 44,
+          "end": 56
+        }
+      ]
+    },
+    {
+      "id": "pos-090-intl-zh",
+      "text": "Zhang Wei from the Shenzhen supplier sent new pricing.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 9
+        }
+      ]
+    },
+    {
+      "id": "pos-091-intl-zh",
+      "text": "Please add Mei Ling Chen to the shared drive.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 11,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "id": "pos-092-intl-ja",
+      "text": "Yuki Watanabe will present the Q3 results.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 13
+        }
+      ]
+    },
+    {
+      "id": "pos-093-intl-ko",
+      "text": "The visa letter for Seo-yeon Kim is ready for pickup.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 20,
+          "end": 32
+        }
+      ]
+    },
+    {
+      "id": "pos-094-intl-ar",
+      "text": "Tariq Mansour asked to move his appointment to the afternoon.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 13
+        }
+      ]
+    },
+    {
+      "id": "pos-095-intl-ar",
+      "text": "Invoice addressed to Nour El-Din Haddad, Amman.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 21,
+          "end": 39
+        }
+      ]
+    },
+    {
+      "id": "pos-096-intl-ng",
+      "text": "Chukwuemeka Eze opened a dispute for transaction 88213.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 15
+        }
+      ]
+    },
+    {
+      "id": "pos-097-intl-gh",
+      "text": "Kwame Asante is our new regional sales lead.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 12
+        }
+      ]
+    },
+    {
+      "id": "pos-098-intl-ke",
+      "text": "Please verify the identity documents for Wanjiru Kamau.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 41,
+          "end": 54
+        }
+      ]
+    },
+    {
+      "id": "pos-099-intl-pl",
+      "text": "Łukasz Wiśniewski reported that the PDF export cuts off tables.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 17
+        }
+      ]
+    },
+    {
+      "id": "pos-100-intl-ru",
+      "text": "Dmitri Volkov requested access to the staging database.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 13
+        }
+      ]
+    },
+    {
+      "id": "pos-101-intl-vn",
+      "text": "Nguyen Thi Lan uploaded the scanned contract.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "id": "pos-102-intl-br",
+      "text": "Transfer received from João Pereira da Silva.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 23,
+          "end": 44
+        }
+      ]
+    },
+    {
+      "id": "pos-103-intl-nl",
+      "text": "Pieter van der Berg owns the data warehouse.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 19
+        }
+      ]
+    },
+    {
+      "id": "pos-104-intl-se",
+      "text": "Björn Lindqvist confirmed the shipment left Gothenburg.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 15
+        }
+      ]
+    },
+    {
+      "id": "pos-105-intl-it",
+      "text": "The complaint from Giulia Romano mentions a broken hinge.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 19,
+          "end": 32
+        }
+      ]
+    },
+    {
+      "id": "pos-106-intl-gr",
+      "text": "Nikos Papadopoulos wants the invoice in euros.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 18
+        }
+      ]
+    },
+    {
+      "id": "pos-107-intl-et",
+      "text": "Abebe Bekele will translate the onboarding guide.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 12
+        }
+      ]
+    },
+    {
+      "id": "pos-108-intl-za",
+      "text": "Thandiwe Nkosi left a one-star review about the delivery.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "id": "pos-109-intl-ie",
+      "text": "Niamh Gallagher is covering the help desk until noon.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 15
+        }
+      ]
+    },
+    {
+      "id": "pos-110-intl-ir",
+      "text": "Dariush Rahimi requested a copy of his lab results.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "id": "pos-111-intl-ph",
+      "text": "Maricel Dela Cruz is the caregiver on file.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 17
+        }
+      ]
+    },
+    {
+      "id": "pos-112-intl-il",
+      "text": "Yael Ben-David asked about the API rate limit.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "id": "pos-113-hist",
+      "text": "The quote is often attributed to Abraham Lincoln, but there is no evidence he said it.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 33,
+          "end": 48
+        }
+      ]
+    },
+    {
+      "id": "pos-114-hist",
+      "text": "Write a short bio of Ada Lovelace for the onboarding deck.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 21,
+          "end": 33
+        }
+      ]
+    },
+    {
+      "id": "pos-115-hist",
+      "text": "Like Marie Curie, she worked in a field dominated by men.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 5,
+          "end": 16
+        }
+      ]
+    },
+    {
+      "id": "pos-116-pii",
+      "text": "Name: Gordon Pryce\nEmail: g.pryce@example.org\nPhone: +44 20 7946 0321",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 6,
+          "end": 18
+        }
+      ]
+    },
+    {
+      "id": "pos-117-pii",
+      "text": "Card holder Lucinda Farrow, card 4000 0566 5566 5556, exp 09/28 — customer asks to block it.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 12,
+          "end": 26
+        }
+      ]
+    },
+    {
+      "id": "pos-118-pii",
+      "text": "Please reset MFA for Owen Sandberg (owen.sandberg@example.com).",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 21,
+          "end": 34
+        }
+      ]
+    },
+    {
+      "id": "pos-119-mixed",
+      "text": "Müşteri John Miller'ın kartı iki kez çekildi, iade süreci başlatılsın.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 8,
+          "end": 19
+        }
+      ]
+    },
+    {
+      "id": "pos-120-mixed",
+      "text": "Toplantıya Sarah Collins de katılacak, sunumu İngilizce yapalım.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 11,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "id": "pos-121-mixed",
+      "text": "Dosyayı Michael Turner'a gönderdim, onay bekliyorum.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 8,
+          "end": 22
+        }
+      ]
+    },
+    {
+      "id": "pos-122-mixed",
+      "text": "Ahmet Yılmaz ve David Harper yarın saat 10'da görüşecek.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 16,
+          "end": 28
+        }
+      ]
+    },
+    {
+      "id": "pos-123-mixed",
+      "text": "Hi team, Mehmet Bey asked me to forward this: Emily Carter'dan gelen fatura hatalı.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 46,
+          "end": 58
+        }
+      ]
+    },
+    {
+      "id": "pos-124-mixed",
+      "text": "Kargo takip: alıcı Jessica Morgan, adres Kadıköy, İstanbul.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 19,
+          "end": 33
+        }
+      ]
+    },
+    {
+      "id": "pos-125-mixed",
+      "text": "Sayın Robert Fischer, başvurunuz alınmıştır.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 6,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "pos-126-mixed",
+      "text": "Bu PR'ı Thomas Becker review etti, merge edebiliriz.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 8,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "pos-127-mixed",
+      "text": "Ayşe Demir: Priya Sharma'nın erişim talebini onayladım.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 12,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "id": "pos-128-mixed",
+      "text": "Destek kaydı #4410: müşteri Diego Ramírez, konu: iade gecikmesi.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 28,
+          "end": 41
+        }
+      ]
+    },
+    {
+      "id": "pos-129-mixed",
+      "text": "Hastanın adı Linda Foster, 54 yaşında, tansiyon şikâyetiyle geldi.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 13,
+          "end": 25
+        }
+      ]
+    },
+    {
+      "id": "pos-130-mixed",
+      "text": "Fatura Kevin O'Donnell adına kesilmiş, şirket adına düzeltilmesi lazım.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 7,
+          "end": 22
+        }
+      ]
+    },
+    {
+      "id": "pos-131-mixed",
+      "text": "Elif Kaya ile Hans Weber arasındaki e-posta yazışmasını özetle.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 14,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "id": "pos-132-mixed",
+      "text": "Kod incelemesi: Daniel Ruiz'in yazdığı retry mantığı timeout'ları yutuyor.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 16,
+          "end": 27
+        }
+      ]
+    },
+    {
+      "id": "pos-133-mixed",
+      "text": "Lütfen Anna Kowalski'ye şifre sıfırlama bağlantısı gönderin.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 7,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "pos-134-mixed",
+      "text": "Mülakat notu — aday: Rajesh Kumar, backend, 6 yıl deneyim, İngilizcesi iyi.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 21,
+          "end": 33
+        }
+      ]
+    },
+    {
+      "id": "pos-135-mixed",
+      "text": "Can you check the transfer? Gönderen: Murat Öztürk, alıcı: Lisa Hoffman.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 59,
+          "end": 71
+        }
+      ]
+    },
+    {
+      "id": "pos-136-mixed",
+      "text": "Toplantı notları: Mark Stevens bütçeyi onayladı, Burak Şahin takvimi güncelleyecek.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 18,
+          "end": 30
+        }
+      ]
+    },
+    {
+      "id": "pos-137-mixed",
+      "text": "İade talebi Chloe Martin'den geldi, ürün hasarlı teslim edilmiş.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 12,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "id": "pos-138-mixed",
+      "text": "Yeni CTO'muz Wei Chen, Pazartesi günü başlıyor.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 13,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "pos-139-mixed",
+      "text": "MÜŞTERİ ADI: JAMES WILSON / ŞUBE: ŞİŞLİ",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 13,
+          "end": 25
+        }
+      ]
+    },
+    {
+      "id": "pos-140-mixed",
+      "text": "Dr. Amelia Ross'un randevusu Perşembe'ye ertelendi.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 4,
+          "end": 15
+        }
+      ]
+    },
+    {
+      "id": "pos-141-mixed",
+      "text": "Sevgili ekip, Olivia Bennett bugün itibarıyla Londra ofisine geçti.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 14,
+          "end": 28
+        }
+      ]
+    },
+    {
+      "id": "pos-142-mixed",
+      "text": "Commit mesajı: 'fix: handle null address' — yazan: Ethan Brooks",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 51,
+          "end": 63
+        }
+      ]
+    },
+    {
+      "id": "pos-143-mixed",
+      "text": "Selin Aksoy ile Yasmina Benali'nin vize evrakları eksik.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 16,
+          "end": 30
+        }
+      ]
+    },
+    {
+      "id": "pos-144-mixed",
+      "text": "Bu e-postayı İngilizceye çevir: Dear Mr. Patterson, siparişiniz yola çıktı.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 41,
+          "end": 50
+        }
+      ]
+    },
+    {
+      "id": "pos-145-mixed",
+      "text": "Kredi başvurusu: başvuran Sophia Klein, kefil Hakan Doğan.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 26,
+          "end": 38
+        }
+      ]
+    },
+    {
+      "id": "pos-146-mixed",
+      "text": "Ekteki CV Lucas Moreau'ya ait, Fransızca ve İngilizce biliyor.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 10,
+          "end": 22
+        }
+      ]
+    },
+    {
+      "id": "pos-147-mixed",
+      "text": "Slack'te Ryan Cooper yazmış: 'deploy durdu, bakabilir misiniz?'",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 9,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "pos-148-mixed",
+      "text": "Hasta yakını Grace Thompson'a sonuçlar telefonla bildirildi.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 13,
+          "end": 27
+        }
+      ]
+    },
+    {
+      "id": "pos-149-mixed",
+      "text": "Siparişi teslim alan: Matteo Bianchi, imza alındı.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 22,
+          "end": 36
+        }
+      ]
+    },
+    {
+      "id": "pos-150-mixed",
+      "text": "Rebecca Shaw'ın hesabı dondurulmuş, nedenini sorgulayalım.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 12
+        }
+      ]
+    },
+    {
+      "id": "pos-151-mixed",
+      "text": "Ödeme Ingrid Johansson tarafından onaylandı; muhasebe Zeynep Hanım'da.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 6,
+          "end": 22
+        }
+      ]
+    },
+    {
+      "id": "pos-152-mixed",
+      "text": "Please summarize: Toplantıda Andrew Scott fiyatların %8 artacağını söyledi.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 29,
+          "end": 41
+        }
+      ]
+    },
+    {
+      "id": "pos-153-mixed",
+      "text": "Pazarlama ekibinden Hannah Wright, kampanya bütçesini Mart'a kadar dondurdu.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 20,
+          "end": 33
+        }
+      ]
+    },
+    {
+      "id": "pos-154-mixed",
+      "text": "Müşteri temsilcisi olarak Aiko Yamamoto atandı.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 26,
+          "end": 39
+        }
+      ]
+    },
+    {
+      "id": "pos-155-mixed",
+      "text": "Elena Petrova'nın pasaport numarasını loglardan silin.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 0,
+          "end": 13
+        }
+      ]
+    },
+    {
+      "id": "pos-156-mixed",
+      "text": "Rapor: Kofi Mensah'ın kartı yurt dışında kullanılmış, şüpheli işlem.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 7,
+          "end": 18
+        }
+      ]
+    },
+    {
+      "id": "pos-157-mixed",
+      "text": "Tedarikçi irtibat kişisi Arjun Mehta, telefonu kapalı.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 25,
+          "end": 36
+        }
+      ]
+    },
+    {
+      "id": "pos-158-mixed",
+      "text": "GitHub issue'yu Benjamin Clarke açmış, yanıtı ben yazacağım.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 16,
+          "end": 31
+        }
+      ]
+    },
+    {
+      "id": "pos-159-mixed",
+      "text": "Bugünkü vardiyada Emre Yıldız ile Natasha Ivanova var.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 34,
+          "end": 49
+        }
+      ]
+    },
+    {
+      "id": "pos-160-mixed",
+      "text": "Proje sponsoru Sir Richard Langley, kick-off toplantısına katılamayacak.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 19,
+          "end": 34
+        }
+      ]
+    },
+    {
+      "id": "pos-161-mixed",
+      "text": "Lütfen George Mitchell ve Laura Adams'a toplantı davetini ilet.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 7,
+          "end": 22
+        },
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 26,
+          "end": 37
+        }
+      ]
+    },
+    {
+      "id": "pos-162-mixed",
+      "text": "Sözleşme Isabella Rossi adına düzenlenecek, imza tarihi 20 Ekim.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 9,
+          "end": 23
+        }
+      ]
+    },
+    {
+      "id": "pos-163-mixed",
+      "text": "Banka dekontunda gönderen adı FRANK MILLER görünüyor.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 30,
+          "end": 42
+        }
+      ]
+    },
+    {
+      "id": "pos-164-mixed",
+      "text": "Paketi Daniel Hughes’a teslim ettik, imza fotoğrafı ekte.",
+      "expect": [
+        {
+          "entity_type": "PERSON_NAME_EN",
+          "start": 7,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "neg-001-inst",
+      "text": "The branch on Martin Luther King Jr. Boulevard closes at 5 PM on weekdays.",
+      "expect": []
+    },
+    {
+      "id": "neg-002-inst",
+      "text": "She was transferred to Johns Hopkins Hospital for further tests.",
+      "expect": []
+    },
+    {
+      "id": "neg-003-inst",
+      "text": "Applicants from George Washington University get a 10% discount.",
+      "expect": []
+    },
+    {
+      "id": "neg-004-inst",
+      "text": "Results from the Mayo Clinic lab arrived this morning.",
+      "expect": []
+    },
+    {
+      "id": "neg-005-inst",
+      "text": "The Sarbanes-Oxley Act requires us to retain these audit records for seven years.",
+      "expect": []
+    },
+    {
+      "id": "neg-006-inst",
+      "text": "We are filing the disclosure under the Dodd-Frank Act.",
+      "expect": []
+    },
+    {
+      "id": "neg-007-inst",
+      "text": "She won the Pulitzer Prize in 2019.",
+      "expect": []
+    },
+    {
+      "id": "neg-008-inst",
+      "text": "The Nobel Prize ceremony is held in Stockholm every December.",
+      "expect": []
+    },
+    {
+      "id": "neg-009-inst",
+      "text": "Our London team sits near Victoria Station.",
+      "expect": []
+    },
+    {
+      "id": "neg-010-inst",
+      "text": "Flights to John F. Kennedy International Airport were delayed by the storm.",
+      "expect": []
+    },
+    {
+      "id": "neg-011-inst",
+      "text": "Tickets for the concert at Carnegie Hall go on sale Friday.",
+      "expect": []
+    },
+    {
+      "id": "neg-012-inst",
+      "text": "The Lincoln Memorial was closed for renovation.",
+      "expect": []
+    },
+    {
+      "id": "neg-013-inst",
+      "text": "Our new office is at 450 Lexington Avenue, New York.",
+      "expect": []
+    },
+    {
+      "id": "neg-014-inst",
+      "text": "Deliveries to Washington Street are suspended until further notice.",
+      "expect": []
+    },
+    {
+      "id": "neg-015-inst",
+      "text": "The Bill & Melinda Gates Foundation funded the pilot.",
+      "expect": []
+    },
+    {
+      "id": "neg-016-inst",
+      "text": "Students at King Edward VI School can use the library on Saturdays.",
+      "expect": []
+    },
+    {
+      "id": "neg-017-inst",
+      "text": "Please bring your referral letter to St Thomas' Hospital.",
+      "expect": []
+    },
+    {
+      "id": "neg-018-inst",
+      "text": "The Royal Albert Hall booking was confirmed for 12 June.",
+      "expect": []
+    },
+    {
+      "id": "neg-019-inst",
+      "text": "The Elizabeth Line was suspended between Paddington and Liverpool Street.",
+      "expect": []
+    },
+    {
+      "id": "neg-020-inst",
+      "text": "The Kennedy Center gala raised $3 million.",
+      "expect": []
+    },
+    {
+      "id": "neg-021-inst",
+      "text": "She is a lecturer at Simon Fraser University in Vancouver.",
+      "expect": []
+    },
+    {
+      "id": "neg-022-inst",
+      "text": "The Marshall Plan is a common example in economics courses.",
+      "expect": []
+    },
+    {
+      "id": "neg-023-inst",
+      "text": "Her surgery is scheduled at Brigham and Women's Hospital.",
+      "expect": []
+    },
+    {
+      "id": "neg-024-inst",
+      "text": "The Turner Prize shortlist was announced today.",
+      "expect": []
+    },
+    {
+      "id": "neg-025-inst",
+      "text": "Parents at Abraham Lincoln High School received the notice by text.",
+      "expect": []
+    },
+    {
+      "id": "neg-026-brand",
+      "text": "I returned the Tommy Hilfiger jacket because the zipper broke.",
+      "expect": []
+    },
+    {
+      "id": "neg-027-brand",
+      "text": "Is the Ralph Lauren polo eligible for the autumn discount?",
+      "expect": []
+    },
+    {
+      "id": "neg-028-brand",
+      "text": "Our Louis Vuitton order shows as delivered but never arrived.",
+      "expect": []
+    },
+    {
+      "id": "neg-029-brand",
+      "text": "Add two bottles of Jack Daniel's to the corporate gift order.",
+      "expect": []
+    },
+    {
+      "id": "neg-030-brand",
+      "text": "The Ben & Jerry's freezer in aisle 4 is broken.",
+      "expect": []
+    },
+    {
+      "id": "neg-031-brand",
+      "text": "Transfer the funds to my Charles Schwab brokerage account.",
+      "expect": []
+    },
+    {
+      "id": "neg-032-brand",
+      "text": "Morgan Stanley downgraded the stock to neutral.",
+      "expect": []
+    },
+    {
+      "id": "neg-033-brand",
+      "text": "Wells Fargo flagged the wire as suspicious.",
+      "expect": []
+    },
+    {
+      "id": "neg-034-brand",
+      "text": "We moved our payroll from Goldman Sachs to a smaller bank.",
+      "expect": []
+    },
+    {
+      "id": "neg-035-brand",
+      "text": "Johnson & Johnson recalled a batch of sunscreen.",
+      "expect": []
+    },
+    {
+      "id": "neg-036-brand",
+      "text": "Can I pay for the Hugo Boss suit in three installments?",
+      "expect": []
+    },
+    {
+      "id": "neg-037-brand",
+      "text": "The Ford Motor Company invoice is overdue.",
+      "expect": []
+    },
+    {
+      "id": "neg-038-brand",
+      "text": "A Dr Pepper and two McDonald's burgers were on the expense report.",
+      "expect": []
+    },
+    {
+      "id": "neg-039-brand",
+      "text": "The Michael Kors handbag was listed at the wrong price.",
+      "expect": []
+    },
+    {
+      "id": "neg-040-brand",
+      "text": "Do you ship Kate Spade sunglasses to Canada?",
+      "expect": []
+    },
+    {
+      "id": "neg-041-brand",
+      "text": "Expense: coffee at Tim Hortons, CAD 8.40.",
+      "expect": []
+    },
+    {
+      "id": "neg-042-brand",
+      "text": "The Trader Joe's receipt is missing from the claim.",
+      "expect": []
+    },
+    {
+      "id": "neg-043-brand",
+      "text": "Ernst & Young will run the external audit this year.",
+      "expect": []
+    },
+    {
+      "id": "neg-044-brand",
+      "text": "Our Tesla Model 3 fleet lease renews in January.",
+      "expect": []
+    },
+    {
+      "id": "neg-045-brand",
+      "text": "Walt Disney World tickets are non-refundable.",
+      "expect": []
+    },
+    {
+      "id": "neg-046-brand",
+      "text": "The Hilton Garden Inn booking was cancelled.",
+      "expect": []
+    },
+    {
+      "id": "neg-047-brand",
+      "text": "Please order a Dell XPS 13 for the new hire.",
+      "expect": []
+    },
+    {
+      "id": "neg-048-brand",
+      "text": "Mr. Clean multi-surface spray, 2 for $5 this week only.",
+      "expect": []
+    },
+    {
+      "id": "neg-049-brand",
+      "text": "Chase Sapphire Card Benefits",
+      "expect": []
+    },
+    {
+      "id": "neg-050-eponym",
+      "text": "Our Jenkins pipeline fails on the lint step.",
+      "expect": []
+    },
+    {
+      "id": "neg-051-eponym",
+      "text": "We stream events through Apache Kafka into the warehouse.",
+      "expect": []
+    },
+    {
+      "id": "neg-052-eponym",
+      "text": "Rewrite this Pascal routine in Python.",
+      "expect": []
+    },
+    {
+      "id": "neg-053-eponym",
+      "text": "Is Julia faster than Python for this simulation?",
+      "expect": []
+    },
+    {
+      "id": "neg-054-eponym",
+      "text": "Apply Dijkstra's algorithm to find the shortest delivery route.",
+      "expect": []
+    },
+    {
+      "id": "neg-055-eponym",
+      "text": "Use a Gaussian blur on the profile pictures before storage.",
+      "expect": []
+    },
+    {
+      "id": "neg-056-eponym",
+      "text": "Run a Bayesian A/B test instead of a t-test.",
+      "expect": []
+    },
+    {
+      "id": "neg-057-eponym",
+      "text": "The Fibonacci heap implementation leaks memory.",
+      "expect": []
+    },
+    {
+      "id": "neg-058-eponym",
+      "text": "Family history of Alzheimer's disease on the mother's side.",
+      "expect": []
+    },
+    {
+      "id": "neg-059-eponym",
+      "text": "Patient diagnosed with Hodgkin lymphoma in 2021, now in remission.",
+      "expect": []
+    },
+    {
+      "id": "neg-060-eponym",
+      "text": "Rule out Crohn's disease before prescribing.",
+      "expect": []
+    },
+    {
+      "id": "neg-061-eponym",
+      "text": "The Parkinson's medication schedule must be strictly followed.",
+      "expect": []
+    },
+    {
+      "id": "neg-062-word",
+      "text": "Will you send me the invoice again?",
+      "expect": []
+    },
+    {
+      "id": "neg-063-word",
+      "text": "May I change the delivery address after checkout?",
+      "expect": []
+    },
+    {
+      "id": "neg-064-word",
+      "text": "Mark down all winter coats by 30% starting tomorrow.",
+      "expect": []
+    },
+    {
+      "id": "neg-065-word",
+      "text": "Grant access to the finance folder for the new auditor.",
+      "expect": []
+    },
+    {
+      "id": "neg-066-word",
+      "text": "Bill the client for the extra two hours of support.",
+      "expect": []
+    },
+    {
+      "id": "neg-067-word",
+      "text": "Chase the vendor about the missing credit note.",
+      "expect": []
+    },
+    {
+      "id": "neg-068-word",
+      "text": "Hope this helps! Let me know if anything else comes up.",
+      "expect": []
+    },
+    {
+      "id": "neg-069-word",
+      "text": "Rose gold iPhone cases are back in stock.",
+      "expect": []
+    },
+    {
+      "id": "neg-070-word",
+      "text": "Sterling fell against the dollar after the announcement.",
+      "expect": []
+    },
+    {
+      "id": "neg-071-word",
+      "text": "Frank feedback from customers is the fastest way to improve.",
+      "expect": []
+    },
+    {
+      "id": "neg-072-word",
+      "text": "Pat yourself on the back, the release went smoothly.",
+      "expect": []
+    },
+    {
+      "id": "neg-073-word",
+      "text": "Sue the supplier only as a last resort, says legal.",
+      "expect": []
+    },
+    {
+      "id": "neg-074-word",
+      "text": "Jack up the timeout to 60 seconds and retry.",
+      "expect": []
+    },
+    {
+      "id": "neg-075-word",
+      "text": "Drew up a draft of the refund policy, please review.",
+      "expect": []
+    },
+    {
+      "id": "neg-076-word",
+      "text": "Art direction for the campaign is still pending.",
+      "expect": []
+    },
+    {
+      "id": "neg-077-word",
+      "text": "Gene expression data was uploaded to the shared bucket.",
+      "expect": []
+    },
+    {
+      "id": "neg-078-word",
+      "text": "Penny stocks are excluded from the portfolio rebalancing.",
+      "expect": []
+    },
+    {
+      "id": "neg-079-word",
+      "text": "Ray tracing is disabled on the cheaper GPU tier.",
+      "expect": []
+    },
+    {
+      "id": "neg-080-word",
+      "text": "Dawn deliveries cost an extra $5.",
+      "expect": []
+    },
+    {
+      "id": "neg-081-word",
+      "text": "Amber warnings appear when the battery drops below 20%.",
+      "expect": []
+    },
+    {
+      "id": "neg-082-word",
+      "text": "Iris scan login is available on the premium plan.",
+      "expect": []
+    },
+    {
+      "id": "neg-083-word",
+      "text": "Upload a copy of the will and the death certificate to close the account.",
+      "expect": []
+    },
+    {
+      "id": "neg-084-word",
+      "text": "Sterling Silver Necklace — SKU 44812 — Price: $89",
+      "expect": []
+    },
+    {
+      "id": "neg-085-heading",
+      "text": "Release Notes\n\nVersion 2.4.1 fixes a crash on startup.",
+      "expect": []
+    },
+    {
+      "id": "neg-086-heading",
+      "text": "Thanks for the quick turnaround.\n\nKind Regards,\nThe Billing Team",
+      "expect": []
+    },
+    {
+      "id": "neg-087-heading",
+      "text": "Best Regards,\nCustomer Success",
+      "expect": []
+    },
+    {
+      "id": "neg-088-heading",
+      "text": "Getting Started\n\nInstall the CLI and run the setup command.",
+      "expect": []
+    },
+    {
+      "id": "neg-089-heading",
+      "text": "Terms of Service | Privacy Policy | Cookie Settings",
+      "expect": []
+    },
+    {
+      "id": "neg-090-heading",
+      "text": "Executive Summary\nRevenue grew 14% while churn fell to 2.1%.",
+      "expect": []
+    },
+    {
+      "id": "neg-091-heading",
+      "text": "Action Items:\n- Update the Risk Register\n- Schedule the Quarterly Review",
+      "expect": []
+    },
+    {
+      "id": "neg-092-heading",
+      "text": "Frequently Asked Questions",
+      "expect": []
+    },
+    {
+      "id": "neg-093-heading",
+      "text": "Account Settings > Security > Two-Factor Authentication",
+      "expect": []
+    },
+    {
+      "id": "neg-094-heading",
+      "text": "Thank You For Your Order! Your Package Will Arrive Soon.",
+      "expect": []
+    },
+    {
+      "id": "neg-095-heading",
+      "text": "Grace Period Ends Today: Renew Your Subscription",
+      "expect": []
+    },
+    {
+      "id": "neg-096-heading",
+      "text": "Error: Null Pointer Exception in Payment Service",
+      "expect": []
+    },
+    {
+      "id": "neg-097-date",
+      "text": "The June release includes the new reporting API.",
+      "expect": []
+    },
+    {
+      "id": "neg-098-date",
+      "text": "Payment is due on Monday, April 6.",
+      "expect": []
+    },
+    {
+      "id": "neg-099-date",
+      "text": "The August bank holiday affects transfer times.",
+      "expect": []
+    },
+    {
+      "id": "neg-100-date",
+      "text": "Black Friday orders ship after Thanksgiving.",
+      "expect": []
+    },
+    {
+      "id": "neg-101-date",
+      "text": "Let's meet Tuesday or Wednesday in early May.",
+      "expect": []
+    },
+    {
+      "id": "neg-102-date",
+      "text": "Easter Monday is a public holiday in the UK, so branches are closed.",
+      "expect": []
+    },
+    {
+      "id": "neg-103-date",
+      "text": "Q3 covers July, August and September.",
+      "expect": []
+    },
+    {
+      "id": "neg-104-date",
+      "text": "The offer runs from March 1 through April 30.",
+      "expect": []
+    },
+    {
+      "id": "neg-105-place",
+      "text": "Our warehouse in Austin, Texas ships same day.",
+      "expect": []
+    },
+    {
+      "id": "neg-106-place",
+      "text": "Flights from Charlotte to Jackson were cancelled due to weather.",
+      "expect": []
+    },
+    {
+      "id": "neg-107-place",
+      "text": "The conference moved from Florence to Paris.",
+      "expect": []
+    },
+    {
+      "id": "neg-108-place",
+      "text": "Customers in Victoria, British Columbia report slow checkouts.",
+      "expect": []
+    },
+    {
+      "id": "neg-109-place",
+      "text": "We opened a new data center near Houston.",
+      "expect": []
+    },
+    {
+      "id": "neg-110-place",
+      "text": "Lincoln, Nebraska and Madison, Wisconsin are our pilot cities.",
+      "expect": []
+    },
+    {
+      "id": "neg-111-place",
+      "text": "Shipping to Georgia (the country, not the state) requires a customs form.",
+      "expect": []
+    },
+    {
+      "id": "neg-112-place",
+      "text": "Sydney and Adelaide offices close early on Friday.",
+      "expect": []
+    },
+    {
+      "id": "neg-113-single",
+      "text": "Thanks, Priya! That fixed it.",
+      "expect": []
+    },
+    {
+      "id": "neg-114-single",
+      "text": "Ask Tom if the backup finished.",
+      "expect": []
+    },
+    {
+      "id": "neg-115-single",
+      "text": "Sorry, Jessica, the refund takes 5 business days.",
+      "expect": []
+    },
+    {
+      "id": "neg-116-cue-nonname",
+      "text": "Dear Customer, your statement is ready.",
+      "expect": []
+    },
+    {
+      "id": "neg-117-cue-nonname",
+      "text": "Dear Sir or Madam, I am writing to complain about the delay.",
+      "expect": []
+    },
+    {
+      "id": "neg-118-cue-nonname",
+      "text": "Dear Valued Member, your points expire soon.",
+      "expect": []
+    },
+    {
+      "id": "neg-119-cue-nonname",
+      "text": "Dear Hiring Manager,\n\nPlease find my application attached.",
+      "expect": []
+    },
+    {
+      "id": "neg-120-cue-nonname",
+      "text": "The Miss Universe broadcast drew record ratings.",
+      "expect": []
+    },
+    {
+      "id": "neg-121-code",
+      "text": "def full_name(user):\n    return f\"{user.first_name} {user.last_name}\"",
+      "expect": []
+    },
+    {
+      "id": "neg-122-code",
+      "text": "SELECT first_name, last_name FROM customers WHERE country = 'US';",
+      "expect": []
+    },
+    {
+      "id": "neg-123-code",
+      "text": "Contact support@example.com or call 0800 123 4567.",
+      "expect": []
+    },
+    {
+      "id": "neg-124-email-only",
+      "text": "Reply to jane.doe@example.com for the invoice copy.",
+      "expect": []
+    },
+    {
+      "id": "neg-125-misc",
+      "text": "Lorem ipsum dolor sit amet, consectetur adipiscing elit.",
+      "expect": []
+    },
+    {
+      "id": "neg-126-misc",
+      "text": "The server returned 502 Bad Gateway three times in a row; retrying with backoff.",
+      "expect": []
+    },
+    {
+      "id": "neg-127-tie-tr",
+      "text": "Our Istanbul rep Mehmet Yılmaz will join the call tomorrow.",
+      "expect": []
+    },
+    {
+      "id": "neg-128-tie-tr",
+      "text": "Please send the contract to Ayşe Kaya for signature.",
+      "expect": []
+    },
+    {
+      "id": "neg-129-mixed-noname",
+      "text": "Deploy pipeline'ı fail etti, Jenkins log'larına bakabilir misin?",
+      "expect": []
+    },
+    {
+      "id": "neg-130-mixed-noname",
+      "text": "Release Notes'u Türkçeye çevir lütfen, yarın yayınlıyoruz.",
+      "expect": []
+    },
+    {
+      "id": "neg-131-mixed-noname",
+      "text": "Grant access butonuna basınca 403 alıyorum, yetki eksik galiba.",
+      "expect": []
+    },
+    {
+      "id": "neg-132-tr",
+      "text": "Merhaba, siparişim hâlâ teslim edilmedi, kargo numarası 12345678.",
+      "expect": []
+    },
+    {
+      "id": "neg-133-tr",
+      "text": "Mehmet Yılmaz'ın hesabı geçici olarak donduruldu.",
+      "expect": []
+    },
+    {
+      "id": "neg-134-tr",
+      "text": "Ayşe Kaya ile Fatih Demir yarın sabah toplantıda olacak.",
+      "expect": []
+    },
+    {
+      "id": "neg-135-tr",
+      "text": "Sayın Gizem Uysal, başvurunuz onaylanmıştır.",
+      "expect": []
+    },
+    {
+      "id": "neg-136-tr",
+      "text": "Atatürk Caddesi'ndeki şubemiz Pazartesi günü kapalı olacak.",
+      "expect": []
+    },
+    {
+      "id": "neg-137-tr",
+      "text": "Hacettepe Üniversitesi Hastanesi'nden randevu almak istiyorum.",
+      "expect": []
+    },
+    {
+      "id": "neg-138-tr",
+      "text": "Faturanız Ekim ayı için 1.250 TL olarak düzenlenmiştir.",
+      "expect": []
+    },
+    {
+      "id": "neg-139-tr",
+      "text": "Kredi kartı borcumu taksitlendirmek istiyorum, ne yapmalıyım?",
+      "expect": []
+    },
+    {
+      "id": "neg-140-tr",
+      "text": "Burak Bey toplantıyı Perşembe'ye erteledi.",
+      "expect": []
+    },
+    {
+      "id": "neg-141-tr",
+      "text": "İade talebiniz alınmıştır, 3-5 iş günü içinde hesabınıza yansıyacaktır.",
+      "expect": []
+    },
+    {
+      "id": "neg-142-tr",
+      "text": "Elif Hanım'ın raporu ekte, lütfen kontrol edin.",
+      "expect": []
+    },
+    {
+      "id": "neg-143-tr",
+      "text": "Mustafa Kemal Paşa Lisesi'nde veli toplantısı yapılacak.",
+      "expect": []
+    },
+    {
+      "id": "neg-144-tr",
+      "text": "Kod incelemesi: bu fonksiyon null kontrolü yapmıyor, düzeltilmeli.",
+      "expect": []
+    },
+    {
+      "id": "neg-145-tr",
+      "text": "Hastanın tansiyonu 140/90, ateşi yok, kontrol randevusu verildi.",
+      "expect": []
+    },
+    {
+      "id": "neg-146-tr",
+      "text": "Sipariş No: 784512 — Durum: Kargoya verildi — Tahmini teslim: Cuma",
+      "expect": []
+    },
+    {
+      "id": "neg-147-tr",
+      "text": "Emre Çelik ve Selin Aydın projeye yeni katıldı.",
+      "expect": []
+    },
+    {
+      "id": "neg-148-tr",
+      "text": "Koç Holding hisseleri günü yükselişle kapattı.",
+      "expect": []
+    },
+    {
+      "id": "neg-149-tr",
+      "text": "Sabancı Üniversitesi'nden staj başvurusu geldi.",
+      "expect": []
+    },
+    {
+      "id": "neg-150-tr",
+      "text": "Hesap özeti: bakiye 4.320,50 TL, son ödeme tarihi 15 Kasım.",
+      "expect": []
+    },
+    {
+      "id": "neg-151-tr",
+      "text": "Kemal Sunal filmlerini izlemeyi çok seviyorum.",
+      "expect": []
+    },
+    {
+      "id": "neg-152-tr",
+      "text": "Lütfen şifremi sıfırlayın, giriş yapamıyorum.",
+      "expect": []
+    },
+    {
+      "id": "neg-153-tr",
+      "text": "AHMET ÖZTÜRK ADINA DÜZENLENEN FATURA",
+      "expect": []
+    },
+    {
+      "id": "neg-154-tr",
+      "text": "Toplantı notları: bütçe onaylandı, takvim iki hafta kaydırıldı.",
+      "expect": []
+    },
+    {
+      "id": "neg-155-tr",
+      "text": "Ödeme sayfasında 'işlem başarısız' hatası alıyorum.",
+      "expect": []
+    },
+    {
+      "id": "neg-156-tr",
+      "text": "Dr. Serkan Yavuz Pazartesi günleri muayene yapıyor.",
+      "expect": []
+    },
+    {
+      "id": "neg-157-tr",
+      "text": "İstanbul'dan Ankara'ya gönderilen paket hasarlı ulaştı.",
+      "expect": []
+    },
+    {
+      "id": "neg-158-tr",
+      "text": "Merve'nin doğum günü için pasta siparişi verelim.",
+      "expect": []
+    },
+    {
+      "id": "neg-159-tr",
+      "text": "Bu hafta sonu kampanya: tüm ürünlerde yüzde yirmi indirim!",
+      "expect": []
+    },
+    {
+      "id": "neg-160-tr",
+      "text": "Gül Hanım aradı, faturasındaki hatayı sordu.",
+      "expect": []
+    },
+    {
+      "id": "neg-161-tr",
+      "text": "Ziraat Bankası şubesinden EFT gönderdim ama hesaba geçmedi.",
+      "expect": []
+    },
+    {
+      "id": "neg-162-tr",
+      "text": "Yazılım ekibi yeni sürümü Salı günü canlıya alacak.",
+      "expect": []
+    },
+    {
+      "id": "neg-163-tr",
+      "text": "Osman Gazi Köprüsü'nde trafik yoğun, kurye gecikecek.",
+      "expect": []
+    },
+    {
+      "id": "neg-164-tr",
+      "text": "Barış Manço şarkıları kampanya videosunda kullanılacak.",
+      "expect": []
+    },
+    {
+      "id": "neg-165-tr",
+      "text": "Cumhuriyet Bayramı nedeniyle 29 Ekim'de şubelerimiz kapalıdır.",
+      "expect": []
+    },
+    {
+      "id": "neg-166-tr",
+      "text": "Sevgili müşterimiz, aboneliğiniz yenilendi.",
+      "expect": []
+    }
+  ]
+}

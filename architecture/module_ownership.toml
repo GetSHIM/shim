@@ -171,6 +171,7 @@ public = [
   "scripts/bench/savings.py",
   "scripts/bench_middleware.py",
   "scripts/export_finding_schema.py",
+  "scripts/person_names_en.py",
   "scripts/sync_models_dev.py",
   "src/shim/__init__.py",
   "src/shim/api/__init__.py",
