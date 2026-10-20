@@ -124,7 +124,8 @@ acquires a lease for the request's target (tenant, provider, base URL) sized
 time. A refusal is 429 `CONCURRENCY_LIMITED` with `Retry-After` (or
 `x-should-retry: false` when the work can never fit) and the request is rejected
 without a reservation. The lease is released exactly once on every terminal: after a
-JSON postprocess, in a stream's finalizer (heartbeats renew it), on every error after
+JSON postprocess, in a stream's finalizer (a timer heartbeat renews it until the
+stream ends, whether or not the client reads), on every error after
 admission; an S57 move takes room on the new target first, without waiting, and a
 refusal skips the move (`ATTEMPT_TARGET_SATURATED`); a move to the same target keeps
 the room it holds; a shadow copy asks with priority

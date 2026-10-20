@@ -8,7 +8,6 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from inspect import isawaitable
-from time import monotonic
 from typing import Any
 
 from opentelemetry import context as otel_context
@@ -52,7 +51,6 @@ class StreamSession:
         stream_start_recorder: Callable[[], Awaitable[None]],
         stream_heartbeat_recorder: Callable[[], Awaitable[None]] | None = None,
         heartbeat_interval_seconds: float = 30,
-        monotonic_clock: Callable[[], float] = monotonic,
         clock: Callable[[], datetime] | None = None,
         parent_context: Context | None = None,
         terminal_observer: TerminalObserver | None = None,
@@ -68,7 +66,6 @@ class StreamSession:
         self._stream_start_recorder = stream_start_recorder
         self._stream_heartbeat_recorder = stream_heartbeat_recorder
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
-        self._monotonic_clock = monotonic_clock
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._parent_context = (
             parent_context if parent_context is not None else otel_context.get_current()
@@ -80,7 +77,7 @@ class StreamSession:
         self._provider_closed = False
         self._output_iterator: AsyncGenerator[bytes, None] | None = None
         self._stream_started = False
-        self._last_heartbeat_at: float | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._consumed = False
         self._terminal: StreamFinalization | None = None
         self._pending_terminal: StreamFinalization | None = None
@@ -136,20 +133,24 @@ class StreamSession:
             self._internal_failure = True
             raise
         self._stream_started = True
-        self._last_heartbeat_at = self._monotonic_clock()
+        if self._stream_heartbeat_recorder is not None:
+            self._heartbeat_task = asyncio.create_task(
+                self._heartbeat(self._stream_heartbeat_recorder)
+            )
 
-    async def record_stream_heartbeat(self) -> None:
-        if self._stream_heartbeat_recorder is None or self._last_heartbeat_at is None:
-            return
-        now = self._monotonic_clock()
-        if now - self._last_heartbeat_at < self._heartbeat_interval_seconds:
-            return
-        try:
-            await self._stream_heartbeat_recorder()
-        except Exception:
-            self._internal_failure = True
-            raise
-        self._last_heartbeat_at = now
+    async def _heartbeat(self, recorder: Callable[[], Awaitable[None]]) -> None:
+        """Renew the durable deadline on a timer until the stream ends.
+
+        A client that stops reading parks the generator at its yield, so a
+        heartbeat driven by chunks would let a live stream look stranded.
+        """
+
+        while True:
+            await asyncio.sleep(self._heartbeat_interval_seconds)
+            try:
+                await recorder()
+            except Exception as exc:
+                logger.warning("Stream heartbeat failed type=%s", type(exc).__name__)
 
     async def _iterate(self) -> AsyncGenerator[bytes, None]:
         token = otel_context.attach(self._parent_context)
@@ -180,7 +181,6 @@ class StreamSession:
         try:
             async for chunk in self._rendered_chunks():
                 await self.record_stream_start()
-                await self.record_stream_heartbeat()
                 self.meter.observe_emitted_output(chunk)
                 with self._timing.exclude():
                     yield chunk
@@ -200,6 +200,8 @@ class StreamSession:
             await self._cleanup(terminal)
 
     async def _cleanup(self, terminal: StreamTerminalStatus) -> None:
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
         try:
             await self._close_provider_stream()
         finally:

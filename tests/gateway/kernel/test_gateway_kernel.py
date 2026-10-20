@@ -4584,7 +4584,7 @@ async def test_a_stream_renews_on_heartbeat_and_releases_when_disconnected() -> 
         concurrency_lease=lease,
     )
     session = ResponsePostprocessor(
-        usage, heartbeat_interval_seconds=0, output_hash_salt=None
+        usage, heartbeat_interval_seconds=0.01, output_hash_salt=None
     ).create_stream_session(prepared)
 
     async def events():
@@ -4593,7 +4593,9 @@ async def test_a_stream_renews_on_heartbeat_and_releases_when_disconnected() -> 
 
     session.bind(events(), close=AsyncMock())
     await anext(aiter(session))
-    await session.record_stream_heartbeat()
+    # No further read: the timer, not the client, renews the deadline and the lease.
+    await asyncio.sleep(0.1)
+    assert usage.heartbeat_stream.await_count >= 1
     assert lease.renew.await_count >= 1
     await session.aclose()
     for _ in range(100):

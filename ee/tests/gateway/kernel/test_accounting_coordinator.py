@@ -87,6 +87,7 @@ from shim_enterprise.billing.models import (
     SpendPeriodUsage,
     UsageLedger,
 )
+from shim_enterprise.observability.enterprise_metrics import USAGE_SETTLEMENT_TOTAL
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.observability import analytics_projection, overview
 from shim_enterprise.outbox.models import OutboxEvent
@@ -2980,7 +2981,7 @@ async def test_streams_cut_after_the_first_token_settle_at_the_reservation_and_f
 
 
 async def _admitted_with_spend(
-    factory, label: str, privacy: PrivacyOutcome | None = None
+    factory, label: str, privacy: PrivacyOutcome | None = None, *, stream: bool = False
 ):
     """A tenant with one admitted request whose quota and provider spend are reserved."""
 
@@ -3000,6 +3001,7 @@ async def _admitted_with_spend(
             )
         )
     prepared = _admitted(organization_id, api_key_id)
+    prepared.stream = stream
     prepared.admission.maximum_output_tokens = 100_000
     async with factory() as session:
         await coordinator.reserve_quota(prepared, prepared.admission, session)
@@ -3251,6 +3253,104 @@ async def test_stale_recovery_settles_a_started_call_at_the_reservation(
             "STALE_RESERVATION_RECOVERED",
         )
         assert not _ANSWER_SNAPSHOT_KEYS & lifecycle.lifecycle_metadata.keys()
+    finally:
+        await _drop_tenant(factory, prepared.tenant_id)
+
+
+async def _parked_stream(factory, label: str, interval: float):
+    """A started stream whose client read the first byte and then stopped reading."""
+
+    coordinator, prepared = await _admitted_with_spend(factory, label, stream=True)
+    usage = DurableUsageLifecycle(coordinator, factory)
+    await usage.mark_provider_started(prepared)
+
+    async def events():
+        yield b'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}\n\n'
+        yield (
+            b'data: {"choices":[{"index":0,"finish_reason":"stop"}],"usage":'
+            b'{"prompt_tokens":50,"completion_tokens":900}}\n\ndata: [DONE]\n\n'
+        )
+
+    stream = ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=interval, output_hash_salt=None
+    ).create_stream_session(prepared)
+    stream.bind(events())
+    await anext(stream)
+    # The window set at the first byte has lapsed while the client holds the stream.
+    async with factory.begin() as session:
+        await session.execute(
+            text(
+                "UPDATE request_lifecycle SET reconciliation_due_at = :due "
+                "WHERE organization_id = :organization_id"
+            ),
+            {"due": _LAPSED, "organization_id": prepared.tenant_id},
+        )
+    return prepared, stream
+
+
+_LAPSED = datetime(2002, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_a_stream_its_client_stops_reading_is_not_recovered_and_settles_its_usage(
+    async_engine,
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    prepared, stream = await _parked_stream(factory, "slowreader", 0.02)
+    try:
+        await asyncio.sleep(0.3)
+        async with factory.begin() as session:
+            recovered = await DurableAccountingRepository().recover_stale(
+                session, now=_LAPSED
+            )
+        assert prepared.request_id not in {result.request_id for result in recovered}
+
+        _ = [chunk async for chunk in stream]
+
+        events, _, _, lifecycle = await _terminal_accounting(
+            factory, prepared.tenant_id
+        )
+        assert (lifecycle.status, lifecycle.terminal_error_code) == ("completed", None)
+        settled = events["quota_settlement"]
+        assert (
+            settled.prompt_tokens,
+            settled.completion_tokens,
+            settled.estimated,
+        ) == (
+            50,
+            900,
+            False,
+        )
+        assert "quota_refund" not in events and "spend_refund" not in events
+    finally:
+        await _drop_tenant(factory, prepared.tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_a_settlement_after_stale_recovery_is_counted_as_a_conflict(
+    async_engine, caplog
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    prepared, stream = await _parked_stream(factory, "conflict", 3_600)
+    conflicts = USAGE_SETTLEMENT_TOTAL.labels(status="conflict")
+    before = conflicts._value.get()
+    try:
+        async with factory.begin() as session:
+            recovered = await DurableAccountingRepository().recover_stale(
+                session, now=_LAPSED
+            )
+        assert prepared.request_id in {result.request_id for result in recovered}
+
+        with caplog.at_level(logging.ERROR):
+            _ = [chunk async for chunk in stream]
+
+        assert conflicts._value.get() == before + 1
+        assert "Settlement hit an accounting conflict" in caplog.text
+        _, _, _, lifecycle = await _terminal_accounting(factory, prepared.tenant_id)
+        assert (lifecycle.status, lifecycle.terminal_error_code) == (
+            "failed",
+            "STALE_RESERVATION_RECOVERED",
+        )
     finally:
         await _drop_tenant(factory, prepared.tenant_id)
 

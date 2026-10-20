@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -78,12 +79,8 @@ async def test_a_blocked_gemini_prompt_stays_filtered() -> None:
     assert terminal.usage.completion_outcome == "filtered"
 
 
-@pytest.mark.asyncio
-async def test_active_stream_refreshes_its_durable_deadline() -> None:
-    finalizer = AsyncMock(return_value=SimpleNamespace())
-    heartbeat = AsyncMock()
-    ticks = iter((0.0, 0.0, 31.0, 31.0))
-    session = StreamSession(
+def _heartbeat_session(finalizer: AsyncMock, heartbeat: AsyncMock) -> StreamSession:
+    return StreamSession(
         meter=StreamMeter(
             provider="openai",
             requested_model="gpt-5.6-luna",
@@ -93,10 +90,16 @@ async def test_active_stream_refreshes_its_durable_deadline() -> None:
         finalizer=finalizer,
         stream_start_recorder=AsyncMock(),
         stream_heartbeat_recorder=heartbeat,
-        heartbeat_interval_seconds=30,
-        monotonic_clock=lambda: next(ticks),
+        heartbeat_interval_seconds=0.01,
         timing=InferenceTiming(),
     )
+
+
+@pytest.mark.asyncio
+async def test_a_stream_the_client_stops_reading_keeps_its_durable_deadline() -> None:
+    finalizer = AsyncMock(return_value=SimpleNamespace())
+    heartbeat = AsyncMock()
+    session = _heartbeat_session(finalizer, heartbeat)
 
     async def events():
         yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
@@ -104,9 +107,98 @@ async def test_active_stream_refreshes_its_durable_deadline() -> None:
         yield b"data: [DONE]\n\n"
 
     session.bind(events())
-    _ = [chunk async for chunk in session]
+    first = await anext(session)
+    # The client applies backpressure: the generator stays parked at its yield.
+    await asyncio.sleep(0.2)
+    parked = heartbeat.await_count
+    rest = [chunk async for chunk in session]
 
-    heartbeat.assert_awaited_once()
+    assert first and len(rest) == 2
+    assert parked >= 3
+    assert session.terminal_status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_heartbeat_is_logged_and_retried_without_ending_the_stream(
+    caplog,
+) -> None:
+    finalizer = AsyncMock(return_value=SimpleNamespace())
+    heartbeat = AsyncMock(side_effect=[ConnectionError("db down"), *[None] * 30])
+    session = _heartbeat_session(finalizer, heartbeat)
+
+    async def events():
+        yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    session.bind(events())
+    with caplog.at_level("WARNING"):
+        await anext(session)
+        await asyncio.sleep(0.1)
+        await session.aclose()
+
+    assert heartbeat.await_count >= 2
+    assert "Stream heartbeat failed type=ConnectionError" in caplog.text
+    assert "db down" not in caplog.text
+
+
+async def _parked_then_ended(events, *, disconnect: bool = False) -> tuple:
+    finalizer = AsyncMock(return_value=SimpleNamespace())
+    heartbeat = AsyncMock()
+    session = _heartbeat_session(finalizer, heartbeat)
+    session.bind(events())
+    await anext(session)
+    await asyncio.sleep(0.05)
+    assert heartbeat.await_count >= 1
+    if disconnect:
+        await session.aclose()
+    else:
+        with contextlib.suppress(Exception):
+            _ = [chunk async for chunk in session]
+    ended = heartbeat.await_count
+    await asyncio.sleep(0.1)
+    return session.terminal_status, ended, heartbeat.await_count
+
+
+@pytest.mark.asyncio
+async def test_the_heartbeat_stops_on_every_terminal_state() -> None:
+    first = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+
+    async def completed():
+        yield first
+        yield b"data: [DONE]\n\n"
+
+    async def provider_error():
+        yield first
+        yield b'data: {"error":{"code":"PROVIDER_UNAVAILABLE"}}\n\n'
+
+    async def timeout():
+        yield first
+        raise TimeoutError
+
+    async def failed():
+        yield first
+        raise RuntimeError("provider transport failed")
+
+    async def held():
+        yield first
+        await asyncio.Event().wait()
+
+    outcomes = [
+        await _parked_then_ended(completed),
+        await _parked_then_ended(provider_error),
+        await _parked_then_ended(timeout),
+        await _parked_then_ended(failed),
+        await _parked_then_ended(held, disconnect=True),
+    ]
+
+    assert [status for status, _, _ in outcomes] == [
+        "completed",
+        "provider_error",
+        "timeout",
+        "provider_error",
+        "client_disconnected",
+    ]
+    assert [after - ended for _, ended, after in outcomes] == [0] * 5
 
 
 @pytest.mark.asyncio

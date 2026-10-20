@@ -36,6 +36,7 @@ from shim.gateway.streaming.finalization import StreamFinalization
 from shim.gateway.usage import UsageFailureReason, system_prompt_hash
 from shim.rules import match_records
 from shim_enterprise.billing.ledger import (
+    AccountingConflictError,
     DurableAccountingRepository,
     FailureReservationState,
     FinalizationCommand,
@@ -851,7 +852,16 @@ class DurableAccountingCoordinator:
             raise
         except Exception as exc:
             await session.rollback()
-            USAGE_SETTLEMENT_TOTAL.labels(status="failed").inc()
+            conflict = isinstance(exc, AccountingConflictError)
+            if conflict:
+                # Usually stale recovery already ended a request that was still live.
+                logger.error(
+                    "Settlement hit an accounting conflict request_id=%s",
+                    command.request_id,
+                )
+            USAGE_SETTLEMENT_TOTAL.labels(
+                status="conflict" if conflict else "failed"
+            ).inc()
             raise AccountingPersistenceError("accounting finalization failed") from exc
 
     async def signal_urgent_reconciliation(
