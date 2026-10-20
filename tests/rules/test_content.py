@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import random
+import sys
 from time import thread_time
 import timeit
+import unicodedata
 
 import pytest
 
@@ -463,6 +465,35 @@ def test_a_longer_word_is_not_the_term(term, text) -> None:
 @pytest.mark.parametrize("text", ["PRJ–1234", "PRJ−1234", "prj‐1234", "PRJ-١٢٣٤"])
 def test_a_template_hyphen_takes_any_dash(text) -> None:
     assert _found(_pattern(templates=["PRJ-####"]), text) == 1
+
+
+def test_every_unicode_dash_folds_to_a_hyphen() -> None:
+    dashes = {
+        chr(code)
+        for code in range(sys.maxunicode + 1)
+        if unicodedata.category(chr(code)) == "Pd"
+    }
+    assert set(content.DASHES) == dashes - {"-"} | {"−"}
+
+
+# Rules read the text with every dash as a hyphen; a dash written in a rule still
+# matches the text it was written for, and any other dash.
+@pytest.mark.parametrize(
+    ("rule", "text"),
+    [
+        (_pattern(regexes=[r"PRJ–\d{4}"]), "PRJ–1234"),
+        (_pattern(regexes=[r"PRJ–\d{4}"]), "PRJ⸺1234"),
+        (_pattern(regexes=[r"PRJ[–—]\d{4}"]), "PRJ—1234"),
+        (_pattern(regexes=[r"PRJ\–\d{4}"]), "PRJ–1234"),
+        (_pattern(regexes=[r"PRJ\\–\d{4}"]), "PRJ\\–1234"),
+        (_pattern(templates=["PRJ–####"]), "PRJ–1234"),
+        (_pattern(templates=["PRJ–####"]), "PRJ-1234"),
+        (_term("e⸺Devlet"), "e⸺Devlet"),
+        (_term("e-Devlet"), "e﹘Devlet"),
+    ],
+)
+def test_a_dash_written_in_a_rule_matches_every_dash(rule, text) -> None:
+    assert _found(rule, text) == 1
 
 
 def test_the_matcher_stays_fast_at_the_set_limits() -> None:

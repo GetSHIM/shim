@@ -18,14 +18,22 @@ from presidio_analyzer import RecognizerResult
 
 from shim.privacy.policies import EntityAction
 from shim.privacy.presidio_analyzer import PresidioAnalyzer, after_tax_word
-from shim.rules.content import ContentHit, ContentRules, first_fit, fold_digits
+from shim.rules.content import (
+    ContentHit,
+    ContentRules,
+    first_fit,
+    fold_dashes,
+    fold_digits,
+)
 from shim.rules.model import ACTION_RANK
 
 
-_INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
 # A right-to-left override shows the characters after it reversed, up to a pop or the
 # end of the line.
 _OVERRIDE, _POP, _LINE_ENDS = "\u202e", "\u202c", "\n\r\u2029"
+# The unassigned (Cn) Default_Ignorable_Code_Point ranges: renderers hide them like a
+# format character, so they are invisible too. The assigned ones are Cf or marks.
+_IGNORABLE_UNASSIGNED = re.compile("[\u2065\ufff0-\ufff8\U000e0000-\U000e0fff]")
 # Separators inside an identifier, dropped for detection: "1 0 0 0 0 0 0 0 1 4 6" and
 # "+ 9 0 5 3 2 ..." (a character per word), "TR3-300-061-005-..." (hyphenated digit
 # groups) and a line break after an email's @. A run is not glued to a letter or a
@@ -318,24 +326,30 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
         # a variation selector, a keycap, a joiner) would split an identifier: it is
         # dropped for detection and masked with the character it follows. A
         # lower-cased İ is i and a combining dot (JavaScript and Python lower()).
+        # Every format character (Cf: U+180E, tag characters) is invisible, and so is
+        # an unassigned default-ignorable one (U+2065).
+        category = unicodedata.category(character)
+        invisible = category == "Cf" or (
+            category == "Cn" and _IGNORABLE_UNASSIGNED.fullmatch(character) is not None
+        )
         if (
             visible_characters
             and (visible_characters[-1].isdigit() or visible_characters[-1].isascii())
-            and (
-                unicodedata.category(character)[0] == "M"
-                or _INVISIBLE.fullmatch(character)
-            )
+            and (category[0] == "M" or invisible)
         ):
             visible_spans[-1] = (visible_spans[-1][0], span[1])
             continue
-        if not _INVISIBLE.fullmatch(character):
+        if not invisible:
             visible_characters.append(character)
             visible_spans.append(span)
     show_line()
     normalized, normalized_spans = _normalize_with_spans(
         "".join(visible_characters), visible_spans
     )
-    return _join_split_identifiers(fold_digits(normalized), normalized_spans)
+    # After NFKD, so a compatibility form of a dash (U+FE58, U+207B) is one too.
+    return _join_split_identifiers(
+        fold_dashes(fold_digits(normalized)), normalized_spans
+    )
 
 
 def _source_span(spans: list[_SourceSpan], start: int, end: int) -> _SourceSpan:

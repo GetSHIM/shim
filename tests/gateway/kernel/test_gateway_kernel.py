@@ -567,6 +567,19 @@ _IDENTIFIER_ROUTES = {
             "PII_BLOCKED",
             "EMAIL_ADDRESS",
         ),
+        # Glued to a word by '_' or a letter, as a tool or file name carries it.
+        (
+            {"TR_NATIONAL_ID": "block"},
+            "lookup_10000000146",
+            "PII_BLOCKED",
+            "TR_NATIONAL_ID",
+        ),
+        (
+            {"CREDIT_CARD": "block"},
+            "card4111111111111111",
+            "PII_BLOCKED",
+            "CREDIT_CARD",
+        ),
     ],
 )
 async def test_a_blocked_type_in_a_protocol_identifier_uses_the_block_code(

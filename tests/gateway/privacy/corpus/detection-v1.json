@@ -1050,6 +1050,236 @@
       ]
     },
     {
+      "id": "tckn-glued-underscore",
+      "text": "id_12345678950",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "12345678950"
+        }
+      ]
+    },
+    {
+      "id": "tckn-glued-letters",
+      "text": "user12345678950",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "12345678950"
+        }
+      ]
+    },
+    {
+      "id": "tckn-in-file-name",
+      "text": "Ek: musteri_10000000146.pdf",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "10000000146"
+        }
+      ]
+    },
+    {
+      "id": "card-glued-underscore-dashed",
+      "text": "card_4111-1111-1111-1111",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111-1111-1111-1111"
+        }
+      ]
+    },
+    {
+      "id": "card-glued-letters",
+      "text": "CC4111111111111111 kayıtlı",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111111111111111"
+        }
+      ]
+    },
+    {
+      "id": "card-in-file-name",
+      "text": "exports/kart_4111111111111111.csv",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111111111111111"
+        }
+      ]
+    },
+    {
+      "id": "tckn-non-breaking-hyphen-groups",
+      "text": "TCKN 100‑000‑001‑46",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "100‑000‑001‑46"
+        }
+      ]
+    },
+    {
+      "id": "tckn-en-dash-groups",
+      "text": "TCKN 100–000–001–46",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "100–000–001–46"
+        }
+      ]
+    },
+    {
+      "id": "card-en-dash-groups",
+      "text": "kart 4111–1111–1111–1111",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111–1111–1111–1111"
+        }
+      ]
+    },
+    {
+      "id": "card-minus-sign-groups",
+      "text": "kart 4111−1111−1111−1111",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111−1111−1111−1111"
+        }
+      ]
+    },
+    {
+      "id": "card-small-em-dash-groups",
+      "text": "kart 4111﹘1111﹘1111﹘1111",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111﹘1111﹘1111﹘1111"
+        }
+      ]
+    },
+    {
+      "id": "card-presentation-em-dash-groups",
+      "text": "kart 4111︱1111︱1111︱1111",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111︱1111︱1111︱1111"
+        }
+      ]
+    },
+    {
+      "id": "tckn-presentation-en-dash-groups",
+      "text": "TCKN 100︲000︲001︲46",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "100︲000︲001︲46"
+        }
+      ]
+    },
+    {
+      "id": "card-two-em-dash-groups",
+      "text": "kart 4111⸺1111⸺1111⸺1111",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111⸺1111⸺1111⸺1111"
+        }
+      ]
+    },
+    {
+      "id": "tckn-wave-dash-groups",
+      "text": "TCKN 100〜000〜001〜46",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "100〜000〜001〜46"
+        }
+      ]
+    },
+    {
+      "id": "card-superscript-minus-groups",
+      "text": "kart 4111⁻1111⁻1111⁻1111",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111⁻1111⁻1111⁻1111"
+        }
+      ]
+    },
+    {
+      "id": "iban-en-dash-groups",
+      "text": "IBAN TR33–0006–1005–1978–6457–8413–26",
+      "expect": [
+        {
+          "entity": "IBAN_CODE",
+          "value": "TR33–0006–1005–1978–6457–8413–26"
+        }
+      ]
+    },
+    {
+      "id": "tckn-mongolian-vowel-separator",
+      "text": "TC 1000᠎0000146",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "1000᠎0000146"
+        }
+      ]
+    },
+    {
+      "id": "tckn-tag-characters",
+      "text": "TC 1000󠁁󠁂0000146",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "1000󠁁󠁂0000146"
+        }
+      ]
+    },
+    {
+      "id": "tckn-unassigned-ignorable",
+      "text": "TC 10000⁥000146",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "10000⁥000146"
+        }
+      ]
+    },
+    {
+      "id": "card-unassigned-ignorables",
+      "text": "card 4111￰1111󠂀1111󠇰1111",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111￰1111󠂀1111󠇰1111"
+        }
+      ]
+    },
+    {
+      "id": "not-tckn-glued-twenty-digit-order-id",
+      "text": "ref_48291044551234567890",
+      "expect": []
+    },
+    {
+      "id": "not-tckn-glued-failed-checksum",
+      "text": "id_12345678901",
+      "expect": []
+    },
+    {
+      "id": "not-card-glued-luhn-invalid",
+      "text": "card_4111111111111112",
+      "expect": []
+    },
+    {
+      "id": "not-card-en-dash-luhn-invalid",
+      "text": "kart 4111–1111–1111–1112",
+      "expect": []
+    },
+    {
       "id": "iban-lowercase",
       "text": "IBAN tr330006100519786457841326",
       "expect": [
