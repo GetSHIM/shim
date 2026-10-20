@@ -5,8 +5,9 @@ import json
 
 import pytest
 
-from shim.billing.pricing import UNSPECIFIED_PROVIDER_MODEL
+from shim.billing.pricing import UNSPECIFIED_PROVIDER_MODEL, compute_cost_usd
 from shim.gateway.streaming import StreamMeter
+from shim.gateway.pipeline import google_execution
 from shim.gateway.pipeline.analysis import AnalysisToolCall
 from shim.gateway.streaming.meter import (
     answer_characters,
@@ -28,6 +29,7 @@ def meter(
         provider=provider,
         requested_model=model,
         prompt_tokens_estimated=5,
+        completion_tokens_reserved=4096,
     )
 
 
@@ -65,6 +67,7 @@ def test_responses_without_a_requested_model_use_the_completed_response_model() 
         provider="openai",
         requested_model=UNSPECIFIED_PROVIDER_MODEL,
         prompt_tokens_estimated=20,
+        completion_tokens_reserved=4096,
     )
     stream_meter.observe_sse(
         b'event: response.completed\ndata: {"type":"response.completed","response":'
@@ -77,7 +80,7 @@ def test_responses_without_a_requested_model_use_the_completed_response_model() 
     assert snapshot.provider_model == "gpt-5.6-luna"
 
 
-def test_current_text_deltas_exclude_opaque_audio_from_estimates() -> None:
+def test_current_text_deltas_exclude_opaque_audio_from_answer_characters() -> None:
     stream_meter = meter()
     stream_meter.observe_sse(
         b'event: response.code_interpreter_call_code.delta\ndata: {"type":'
@@ -90,7 +93,8 @@ def test_current_text_deltas_exclude_opaque_audio_from_estimates() -> None:
 
     snapshot = stream_meter.snapshot()
 
-    assert snapshot.completion_tokens == 2
+    assert snapshot.answer_characters == len("12345678")
+    assert snapshot.completion_tokens == 4096
     assert snapshot.estimated is True
 
 
@@ -140,7 +144,8 @@ def test_anthropic_cache_usage_and_partial_output_are_not_undercounted() -> None
 
     snapshot = stream_meter.snapshot()
 
-    assert (snapshot.prompt_tokens, snapshot.completion_tokens) == (12, 2)
+    # Cut before message_delta: the output is the reservation, not the emitted text.
+    assert (snapshot.prompt_tokens, snapshot.completion_tokens) == (12, 4096)
     assert snapshot.estimated is True
 
 
@@ -159,6 +164,7 @@ def test_anthropic_beta_cache_details_and_compaction_are_not_double_counted() ->
         b'{"input_tokens":7,"cache_creation_input_tokens":2,'
         b'"cache_read_input_tokens":3,"output_tokens":4,"output_tokens_details":'
         b'{"reasoning_tokens":2}}}\n\n'
+        b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
     )
 
     snapshot = stream_meter.snapshot()
@@ -191,7 +197,7 @@ def test_a_cumulative_message_delta_keeps_the_one_hour_split_of_message_start() 
         + json.dumps({"type": "message_start", "message": {"usage": start}}).encode()
         + b"\n\nevent: message_delta\ndata: "
         + json.dumps({"type": "message_delta", "usage": delta}).encode()
-        + b"\n\n"
+        + b'\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n'
     )
 
     snapshot = stream_meter.snapshot()
@@ -227,6 +233,7 @@ def test_google_tool_and_thinking_usage_and_all_candidates_are_observed() -> Non
         provider="google",
         requested_model="gemini-3.5-flash",
         prompt_tokens_estimated=5,
+        completion_tokens_reserved=4096,
         expected_candidates=2,
     )
     stream_meter.observe_sse(
@@ -245,7 +252,7 @@ def test_google_tool_and_thinking_usage_and_all_candidates_are_observed() -> Non
     assert stream_meter.terminal_hint == "completed"
 
 
-def test_missing_usage_uses_emitted_character_estimate() -> None:
+def test_missing_usage_settles_completion_at_the_reserved_output() -> None:
     stream_meter = meter()
     stream_meter.observe_sse(
         b'data: {"choices":[{"delta":{"content":"123456789"}}]}\n\ndata: [DONE]\n\n'
@@ -254,8 +261,72 @@ def test_missing_usage_uses_emitted_character_estimate() -> None:
     snapshot = stream_meter.snapshot()
 
     assert snapshot.prompt_tokens == 5
-    assert snapshot.completion_tokens == 3
+    assert snapshot.completion_tokens == 4096
     assert snapshot.estimated is True
+    assert snapshot.settlement_cost_usd == compute_cost_usd(
+        "gpt-5.6-luna", 5, 4096, provider="openai"
+    )
+
+
+_GEMINI_RUNNING_COUNTS = (
+    b'data: {"candidates":[{"index":0,"content":{"parts":[{"text":"Hello"}]}}],'
+    b'"usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":1,'
+    b'"thoughtsTokenCount":900,"totalTokenCount":951}}\n\n'
+)
+_ANTHROPIC_RUNNING_COUNTS = (
+    b'event: message_start\ndata: {"type":"message_start","message":{"usage":'
+    b'{"input_tokens":50,"output_tokens":1}}}\n\n'
+    b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":'
+    b'"end_turn"},"usage":{"output_tokens":901}}\n\n'
+)
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "running", "error", "hint"),
+    [
+        (
+            "google",
+            "gemini-3.5-flash",
+            _GEMINI_RUNNING_COUNTS,
+            google_execution._stream_error(
+                google_execution._public_error(TimeoutError())
+            ),
+            "timeout",
+        ),
+        (
+            "google",
+            "gemini-3.5-flash",
+            _GEMINI_RUNNING_COUNTS,
+            google_execution._stream_error(
+                google_execution._error(502, "PROVIDER_UNAVAILABLE", False)
+            ),
+            "provider_error",
+        ),
+        (
+            "anthropic",
+            "claude-haiku-4-5",
+            _ANTHROPIC_RUNNING_COUNTS,
+            b'event: error\ndata: {"type":"error","error":'
+            b'{"type":"overloaded_error","message":"safe"}}\n\n',
+            "provider_error",
+        ),
+    ],
+    ids=["gemini-timeout", "gemini-unavailable", "anthropic-error"],
+)
+def test_a_stream_that_fails_after_running_counts_settles_at_the_reserved_output(
+    provider, model, running, error, hint
+) -> None:
+    stream_meter = meter(provider, model)
+    stream_meter.observe_sse(running + error)
+
+    snapshot = stream_meter.snapshot()
+
+    assert stream_meter.terminal_hint == hint
+    assert (snapshot.prompt_tokens, snapshot.completion_tokens) == (50, 4096)
+    assert snapshot.estimated is True
+    assert snapshot.settlement_cost_usd == compute_cost_usd(
+        model, 50, 4096, provider=provider
+    )
 
 
 def test_first_terminal_event_is_sticky() -> None:
@@ -462,8 +533,9 @@ def test_reasoning_alone_is_an_empty_answer_over_json_and_sse(
         stream_meter.observe_sse(f"data: {json.dumps(event)}\n\n".encode())
     refusal, tool_call = answer_markers(payload)
 
-    assert stream_meter.emitted_output_characters == len("Let me think.")
-    assert stream_meter.snapshot().completion_outcome == "empty"
+    snapshot = stream_meter.snapshot()
+    assert (snapshot.reasoning_seen, snapshot.answer_characters) == (True, 0)
+    assert snapshot.completion_outcome == "empty"
     assert (
         completion_outcome(
             native_finish_reasons(payload, provider=provider),
@@ -579,6 +651,7 @@ def test_ttft_ignores_heartbeats_metadata_empty_deltas_and_usage() -> None:
         provider="openai",
         requested_model="gpt-5.6-luna",
         prompt_tokens_estimated=5,
+        completion_tokens_reserved=4096,
         started_at_monotonic=now,
         monotonic_clock=lambda: now,
     )
@@ -642,19 +715,20 @@ def test_ttft_ignores_heartbeats_metadata_empty_deltas_and_usage() -> None:
         ),
     ],
 )
-def test_initial_and_media_content_sets_ttft_without_changing_token_estimates(
+def test_initial_and_media_content_sets_ttft_without_counting_answer_characters(
     provider, payload
 ) -> None:
     stream_meter = StreamMeter(
         provider=provider,
         requested_model="gpt-5.6-luna",
         prompt_tokens_estimated=5,
+        completion_tokens_reserved=4096,
         started_at_monotonic=10.0,
         monotonic_clock=lambda: 10.25,
     )
     stream_meter.observe_sse(f"data: {json.dumps(payload)}\n\n".encode())
     assert stream_meter.snapshot().ttft_ms == 250.0
-    assert stream_meter.snapshot().completion_tokens == 0
+    assert stream_meter.snapshot().answer_characters == 0
 
 
 def _sse(*events: dict) -> bytes:
@@ -1165,6 +1239,7 @@ def _kept(provider: str, *events: dict) -> StreamMeter:
         provider=provider,
         requested_model="gpt-5.6-luna",
         prompt_tokens_estimated=5,
+        completion_tokens_reserved=4096,
         keep_answer=True,
     )
     stream_meter.observe_sse(_sse(*events))
@@ -1467,6 +1542,7 @@ def test_the_scan_keeps_every_emitted_fragment_and_tracks_no_tool_calls() -> Non
         provider="openai",
         requested_model="gpt-5.6-luna",
         prompt_tokens_estimated=5,
+        completion_tokens_reserved=4096,
         keep_scan_text=True,
     )
     stream_meter.observe_sse(_sse(*_PARITY[0][2]))
@@ -1558,6 +1634,7 @@ def test_kept_text_is_bounded_with_one_character_more_for_the_scan() -> None:
         provider="openai",
         requested_model="gpt-5.6-luna",
         prompt_tokens_estimated=5,
+        completion_tokens_reserved=4096,
         keep_scan_text=True,
         keep_answer=True,
     )
@@ -1607,6 +1684,7 @@ def test_cleared_tokens_are_read_from_message_delta_only_with_the_flag(
         provider="anthropic",
         requested_model="claude-haiku-4-5",
         prompt_tokens_estimated=5,
+        completion_tokens_reserved=4096,
         clear_thinking=flag,
     )
     edits = {

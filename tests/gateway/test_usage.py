@@ -778,6 +778,7 @@ async def test_reported_cache_tokens_settle_at_cache_prices(monkeypatch, stream)
             provider="anthropic",
             requested_model="claude-haiku-4-5",
             prompt_tokens_estimated=1,
+            completion_tokens_reserved=4096,
         )
         meter.observe_sse(
             b'event: message_start\ndata: {"type":"message_start","message":{"usage":'
@@ -786,6 +787,7 @@ async def test_reported_cache_tokens_settle_at_cache_prices(monkeypatch, stream)
         )
         meter.observe_sse(
             b'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":20}}\n\n'
+            b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
         )
         snapshot = meter.snapshot()
     else:
@@ -2084,3 +2086,98 @@ def test_an_embeddings_request_has_no_system_prompt_hash(protocol) -> None:
     prepared.payload = {"model": "text-embedding-3-small", "input": "hello"}
 
     assert system_prompt_hash(prepared, b"k" * 32) is None
+
+
+_CUT_STREAMS = {
+    # What the client read before it hung up, then the rest of the stream it never read.
+    "chat": (
+        "openai",
+        "gpt-5.6-luna",
+        b'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}\n\n',
+        b'data: {"choices":[{"index":0,"finish_reason":"stop"}],'
+        b'"usage":{"prompt_tokens":50,"completion_tokens":90020}}\n\ndata: [DONE]\n\n',
+    ),
+    "responses": (
+        "openai",
+        "gpt-5.6-luna",
+        b'event: response.created\ndata: {"type":"response.created","response":'
+        b'{"status":"in_progress","usage":null}}\n\n'
+        b'event: response.output_text.delta\ndata: {"type":'
+        b'"response.output_text.delta","delta":"Hello"}\n\n',
+        b'event: response.completed\ndata: {"type":"response.completed","response":'
+        b'{"usage":{"input_tokens":50,"output_tokens":90020}}}\n\n',
+    ),
+    "messages": (
+        "anthropic",
+        "claude-haiku-4-5",
+        b'event: message_start\ndata: {"type":"message_start","message":{"usage":'
+        b'{"input_tokens":50,"output_tokens":1}}}\n\n'
+        b'event: content_block_delta\ndata: {"type":"content_block_delta","delta":'
+        b'{"type":"text_delta","text":"Hello"}}\n\n',
+        b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":'
+        b'"end_turn"},"usage":{"output_tokens":60020}}\n\n'
+        b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ),
+    # Gemini repeats running counts on every chunk; only the finished stream's are final.
+    "generate_content": (
+        "google",
+        "gemini-3.5-flash",
+        b'data: {"candidates":[{"index":0,"content":{"parts":[{"text":"Hello"}]}}],'
+        b'"usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":1,'
+        b'"thoughtsTokenCount":900,"totalTokenCount":951}}\n\n',
+        b'data: {"candidates":[{"index":0,"finishReason":"STOP"}],"usageMetadata":'
+        b'{"promptTokenCount":50,"candidatesTokenCount":20,"thoughtsTokenCount":90000,'
+        b'"totalTokenCount":90070}}\n\n',
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", list(_CUT_STREAMS))
+async def test_a_stream_cut_before_its_final_usage_settles_at_the_reserved_output(
+    protocol,
+) -> None:
+    from shim.billing.pricing import compute_cost_usd
+    from shim.gateway.pipeline.postprocess import ResponsePostprocessor
+    from shim.gateway.pipeline.provider_execution import ProviderStream
+
+    provider, model, read, unread = _CUT_STREAMS[protocol]
+    prepared = _prepared(model=model)
+    prepared.provider = provider
+    prepared.protocol = protocol
+    prepared.stream = True
+    prepared.admission.maximum_output_tokens = 4096
+    prepared.concurrency_lease = None
+    recorder = SimpleNamespace(
+        finalize=AsyncMock(),
+        mark_stream_started=AsyncMock(),
+        heartbeat_stream=AsyncMock(),
+    )
+    processor = ResponsePostprocessor(
+        recorder, heartbeat_interval_seconds=30, output_hash_salt=None
+    )
+
+    async def events():
+        yield read
+        yield unread
+
+    session = processor.create_stream_session(prepared)
+    await processor.finalize(
+        prepared, ProviderStream(events(), None, AsyncMock()), stream_session=session
+    )
+    assert await anext(session) == read
+    await session.aclose()
+
+    terminal = recorder.finalize.await_args.args[1]
+    # Chat and Responses report no prompt count before the end, so the admission estimate stands.
+    prompt = 11 if provider == "openai" else 50
+    assert session.terminal_status == terminal.terminal_status == "client_disconnected"
+    assert (terminal.usage.prompt_tokens, terminal.usage.completion_tokens) == (
+        prompt,
+        4096,
+    )
+    assert terminal.usage.estimated is True
+    assert terminal.usage.cache_split is None
+    assert terminal.usage.settlement_cost_usd == compute_cost_usd(
+        model, prompt, 4096, provider=provider
+    )

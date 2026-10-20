@@ -72,6 +72,7 @@ from shim_enterprise.billing.ledger import (
     DurableAccountingRepository,
     FailureReservationState,
     FinalizationCommand,
+    QuotaLimitExceeded,
     QuotaPolicySnapshot,
     QuotaReservationCommand,
     SpendReservationCommand,
@@ -942,6 +943,12 @@ async def test_disconnected_stream_settles_reserved_usage() -> None:
     terminal = usage.finalize.await_args.args[1]
     assert usage.finalize.await_args.args[0] is prepared
     assert terminal.terminal_status == "client_disconnected"
+    # The admission estimate and the reserved maximum output, as a JSON answer without usage.
+    assert (terminal.usage.prompt_tokens, terminal.usage.completion_tokens) == (20, 30)
+    assert terminal.usage.estimated is True
+    assert terminal.usage.settlement_cost_usd == compute_cost_usd(
+        "gpt-5.6-luna", 20, 30, "openai"
+    )
     assert terminal.usage.provider_finish_reasons is None
     assert terminal.usage.ttft_ms is None
     assert terminal.usage.provider_latency_ms is None
@@ -2859,6 +2866,265 @@ async def test_parallel_admit_and_settle_cycles_for_one_tenant_do_not_deadlock(
                 )
             ).all()
         assert statuses == ["completed"] * 20
+    finally:
+        await _drop_tenant(factory, organization_id)
+
+
+def _admitted(organization_id: UUID, api_key_id: UUID) -> SimpleNamespace:
+    prepared = _prepared()
+    prepared.tenant_id, prepared.api_key_id = organization_id, api_key_id
+    prepared.source_endpoint = "chat.completions"
+    prepared.policy = SimpleNamespace(team=None)
+    prepared.context.started_at = datetime.now(timezone.utc)
+    prepared.admission.cost_center = "untagged"
+    prepared.admission.tags = ()
+    prepared.admission.repeat_chain_length = None
+    return prepared
+
+
+@pytest.mark.asyncio
+async def test_streams_cut_after_the_first_token_settle_at_the_reservation_and_fill_the_cap(
+    async_engine,
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    coordinator = DurableAccountingCoordinator()
+    usage = DurableUsageLifecycle(coordinator, factory)
+    reservation = compute_cost_usd("gpt-5.6-luna", 20, 100_000, "openai")
+    async with factory.begin() as setup:
+        organization_id, _, api_key_id = await _create_tenant(setup, "cutstream")
+        await _cap_organization(setup, organization_id)
+        setup.add(
+            ProviderSecret(
+                organization_id=organization_id,
+                provider="openai",
+                secret_ref="reference-cutstream",
+                secret_backend="fernet",
+                secret_version="v2",
+                masked_key="masked",
+                # Room for two reserved maximums, not three.
+                monthly_limit_usd=reservation * 5 / 2,
+            )
+        )
+
+    def request() -> SimpleNamespace:
+        prepared = _admitted(organization_id, api_key_id)
+        prepared.stream = True
+        prepared.admission.maximum_output_tokens = 100_000
+        return prepared
+
+    async def admit(prepared) -> None:
+        async with factory() as session:
+            await coordinator.reserve_quota(prepared, prepared.admission, session)
+        async with factory() as session:
+            await coordinator.reserve_spend(prepared, False, session)
+
+    async def events():
+        yield b'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}\n\n'
+        # The provider's bill, which the client hangs up before.
+        yield (
+            b'data: {"choices":[{"index":0,"finish_reason":"stop"}],"usage":'
+            b'{"prompt_tokens":50,"completion_tokens":90020}}\n\ndata: [DONE]\n\n'
+        )
+
+    try:
+        cut = [request(), request()]
+        for prepared in cut:
+            await admit(prepared)
+            await usage.mark_provider_started(prepared)
+            stream = _postprocessor(usage).create_stream_session(prepared)
+            stream.bind(events())
+            await anext(stream)
+            await stream.aclose()
+            assert stream.terminal_status == "client_disconnected"
+
+        refused = request()
+        with pytest.raises(SpendLimitExceeded):
+            await admit(refused)
+
+        async with factory() as verification:
+            period = await verification.scalar(
+                select(SpendPeriodUsage).where(
+                    SpendPeriodUsage.organization_id == organization_id
+                )
+            )
+            settlements = (
+                await verification.execute(
+                    select(UsageLedger.cost_usd, UsageLedger.estimated).where(
+                        UsageLedger.organization_id == organization_id,
+                        UsageLedger.event_type == "spend_settlement",
+                    )
+                )
+            ).all()
+        assert period is not None
+        assert (period.reserved_usd, period.settled_usd) == (0, 2 * reservation)
+        assert sorted(settlements) == [(reservation, True)] * 2
+    finally:
+        await _drop_tenant(factory, organization_id)
+
+
+def _quota_command(
+    organization_id: UUID,
+    api_key_id: UUID,
+    tokens: int,
+    policy: QuotaPolicySnapshot,
+) -> QuotaReservationCommand:
+    started_at = datetime.now(timezone.utc)
+    return QuotaReservationCommand(
+        tenant_id=organization_id,
+        api_key_id=api_key_id,
+        request_id=f"req_{uuid4().hex}",
+        requested_model="gpt-5.6-luna",
+        source_endpoint="chat.completions",
+        started_at=started_at,
+        reconciliation_due_at=started_at + timedelta(minutes=2),
+        estimated_input_tokens=1,
+        maximum_output_tokens=tokens - 1,
+        policy=policy,
+    )
+
+
+async def _settle_exactly(
+    factory, command: QuotaReservationCommand, cost_usd: Decimal | None
+) -> None:
+    """Settle a reservation at what it reserved, so settled counters equal reserved ones."""
+
+    async with factory() as session:
+        await DurableAccountingRepository().finalize(
+            session,
+            FinalizationCommand(
+                tenant_id=command.tenant_id,
+                request_id=command.request_id,
+                quota_action=TerminalAction.SETTLE,
+                spend_action=TerminalAction.NONE
+                if cost_usd is None
+                else TerminalAction.SETTLE,
+                prompt_tokens=command.estimated_input_tokens,
+                completion_tokens=command.maximum_output_tokens,
+                actual_cost_usd=cost_usd or Decimal("0"),
+                provider_model="gpt-5.6-luna",
+                lifecycle_status="completed",
+            ),
+        )
+        await session.commit()
+
+
+async def _reserve(factory, reserve, refusal: type[Exception] | None) -> None:
+    async with factory() as session:
+        if refusal is None:
+            await reserve(session)
+            await session.commit()
+            return
+        with pytest.raises(refusal):
+            await reserve(session)
+        await session.rollback()
+
+
+_UNCAPPED = QuotaPolicySnapshot("cap-test-quota", None, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["in_flight", "settled"])
+async def test_the_provider_spend_cap_counts_in_flight_settled_and_own_spend(
+    async_engine, first
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    repository = DurableAccountingRepository()
+    async with factory.begin() as setup:
+        organization_id, _, api_key_id = await _create_tenant(setup, f"spend{first[0]}")
+    spend = SpendPolicySnapshot(version="cap-test", monthly_limit_usd=Decimal("10"))
+
+    def reserve(command: QuotaReservationCommand, cost_usd: str):
+        async def run(session: AsyncSession) -> None:
+            await repository.reserve_quota(session, command)
+            await repository.reserve_provider_spend(
+                session,
+                SpendReservationCommand(
+                    tenant_id=organization_id,
+                    api_key_id=api_key_id,
+                    request_id=command.request_id,
+                    requested_model="gpt-5.6-luna",
+                    provider="openai",
+                    provider_model="gpt-5.6-luna",
+                    estimated_cost_usd=Decimal(cost_usd),
+                    pricing_metadata={"catalog_version": "cap-test"},
+                    cache_status="miss",
+                    audit_policy_mode="off",
+                    policy=spend,
+                ),
+            )
+
+        return run
+
+    try:
+        earlier = _quota_command(organization_id, api_key_id, 10, _UNCAPPED)
+        await _reserve(factory, reserve(earlier, "6"), None)
+        if first == "settled":
+            await _settle_exactly(factory, earlier, Decimal("6"))
+        # $6 more crosses $10; $4 more reaches it exactly.
+        crossing = _quota_command(organization_id, api_key_id, 10, _UNCAPPED)
+        await _reserve(factory, reserve(crossing, "6"), SpendLimitExceeded)
+        reaching = _quota_command(organization_id, api_key_id, 10, _UNCAPPED)
+        await _reserve(factory, reserve(reaching, "4"), None)
+        await _reserve(
+            factory,
+            reserve(_quota_command(organization_id, api_key_id, 10, _UNCAPPED), "0.01"),
+            SpendLimitExceeded,
+        )
+    finally:
+        await _drop_tenant(factory, organization_id)
+
+
+# Each step: tokens asked for, and whether the cap refuses them.
+_QUOTA_STEPS = {
+    "tokens": (
+        QuotaPolicySnapshot("cap-test-quota", None, None, 100),
+        ((41, True), (40, False), (1, True)),
+    ),
+    "requests": (
+        QuotaPolicySnapshot("cap-test-quota", None, 1, None),
+        ((10, True),),
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["in_flight", "settled"])
+@pytest.mark.parametrize("scope", ["api_key", "organization"])
+@pytest.mark.parametrize("limit", list(_QUOTA_STEPS))
+async def test_the_monthly_quota_counts_in_flight_settled_and_own_usage(
+    async_engine, first, scope, limit
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    repository = DurableAccountingRepository()
+    async with factory.begin() as setup:
+        organization_id, _, api_key_id = await _create_tenant(
+            setup, f"quota{limit[0]}{scope[0]}{first[0]}"
+        )
+    capped, steps = _QUOTA_STEPS[limit]
+    # The organization's first row starts from its keys' rows, then counts on its own.
+    policy = (
+        capped if scope == "api_key" else replace(_UNCAPPED, organization_policy=capped)
+    )
+
+    def reserve(tokens: int, quota: QuotaPolicySnapshot):
+        command = _quota_command(organization_id, api_key_id, tokens, quota)
+
+        async def run(session: AsyncSession) -> None:
+            await repository.reserve_quota(session, command)
+
+        return command, run
+
+    try:
+        earlier, run = reserve(60, _UNCAPPED if scope == "organization" else policy)
+        await _reserve(factory, run, None)
+        if first == "settled":
+            await _settle_exactly(factory, earlier, None)
+        for tokens, refused in steps:
+            await _reserve(
+                factory,
+                reserve(tokens, policy)[1],
+                QuotaLimitExceeded if refused else None,
+            )
     finally:
         await _drop_tenant(factory, organization_id)
 

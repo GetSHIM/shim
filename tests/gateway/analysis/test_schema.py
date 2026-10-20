@@ -423,6 +423,7 @@ def test_tool_arguments_split_over_many_stream_fragments() -> None:
         provider="openai",
         requested_model="gpt-5-nano",
         prompt_tokens_estimated=5,
+        completion_tokens_reserved=4096,
         keep_answer=True,
     )
     pieces = [WRONG[index : index + 3] for index in range(0, len(WRONG), 3)]

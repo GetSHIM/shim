@@ -564,6 +564,7 @@ class ResponsePostprocessor:
             unpriced=prepared.unpriced,
             price=prepared.deployment_price,
             prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
+            completion_tokens_reserved=prepared.admission.maximum_output_tokens,
             expected_candidates=candidate_count(prepared),
             output_hash_salt=self.output_hash_salt,
             clear_thinking=_clears_thinking(prepared),

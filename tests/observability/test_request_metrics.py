@@ -141,7 +141,7 @@ def _stream_prepared() -> SimpleNamespace:
         request_id="req_metrics",
         warnings=[],
         timing=InferenceTiming(),
-        admission=SimpleNamespace(estimated_input_tokens=5),
+        admission=SimpleNamespace(estimated_input_tokens=5, maximum_output_tokens=16),
         task_caps=TaskCaps(),
         concurrency_lease=None,
         settings_applied=None,

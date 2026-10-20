@@ -194,6 +194,11 @@ Notes:
 - A budget alerts and never refuses a request. For a hard stop, use a stored
   provider credential's `monthly_limit_usd`, which refuses with
   `SPEND_LIMIT_EXCEEDED`, or team quotas.
+- A stream that ends before the provider's final usage (the client hung up, or the
+  stream broke, errored or timed out) settles at its reservation: the prompt (the
+  provider's count, or the estimate) plus the reserved maximum output, with
+  `estimated` true. The output side of an early hang-up therefore always counts
+  against `monthly_limit_usd` and the token quotas at its reserved size.
 - One evaluate call handles at most 100 budgets and 100 potential deliveries;
   beyond that it answers 422.
 
