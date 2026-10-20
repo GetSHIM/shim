@@ -199,6 +199,12 @@ Notes:
   provider's count, or the estimate) plus the reserved maximum output, with
   `estimated` true. The output side of an early hang-up therefore always counts
   against `monthly_limit_usd` and the token quotas at its reserved size.
+- A non-streaming call the provider was sent that ends without usage (a timeout, a
+  provider 5xx, a cancel, or an answer the gateway rejects afterwards) settles at its
+  reserved prompt, maximum output and cost, with `estimated` true, and ends `failed`
+  with `PROVIDER_USAGE_UNAVAILABLE`. Stale-reservation recovery settles a started
+  call the same way. Only a call that never reached the provider stage, or one the
+  provider refused with a 4xx, is refunded.
 - One evaluate call handles at most 100 budgets and 100 potential deliveries;
   beyond that it answers 422.
 

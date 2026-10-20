@@ -3291,10 +3291,18 @@ async def _attempt_call(
 
 
 @pytest.mark.asyncio
-async def test_a_target_after_a_provider_error_is_a_second_attempt(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("status", "counted", "outcome"),
+    [(503, True, "request_aborted"), (429, False, "provider_rejected_without_usage")],
+)
+async def test_a_target_after_a_provider_error_is_a_second_attempt(
+    monkeypatch, status, counted, outcome
+) -> None:
     policy = _StubPolicy(after_error=[_target()])
 
-    response, calls, admitted, lines = await _attempt_call(monkeypatch, policy, [503])
+    response, calls, admitted, lines = await _attempt_call(
+        monkeypatch, policy, [status]
+    )
 
     assert response.status_code == 200 and len(calls) == 2
     assert response.json()["choices"][0]["message"]["content"] == "answer 2"
@@ -3305,15 +3313,16 @@ async def test_a_target_after_a_provider_error_is_a_second_attempt(monkeypatch) 
         str(first.request_id),
         2,
     )
-    # The failed first attempt gave its request unit back: the second one takes it.
-    assert second.attempt.counted is False
+    # A started first attempt without usage settles its request unit; one the
+    # provider refused gives it back, and the second attempt takes it.
+    assert second.attempt.counted is counted
     assert response.headers["x-shim-request-id"] == str(second.request_id)
     assert response.headers["x-shim-attempts"] == "2"
     failed, answered = policy.outcomes
-    assert failed.error.status_code == 503 and failed.provider_started
+    assert failed.error.status_code == status and failed.provider_started
     assert failed.prepared.request_id == first.request_id and failed.attempts == 1
     assert answered.error is None and answered.attempts == 2
-    assert [line["outcome"] for line in lines] == ["request_aborted", "completed"]
+    assert [line["outcome"] for line in lines] == [outcome, "completed"]
     assert [line["request_id"] for line in lines] == [
         str(first.request_id),
         str(second.request_id),

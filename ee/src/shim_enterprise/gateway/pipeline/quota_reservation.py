@@ -890,16 +890,21 @@ class DurableAccountingCoordinator:
         error_code: str,
         lifecycle_status: Literal["failed", "rejected"] = "failed",
         error_message: str = "Request ended before a provider value was delivered.",
+        reserved: FailureReservationState | None = None,
     ) -> FinalizationResult:
+        """End a request without provider usage: refunded, or settled at `reserved`."""
+        action = TerminalAction.REFUND if reserved is None else TerminalAction.SETTLE
         return await self.finalize(
             session,
             FinalizationCommand(
                 tenant_id=prepared.tenant_id,
                 request_id=prepared.request_id,
-                quota_action=TerminalAction.REFUND,
-                spend_action=(
-                    TerminalAction.REFUND if spend_reserved else TerminalAction.NONE
-                ),
+                quota_action=action,
+                spend_action=action if spend_reserved else TerminalAction.NONE,
+                prompt_tokens=0 if reserved is None else reserved.prompt_tokens,
+                completion_tokens=0 if reserved is None else reserved.completion_tokens,
+                actual_cost_usd=Decimal("0") if reserved is None else reserved.cost_usd,
+                estimated=reserved is not None,
                 lifecycle_status=lifecycle_status,
                 shim_latency_ms=prepared.timing.shim_latency_ms,
                 terminal_error_code=error_code,
@@ -1186,6 +1191,7 @@ class DurableUsageLifecycle:
     ) -> None:
         try:
             async with self.session_factory() as session:
+                reserved = None
                 if reason == "admission_aborted":
                     spend_reserved = False
                     error_code = "ADMISSION_ABORTED"
@@ -1204,6 +1210,9 @@ class DurableUsageLifecycle:
                             "The provider rejected the request without usage."
                         )
                     elif state.provider_started:
+                        # The provider may bill the call in full: it settles at the
+                        # reserved maximum, as a JSON answer without usage does.
+                        reserved = state
                         error_code = "PROVIDER_USAGE_UNAVAILABLE"
                         error_message = (
                             "Provider execution began but usage could not be verified."
@@ -1228,6 +1237,7 @@ class DurableUsageLifecycle:
                     error_code=denied.reason_code if denied is not None else error_code,
                     error_message=error_message,
                     lifecycle_status="rejected" if denied is not None else "failed",
+                    reserved=reserved,
                 )
         except AuditIntentPersistenceError:
             if prepared.context.audit_policy.mode == "strict":

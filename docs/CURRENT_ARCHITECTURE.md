@@ -79,21 +79,22 @@ bands (same row and request id, recorded as `route_decision`), and, after a
 Each extra attempt is its own request: a new request id and start, the same privacy
 outcome and admission, the bands run again for its target from the masked payload
 before the bands, a usage reservation (rate limits and the repeat detector never see
-it) that takes the client request's one request unit only when no earlier attempt was
-answered (`AttemptInfo.counted`), its own spend reservation and settlement, and the
-`attempt_group_id`, `attempt_number`, `attempt_reason` and `attempt_rule_id` of its
-row. Core guards skip a target with a `gateway.attempt` verdict: at most
-`MAX_ATTEMPTS` (3), never from an internal deployment to another kind when the
-request carried personal data or a privacy rule match (term, pattern, record set,
-destination), never to a target for which an enforced mask, block or approval rule
-of a privacy kind is in scope that was not in scope for the target privacy ran for
-(`ATTEMPT_DESTINATION_CHANGED`: privacy ran once, for the first target), never off
-the deployment a Responses continuation is pinned to, never without a stored
-credential after a BYOK key was consumed. An extra attempt starts without the pin
-matches and answer warnings of the one before it, since its bands and answer run
-again; a cancelled start gives back its row and its lease. A stream is never offered once it has started. The client sees the serving
-attempt's `X-Shim-Request-Id` and, when more than one ran, `X-Shim-Attempts`; an
-answered attempt a later one supersedes is settled and never returned.
+it) that takes the client request's one request unit only when no earlier attempt
+settled, with an answer or as a started call without usage (`AttemptInfo.counted`),
+its own spend reservation and settlement, and the `attempt_group_id`,
+`attempt_number`, `attempt_reason` and `attempt_rule_id` of its row. Core guards skip
+a target with a `gateway.attempt` verdict: at most `MAX_ATTEMPTS` (3), never from an
+internal deployment to another kind when the request carried personal data or a
+privacy rule match (term, pattern, record set, destination), never to a target for
+which an enforced mask, block or approval rule of a privacy kind is in scope that was
+not in scope for the target privacy ran for (`ATTEMPT_DESTINATION_CHANGED`: privacy
+ran once, for the first target), never off the deployment a Responses continuation is
+pinned to, never without a stored credential after a BYOK key was consumed. An extra
+attempt starts without the pin matches and answer warnings of the one before it, since
+its bands and answer run again; a cancelled start gives back its row and its lease. A
+stream is never offered once it has started. The client sees the serving attempt's
+`X-Shim-Request-Id` and, when more than one ran, `X-Shim-Attempts`; an answered
+attempt a later one supersedes is settled and never returned.
 
 The kernel also takes an optional `ShadowSender` (`src/shim/gateway/kernel/shadow.py`;
 none in community, none in enterprise until a tenant feature supplies one). Right

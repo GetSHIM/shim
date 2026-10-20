@@ -39,14 +39,36 @@ def _result(value: object) -> SimpleNamespace:
     return SimpleNamespace(scalar_one_or_none=lambda: value)
 
 
-def test_unverified_provider_usage_cannot_be_settled() -> None:
-    with pytest.raises(ValueError, match="unverified provider usage"):
-        FinalizationCommand(
-            tenant_id=uuid4(),
-            request_id="req_unverified",
-            quota_action=TerminalAction.SETTLE,
-            terminal_error_code="PROVIDER_USAGE_UNAVAILABLE",
-        )
+@pytest.mark.parametrize(
+    "error_code", ["PROVIDER_USAGE_UNAVAILABLE", "STALE_RESERVATION_RECOVERED"]
+)
+def test_unverified_provider_usage_settles_only_as_an_estimate(error_code) -> None:
+    for actions in (
+        {"quota_action": TerminalAction.SETTLE},
+        {"quota_action": TerminalAction.REFUND, "spend_action": TerminalAction.SETTLE},
+    ):
+        with pytest.raises(
+            ValueError, match="^unverified provider usage settles only as an estimate$"
+        ):
+            FinalizationCommand(
+                tenant_id=uuid4(),
+                request_id="req_unverified",
+                terminal_error_code=error_code,
+                **actions,
+            )
+
+    command = FinalizationCommand(
+        tenant_id=uuid4(),
+        request_id="req_unverified",
+        quota_action=TerminalAction.SETTLE,
+        spend_action=TerminalAction.SETTLE,
+        prompt_tokens=20,
+        completion_tokens=30,
+        actual_cost_usd=Decimal("0.01"),
+        estimated=True,
+        terminal_error_code=error_code,
+    )
+    assert command.estimated is True
 
 
 @pytest.mark.asyncio
@@ -173,7 +195,7 @@ async def test_monthly_counter_records_usage_after_a_zero_token_estimate() -> No
 
 
 @pytest.mark.asyncio
-async def test_stale_recovery_refunds_unverified_provider_usage(
+async def test_stale_recovery_settles_a_started_call_at_its_reservation(
     monkeypatch,
 ) -> None:
     now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
@@ -203,7 +225,7 @@ async def test_stale_recovery_refunds_unverified_provider_usage(
         SimpleNamespace(prompt_tokens=11, completion_tokens=17),
         SimpleNamespace(prompt_tokens=23, completion_tokens=29),
     )
-    spend_reservation = SimpleNamespace()
+    spend_reservation = SimpleNamespace(cost_usd=Decimal("0.031"))
     finalization_results = (
         SimpleNamespace(replayed=False),
         SimpleNamespace(replayed=True),
@@ -232,12 +254,15 @@ async def test_stale_recovery_refunds_unverified_provider_usage(
         quota_reservations[0],
         spend_reservation,
     )
-    assert started_command.quota_action.value == "refund"
-    assert started_command.spend_action.value == "refund"
-    assert (started_command.prompt_tokens, started_command.completion_tokens) == (0, 0)
-    assert started_command.actual_cost_usd == Decimal("0")
+    assert started_command.quota_action is TerminalAction.SETTLE
+    assert started_command.spend_action is TerminalAction.SETTLE
+    assert (started_command.prompt_tokens, started_command.completion_tokens) == (
+        11,
+        17,
+    )
+    assert started_command.actual_cost_usd == Decimal("0.031")
     assert started_command.pricing_metadata is None
-    assert started_command.estimated is False
+    assert started_command.estimated is True
     assert started_command.lifecycle_status == "failed"
     assert started_command.terminal_error_code == "STALE_RESERVATION_RECOVERED"
     assert started_command.reconciliation_urgent is True

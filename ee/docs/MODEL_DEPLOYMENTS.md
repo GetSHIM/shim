@@ -228,11 +228,13 @@ Before the call, an enforced rule takes the request to the first `to` the key ma
 and that can serve (enabled, not unhealthy, approved origin, never Bedrock): one
 provider call, one row, `X-Shim-Request-Id` its id, and `route_decision` with
 `reason: "fallback"`. After a failed call, the next `to` not yet tried runs as its
-own attempt (`X-Shim-Attempts`, rows linked by `attempt_group_id`, the failed one
-refunded, one request unit); streams only before their first byte and never a
-Responses continuation. A request leaves an `internal` deployment for an `external`
-`to` only when nothing was detected in it and no privacy rule matched; otherwise that
-`to` is skipped with `ATTEMPT_WOULD_LEAVE_INTERNAL`.
+own attempt (`X-Shim-Attempts`, rows linked by `attempt_group_id`, one request
+unit). The failed one is refunded when the provider refused it, and settled at its
+reservation when the provider started it and gave no usage. Streams fall back only
+before their first byte and never as a Responses continuation. A request leaves an
+`internal` deployment for an `external` `to` only when nothing was detected in it
+and no privacy rule matched; otherwise that `to` is skipped with
+`ATTEMPT_WOULD_LEAVE_INTERNAL`.
 
 When no `to` is usable, an unhealthy alias still answers 503 `DEPLOYMENT_UNHEALTHY`
 with the same body and headers, but after admission: the request used its share of

@@ -488,13 +488,17 @@ class GatewayKernel:
                         raise
                     # The next attempt's start settles this one, on every path.
                     settled = True
+                    failed = _failure_reason(error)
                     following = await self._start_attempt(
                         invocation,
                         prepared,
                         target,
                         attempts + 1,
-                        answered=False,
-                        failed=_failure_reason(error),
+                        # A started call without usage settles at its reservation,
+                        # its request unit included, as an answer does.
+                        answered=execution_stage.provider_started
+                        and failed == "request_aborted",
+                        failed=failed,
                     )
                     if following is None:
                         raise
