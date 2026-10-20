@@ -140,6 +140,14 @@ MIN_TEXT_CHARACTERS = 24
 def scan(text: str) -> tuple[str, ...]:
     if len(text) < MIN_TEXT_CHARACTERS:
         return ()
+    # Here, not at the top: the metrics import MARKERS without the detector stack.
+    from shim.privacy.pii_scrubber import JSON_ESCAPE, JSON_NESTING, json_character
+
+    # A json.dumps tool result, and JSON nested in it, read decoded as a model does.
+    for _ in range(JSON_NESTING):
+        text, decoded = JSON_ESCAPE.subn(json_character, text)
+        if not decoded:
+            break
     found = []
     if _INVISIBLE.search(text):
         found.append(HIDDEN_TEXT)

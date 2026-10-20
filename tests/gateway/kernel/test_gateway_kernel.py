@@ -1593,11 +1593,21 @@ async def test_an_enforced_term_is_masked_with_every_switch_off(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["chat", "count_tokens", "gemini"])
+# A tool result written by json.dumps (ensure_ascii=True) holds the term escaped.
+# Nested, as an HTTP body passed as a tool argument, each escape is written twice.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Atlas'ın raporu",
+        '{"r": "\\u0041tlas\'\\u0131n"}',
+        '{"body": "{\\"r\\": \\"\\\\u0041tlas\\"}"}',
+    ],
+)
 async def test_an_enforced_term_block_refuses_before_the_provider(
-    monkeypatch, route
+    monkeypatch, route, text
 ) -> None:
     response, calls, _ = await _call_with_rules(
-        monkeypatch, _term_rules("block"), route, text="Atlas'ın raporu"
+        monkeypatch, _term_rules("block"), route, text=text
     )
 
     assert (response.status_code, response.headers["x-shim-rule-id"]) == (

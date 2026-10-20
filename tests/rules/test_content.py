@@ -430,6 +430,10 @@ def test_first_fit_takes_spans_in_key_order_and_kept_ones_always() -> None:
         # Digits of any script are the number they are.
         ("PRJ-2024-001", "PRJ-٢٠٢٤-٠٠١"),
         ("PRJ-٢٠٢٤-٠٠١", "PRJ-२०२४-००१"),
+        # JSON string escapes, as json.dumps writes them by default.
+        ("Güneş Projesi", '{"proje": "G\\u00fcne\\u015f Projesi b\\u00fct\\u00e7esi"}'),
+        ("Atlas", '{\\"r\\": \\"\\u0041tlas\\"}'),
+        ("Güneş Projesi", '{"body": "{\\"p\\": \\"G\\\\u00fcne\\\\u015f Projesi\\"}"}'),
     ],
 )
 def test_a_term_is_found_in_every_form_it_is_written_in(term, text) -> None:

@@ -42,6 +42,16 @@ PLACEHOLDER = re.compile(
     r"<\s*([A-Z][A-Z0-9_]*_(?:[0-9a-f]{8}|[0-9a-f]{32}))(~[0-9A-Z]{4})?\s*>"
 )
 _PERCENT_BYTE = re.compile(r"%([0-9A-Fa-f]{2})")
+# A JSON string escape; a lone surrogate stays as written.
+JSON_ESCAPE = re.compile(
+    r"\\(?:u(?P<high>[Dd][89ABab][0-9A-Fa-f]{2})\\u(?P<low>[Dd][C-Fc-f][0-9A-Fa-f]{2})"
+    r"|u(?P<code>(?![Dd][89A-Fa-f])[0-9A-Fa-f]{4})|(?P<simple>[\"\\/bfnrt]))"
+)
+_JSON_SIMPLE = dict(zip('"\\/bfnrt', '"\\/\b\f\n\r\t'))
+# json.dumps applied this many times over is still read; each level doubles the
+# backslashes, so 2**8 of them before one escape.
+JSON_NESTING = 8
+_LINE = re.compile(r"[^\n\r\u2029]*[\n\r\u2029]?")
 _SourceSpan = tuple[int, int]
 MAX_ANALYZABLE_TEXT_LENGTH = 1_000_000
 # Between texts scanned in one pass: no detector matches it, its line breaks end every
@@ -108,6 +118,64 @@ def _decode_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
         else:
             assert not pending
     return "".join(output), spans
+
+
+def json_character(escape: re.Match[str]) -> str:
+    """The character a `JSON_ESCAPE` match stands for."""
+    if simple := escape["simple"]:
+        return _JSON_SIMPLE[simple]
+    if code := escape["code"]:
+        return chr(int(code, 16))
+    high, low = int(escape["high"], 16), int(escape["low"], 16)
+    return chr(0x10000 + (high - 0xD800) * 0x400 + low - 0xDC00)
+
+
+def _json_unescaped(
+    text: str, spans: list[_SourceSpan]
+) -> tuple[str, list[_SourceSpan]] | None:
+    # One level decoded, each character mapped to its whole escape; None if none.
+    output: list[str] = []
+    output_spans: list[_SourceSpan] = []
+    cursor = 0
+    for escape in JSON_ESCAPE.finditer(text):
+        output.append(text[cursor : escape.start()])
+        output_spans.extend(spans[cursor : escape.start()])
+        output.append(json_character(escape))
+        output_spans.append(_source_span(spans, *escape.span()))
+        cursor = escape.end()
+    if not cursor:
+        return None
+    output.append(text[cursor:])
+    output_spans.extend(spans[cursor:])
+    return "".join(output), output_spans
+
+
+def _add_json_unescaped(
+    text: str, spans: list[_SourceSpan]
+) -> tuple[str, list[_SourceSpan]]:
+    # A line with a JSON string escape is read as stored, then, after a separator,
+    # decoded until no escape is left: a model reads a json.dumps tool result, and
+    # JSON nested in it, decoded, and a Windows path as written.
+    output: list[str] = []
+    output_spans: list[_SourceSpan] = []
+    for line in _LINE.finditer(text):
+        start, end = line.span()
+        output.append(line[0])
+        output_spans.extend(spans[start:end])
+        decoded = _json_unescaped(line[0], spans[start:end])
+        if decoded is None:
+            continue
+        # ponytail: fixed depth; deeper nesting stays escaped in the decoded view.
+        for _ in range(1, JSON_NESTING):
+            deeper = _json_unescaped(*decoded)
+            if deeper is None:
+                break
+            decoded = deeper
+        output.append(_BATCH_SEPARATOR)
+        output_spans.extend([spans[end - 1]] * len(_BATCH_SEPARATOR))
+        output.append(decoded[0])
+        output_spans.extend(decoded[1])
+    return "".join(output), output_spans
 
 
 def _normalization_continues(previous: str, current: str) -> bool:
@@ -188,12 +256,15 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
     if not isinstance(text, str):
         raise TypeError("PII input must be text")
 
-    if text.isascii() and "%" not in text:
-        return _join_split_identifiers(
-            text, [(index, index + 1) for index in range(len(text))]
-        )
+    if "%" in text:
+        decoded, spans = _decode_with_spans(text)
+    else:
+        decoded, spans = text, [(index, index + 1) for index in range(len(text))]
+    if "\\" in decoded:
+        decoded, spans = _add_json_unescaped(decoded, spans)
+    if decoded.isascii():
+        return _join_split_identifiers(decoded, spans)
 
-    decoded, spans = _decode_with_spans(text)
     visible_characters: list[str] = []
     visible_spans: list[_SourceSpan] = []
     # The current line's start, its override segments, and the open one's start.

@@ -40,6 +40,8 @@ from shim.rules.content import ContentRules, content_rules
 
 
 DEFAULT_ACTIONS = effective_entity_actions()
+# Between a line as stored and the same line with its JSON escapes decoded.
+_SEPARATOR = pii_scrubber_module._BATCH_SEPARATOR
 
 
 @pytest.fixture
@@ -1437,6 +1439,19 @@ def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -
         ("0532 123 45 67 0533 765 43 21", "0532 123 45 67 0533 765 43 21"),
         ("Tutar 1 250 000 TL", "Tutar 1 250 000 TL"),
         ("café", "café"),
+        # A line with a JSON string escape, as stored and then decoded until no
+        # escape is left, at most _JSON_NESTING levels deep.
+        ("\\u015fifre", "\\u015fifre" + _SEPARATOR + "şifre"),
+        ('a\\nb\nc\\"', "a\\nb\n" + _SEPARATOR + "a\nb\n" + 'c\\"' + _SEPARATOR + 'c"'),
+        ("\\\\u0041 \\/", "\\\\u0041 \\/" + _SEPARATOR + "A /"),
+        ("\\" * 128 + "u0041", "\\" * 128 + "u0041" + _SEPARATOR + "A"),
+        ("\\" * 256 + "u0041", "\\" * 256 + "u0041" + _SEPARATOR + "\\u0041"),
+        (
+            "\\ud83d\\ude00 \\ud83d",
+            "\\ud83d\\ude00 \\ud83d" + _SEPARATOR + "😀 \\ud83d",
+        ),
+        ("%C5%9F\\u0131", "ş\\u0131" + _SEPARATOR + "şı"),
+        ("C:\\Users\\x \\u12", "C:\\Users\\x \\u12"),
     ],
 )
 def test_preprocessing_joins_split_identifiers_and_shows_overrides_reversed(
@@ -1460,6 +1475,10 @@ def test_preprocessing_joins_split_identifiers_and_shows_overrides_reversed(
         "\u202e1" * 50_000,
         "\u202e1\u202c" * 33_000,
         "a\u0301" * 50_000,
+        "\\u0041" * 16_000,
+        "\\" * 100_000,
+        "\\ud83d" * 16_000,
+        "\\n\n" * 33_000,
     ],
     ids=[
         "spaced-run",
@@ -1471,6 +1490,10 @@ def test_preprocessing_joins_split_identifiers_and_shows_overrides_reversed(
         "open-overrides",
         "closed-overrides",
         "marks-on-letters",
+        "json-escapes",
+        "backslashes",
+        "lone-surrogates",
+        "escaped-lines",
     ],
 )
 def test_preprocessing_100_kb_of_separators_overrides_and_marks_stays_linear(
@@ -1509,6 +1532,68 @@ def test_a_json_document_survives_scrubbing_with_only_the_phone_replaced(
     assert parsed["elapsed"] == 0.0376118499
     assert parsed["contact"].startswith("Tel: <PHONE_NUMBER_")
     assert json.loads(scrubber.deanonymize(scrubbed, mapping)) == json.loads(document)
+
+
+def _typed(scrubbed: str) -> str:
+    """The scrubbed text with each placeholder shown as its type."""
+    return pii_scrubber_module.PLACEHOLDER.sub(
+        lambda match: f"<{match[1].rpartition('_')[0]}>", scrubbed
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "typed"),
+    [
+        # json.dumps defaults (ensure_ascii=True) in a tool result.
+        (json.dumps({"ad_soyad": "Ayşe Yılmaz"}), '{"ad_soyad": "<PERSON_NAME_TR>"}'),
+        # An escape at each end of the value.
+        (json.dumps({"ad": "Şule Kılıç"}), '{"ad": "<PERSON_NAME_TR>"}'),
+        (
+            json.dumps({"not": "şifre: Gizli!2024x"}),
+            '{"not": "\\u015fifre: <SECRET>"}',
+        ),
+        (
+            json.dumps({"not": "😀 Ayşe Yılmaz"}),
+            '{"not": "\\ud83d\\ude00 <PERSON_NAME_TR>"}',
+        ),
+        ("mail jane.doe\\u0040example.com", "mail <EMAIL_ADDRESS>"),
+        # PHP json_encode writes / as \/.
+        (
+            '{"webhook":"https:\\/\\/hooks.slack.com\\/services\\/T0001\\/B0001\\/'
+            'XXXXXXXXXXXXXXXXXXXXXXXX"}',
+            '{"webhook":"<SECRET>"}',
+        ),
+        ('{"path":"\\/Users\\/jane\\/Documents\\/maas.pdf"}', '{"path":"<FILE_PATH>'),
+        # JSON inside a JSON string: an HTTP body passed as a tool argument.
+        (
+            json.dumps({"body": json.dumps({"user": "jane", "password": "hunter22"})}),
+            '{"body": "{\\"user\\": \\"jane\\", \\"password\\": \\"<SECRET>\\"}"}',
+        ),
+        # Nested JSON is decoded until no escape is left.
+        (
+            json.dumps(
+                {
+                    "body": json.dumps(
+                        {"ad_soyad": "Ayşe Yılmaz", "not": "şifre: Gizli!2024x"}
+                    )
+                }
+            ),
+            '{"body": "{\\"ad_soyad\\": \\"<PERSON_NAME_TR>\\", '
+            '\\"not\\": \\"\\\\u015fifre: <SECRET>\\"}"}',
+        ),
+        # Read as stored too: a Windows path is not a JSON string.
+        ("open C:\\temp\\new\\rapor.txt", "open <FILE_PATH>"),
+        (json.dumps({"path": "C:\\temp\\new\\rapor.txt"}), '{"path": "<FILE_PATH>'),
+    ],
+)
+def test_json_string_escapes_are_read_decoded_and_masked_whole(
+    scrubber: PIIScrubberService, text: str, typed: str
+) -> None:
+    scrubbed, mapping = scrubber.scrub(text, DEFAULT_ACTIONS)
+
+    # A placeholder covers whole escapes, so no half escape is left behind.
+    assert _typed(scrubbed) == typed
+    assert scrubber.deanonymize(scrubbed, mapping) == text
 
 
 def test_entity_actions_follow_the_switches_and_overrides_win() -> None:
@@ -1910,6 +1995,31 @@ def test_a_rule_match_on_preprocessed_text_maps_back_to_its_source_span(
     assert "tlas" not in scrubbed.replace(placeholder, "")
     assert scrubber.deanonymize(scrubbed, mapping) == text
     assert found.values == {"words": {value}}
+
+
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [
+        (
+            json.dumps({"proje": "Güneş Projesi bütçesi", "sorumlu": "Ayşe Yılmaz"}),
+            "G\\u00fcne\\u015f Projesi",
+        ),
+        # An HTTP body passed as a tool argument: JSON inside a JSON string.
+        (
+            json.dumps({"body": json.dumps({"proje": "Güneş Projesi bütçesi"})}),
+            "G\\\\u00fcne\\\\u015f Projesi",
+        ),
+    ],
+)
+def test_an_enforced_block_term_written_with_json_escapes_matches(
+    scrubber: PIIScrubberService, text: str, value: str
+) -> None:
+    blocks = _content(_term_rule("Güneş Projesi", rule_id="blocked", action="block"))
+
+    scrubber.scrub(text, _OFF, content=blocks)
+
+    # The matched value is the source text, escapes and all.
+    assert blocks.values == {"blocked": {value}}
 
 
 def _corpus_samples() -> list[tuple[str, str, str]]:

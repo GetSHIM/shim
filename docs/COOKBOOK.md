@@ -343,6 +343,13 @@ IBAN. A TCKN, card, IBAN or phone number with a space between every character
 more, and an email broken over a line after its `@` is read whole. Text after a
 right-to-left override (U+202E) is also read in the order it is shown, so a value
 stored reversed is found; the mask covers the separators and the reversed text.
+A line with JSON string escapes (`\u015f`, `\/`, `\"`, `\n`, surrogate pairs), as
+`json.dumps` and PHP `json_encode` write tool results by default, is read both as
+written and decoded until no escape is left (JSON nested in a JSON string
+up to eight levels deep), so `Ay\u015fe Y\u0131lmaz`, a nested
+`{\"password\": \"...\"}` and a rule term are found while a Windows path such as
+`C:\temp\new` still is; the mask covers whole escapes. Injection markers are read
+with the escapes decoded.
 A number after `fatura no`, `sipariş no`, `order no`, `invoice no` or `takip no`
 (and `numarası`, `numaranız`) is not taken for a phone; after `tel no`,
 `telefon no` or `cep no` it is. A date such as `05.03.2026` is not a phone.
