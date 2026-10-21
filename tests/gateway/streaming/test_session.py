@@ -18,6 +18,7 @@ def _session(finalizer: AsyncMock, *, provider: str = "openai") -> StreamSession
             provider=provider,
             requested_model="gpt-5.6-luna",
             prompt_tokens_estimated=1,
+            completion_tokens_reserved=4096,
         ),
         finalizer=finalizer,
         stream_start_recorder=AsyncMock(),
@@ -87,6 +88,7 @@ async def test_active_stream_refreshes_its_durable_deadline() -> None:
             provider="openai",
             requested_model="gpt-5.6-luna",
             prompt_tokens_estimated=1,
+            completion_tokens_reserved=4096,
         ),
         finalizer=finalizer,
         stream_start_recorder=AsyncMock(),
@@ -314,7 +316,10 @@ async def test_shutdown_drains_cancelled_response_finalizer():
     )
     session = StreamSession(
         meter=StreamMeter(
-            provider="openai", requested_model="gpt-5.6-luna", prompt_tokens_estimated=1
+            provider="openai",
+            requested_model="gpt-5.6-luna",
+            prompt_tokens_estimated=1,
+            completion_tokens_reserved=4096,
         ),
         finalizer=finalize,
         stream_start_recorder=AsyncMock(),
@@ -364,7 +369,10 @@ async def test_shim_latency_excludes_provider_and_client_waits(monkeypatch, disc
     finalizer = AsyncMock()
     session = StreamSession(
         meter=StreamMeter(
-            provider="openai", requested_model="gpt-5.6-luna", prompt_tokens_estimated=1
+            provider="openai",
+            requested_model="gpt-5.6-luna",
+            prompt_tokens_estimated=1,
+            completion_tokens_reserved=4096,
         ),
         finalizer=finalizer,
         stream_start_recorder=stream_started,

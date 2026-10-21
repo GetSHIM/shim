@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -69,11 +68,14 @@ class StreamUsageSnapshot:
 
 
 class StreamMeter:
-    """Capture provider usage and estimate output from emitted deltas.
+    """Capture provider usage from a native stream.
 
-    Provider-reported counts remain authoritative when present. If either side
-    is missing, settlement deterministically falls back to the request's prompt
-    estimate and approximately one token per four emitted output characters.
+    Provider-reported counts remain authoritative when present. A missing prompt
+    count settles at the request's prompt estimate. A completion count is final only
+    once the provider completed the stream; otherwise, as after a client disconnect,
+    a timeout or a provider error, the completion settles at the reserved maximum
+    output, as a JSON answer without usage does, since the provider may have billed
+    hidden reasoning or more output.
     """
 
     def __init__(
@@ -82,6 +84,7 @@ class StreamMeter:
         provider: str,
         requested_model: str,
         prompt_tokens_estimated: int,
+        completion_tokens_reserved: int,
         expected_candidates: int = 1,
         output_hash_salt: str | None = None,
         started_at_monotonic: float | None = None,
@@ -92,7 +95,7 @@ class StreamMeter:
         price: ModelPrice | None = None,
         clear_thinking: bool = False,
     ) -> None:
-        if prompt_tokens_estimated < 0:
+        if prompt_tokens_estimated < 0 or completion_tokens_reserved < 0:
             raise ValueError("stream token estimates must be nonnegative")
         if expected_candidates < 1:
             raise ValueError("expected stream candidates must be positive")
@@ -104,12 +107,12 @@ class StreamMeter:
         self.price = price
         self.requested_model = requested_model
         self.prompt_tokens_estimated = prompt_tokens_estimated
+        self.completion_tokens_reserved = completion_tokens_reserved
         self.expected_candidates = expected_candidates
         self.prompt_tokens_actual: int | None = None
         self.completion_tokens_actual: int | None = None
         self.response_model: str | None = None
         self.cache_split: CacheSplit | None = None
-        self.emitted_output_characters = 0
         self.emitted_answer_characters = 0
         # Kept only for the after-answer pass: every emitted fragment but reasoning for
         # the response scan, the answer text and tool calls for analyzers that read them.
@@ -173,20 +176,21 @@ class StreamMeter:
     def snapshot(self) -> StreamUsageSnapshot:
         """Return immutable actual-or-estimated usage for final settlement."""
 
-        completion_estimate = self._estimated_completion_tokens()
         prompt = (
             self.prompt_tokens_estimated
             if self.prompt_tokens_actual is None
             else self.prompt_tokens_actual
         )
+        # Only a completed stream's count is the bill; one that broke off was a running total.
+        completion_actual = (
+            self.completion_tokens_actual if self.terminal_hint == "completed" else None
+        )
         completion = (
-            completion_estimate
-            if self.completion_tokens_actual is None
-            else self.completion_tokens_actual
+            self.completion_tokens_reserved
+            if completion_actual is None
+            else completion_actual
         )
-        estimated = (
-            self.prompt_tokens_actual is None or self.completion_tokens_actual is None
-        )
+        estimated = self.prompt_tokens_actual is None or completion_actual is None
         settlement_model = (
             self.response_model
             if self.requested_model == UNSPECIFIED_PROVIDER_MODEL
@@ -284,7 +288,6 @@ class StreamMeter:
         text, other = self._output_delta_fragments(payload_type, payload)
         output_characters = sum(map(len, text)) + sum(map(len, other))
         reasoning_characters = _reasoning_characters(payload_type, payload)
-        self.emitted_output_characters += output_characters
         self.emitted_answer_characters += output_characters - reasoning_characters
         if self.keep_scan_text and not reasoning_characters:
             # One character past the bound, so the response scan can still report truncation.
@@ -557,11 +560,6 @@ class StreamMeter:
             if isinstance(index, int) and not isinstance(index, bool):
                 self._finished_candidates.add(index)
         return len(self._finished_candidates) >= self.expected_candidates
-
-    def _estimated_completion_tokens(self) -> int:
-        if self.emitted_output_characters <= 0:
-            return 0
-        return max(1, math.ceil(self.emitted_output_characters / 4))
 
     def _set_terminal_hint(self, hint: StreamTerminalHint) -> None:
         priority = {

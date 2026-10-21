@@ -284,9 +284,14 @@ higher of the input and cache-write prices), and the event carries `cache_read_t
 are `null` and every input token is priced at the model's highest input rate
 (for Anthropic the one-hour write price), so the figure can only be above the
 provider's bill. `estimated` is `true` when token counts were estimated rather than
-reported by the provider. The writer queue is bounded and drops the newest event
-when full, counted by `shim_local_usage_dropped_total`. Community keeps no request
-history; durable per-team reports are enterprise.
+reported by the provider. A stream that ends before the provider's final usage, for
+example because the client hung up after the first token, records the reserved
+maximum output as `completion_tokens` (the request's `max_tokens`, or the model's
+output limit, times the candidates asked for) and its cost at that size, as a JSON
+answer without usage does: the provider may already have billed hidden reasoning
+and more output than reached the client. The writer queue is bounded and drops the
+newest event when full, counted by `shim_local_usage_dropped_total`. Community
+keeps no request history; durable per-team reports are enterprise.
 
 Upgrading from a release that wrote `"version": 3`: version 4 adds `event`,
 `cache_read_tokens`, `cache_write_tokens`, `monitored_entities`,
