@@ -37,7 +37,7 @@ dependencies = [
 # work limit the reader sets, and 6.20.1 fixes a cyclic page-tree DoS; 6.19.0 has neither.
 documents = ["pypdf==6.20.1"]
 # Shrinking oversized images (SHIM_IMAGE_DOWNSCALE); the lock's version.
-images = ["pillow==12.3.0"]
+images = ["pillow==13.0.0"]
 
 [project.scripts]
 shim = "shim.cli:main"
