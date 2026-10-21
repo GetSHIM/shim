@@ -16,11 +16,11 @@ dependencies = [
   "pydantic>=2.13,<3",
   "pydantic-settings>=2.1,<3",
   "presidio-analyzer==2.2.364",
-  "phonenumbers==9.0.34",
+  "phonenumbers==9.0.41",
   # Email domains are checked against the Public Suffix List bundled with this version.
-  "tldextract==5.3.1",
+  "tldextract==5.4.0",
   # Tenant rule patterns need per-search timeouts; presidio already installs it.
-  "regex==2026.7.19",
+  "regex==2026.9.29",
   "python-json-logger>=4.2,<5",
   "sentry-sdk>=2.48,<3",
   "opentelemetry-api>=1.43,<2",
@@ -35,7 +35,7 @@ dependencies = [
 # PDF text for document scanning (SHIM_DOCUMENTS); pure Python, no dependencies.
 # 6.20.1 (2026-10-12) although under 14 days old: 6.20.0 added the per-stream decoding
 # work limit the reader sets, and 6.20.1 fixes a cyclic page-tree DoS; 6.19.0 has neither.
-documents = ["pypdf==6.20.1"]
+documents = ["pypdf==6.21.1"]
 # Shrinking oversized images (SHIM_IMAGE_DOWNSCALE); the lock's version.
 images = ["pillow==12.3.0"]
 
