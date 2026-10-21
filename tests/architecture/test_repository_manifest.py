@@ -561,6 +561,70 @@ def test_docker_build_contexts_are_exactly_allowlisted() -> None:
         assert (ROOT / path).read_text().splitlines() == list(lines)
 
 
+def _external_base_images(dockerfile: Path) -> list[str]:
+    """Return each FROM image that is not an earlier stage, in file order."""
+    stages: set[str] = set()
+    images: list[str] = []
+    text = re.sub(r"\\\n\s*", " ", dockerfile.read_text())
+    for line in text.splitlines():
+        words = [word for word in line.split() if not word.startswith("--")]
+        if not words or words[0].lower() != "from":
+            continue
+        image = words[1]
+        if image.lower() not in stages:
+            images.append(image)
+        if len(words) == 4 and words[2].lower() == "as":
+            stages.add(words[3].lower())
+    return images
+
+
+def test_every_image_shares_one_base_that_dependabot_bumps_together() -> None:
+    dockerfiles = sorted(
+        path for path in _working_product_files() if Path(path).name == "Dockerfile"
+    )
+    bases = {path: _external_base_images(ROOT / path) for path in dockerfiles}
+    dependabot = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())
+    docker = next(
+        update
+        for update in dependabot["updates"]
+        if update["package-ecosystem"] == "docker"
+    )
+
+    # Cloud Build ships ee/cloud/Dockerfile, so it must move with the other two.
+    assert dockerfiles == ["Dockerfile", "ee/Dockerfile", "ee/cloud/Dockerfile"]
+    # Every builder and runtime stage, in every image, names the same pinned base.
+    images = [image for refs in bases.values() for image in refs]
+    assert [len(refs) for refs in bases.values()] == [2, 2, 2], bases
+    assert len(set(images)) == 1, bases
+    assert re.fullmatch(r"python:3\.13-slim@sha256:[0-9a-f]{64}", images[0]), bases
+    assert docker["directories"] == [
+        "/" + path.removesuffix("Dockerfile").rstrip("/") for path in dockerfiles
+    ]
+    # One pull request per image across every directory, or each bump breaks the
+    # identical-digest rule above until its siblings merge.
+    assert docker["groups"] == {
+        "images": {"patterns": ["*"], "group-by": "dependency-name"}
+    }
+
+
+def test_runtime_images_carry_no_installer_and_root_own_their_code() -> None:
+    for path in ("Dockerfile", "ee/Dockerfile", "ee/cloud/Dockerfile"):
+        text = (ROOT / path).read_text()
+        runtime = text[text.index(" AS runtime\n") :]
+        commands = re.sub(r"\\\n\s*", "", runtime).splitlines()
+
+        # The base image's pip vendors msgpack, setuptools and urllib3 that trivy
+        # reports as fixable HIGHs; the app runs from /app/.venv and never uses it.
+        assert any(
+            line.startswith("RUN python -m pip uninstall --yes pip")
+            for line in commands
+        ), path
+        copies = [line for line in commands if line.startswith("COPY ")]
+        assert copies, path
+        # Code stays root-owned, so the service user cannot rewrite what it runs.
+        assert all("--chown" not in line for line in copies), path
+
+
 def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
     deployment_path = ROOT / "cloudbuild.yaml"
     deployment_text = deployment_path.read_text()

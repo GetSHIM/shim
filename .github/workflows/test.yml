@@ -160,6 +160,7 @@ jobs:
           docker run --rm --entrypoint python shim-community:ci -c '
           from importlib.metadata import distribution, distributions
           from importlib.util import find_spec
+          import os
           from pathlib import Path
           installed = {item.metadata["Name"].lower().replace("_", "-") for item in distributions()}
           forbidden = {
@@ -195,6 +196,8 @@ jobs:
               "polar_sdk", "shim_cloud", "shim_enterprise", "standardwebhooks",
           ))
           assert not any(Path(path).exists() for path in ("/app/app", "/app/ee", "/app/alembic"))
+          assert not list(Path("/usr/local/lib").glob("python3*/site-packages/pip"))
+          assert not os.access("/app/.venv/bin", os.W_OK)
           '
       - name: Smoke community image
         run: |
@@ -438,6 +441,7 @@ jobs:
           from importlib.metadata import distribution, distributions
           from importlib.resources import files
           from importlib.util import find_spec
+          import os
           from pathlib import Path
           installed = {item.metadata["Name"].lower().replace("_", "-") for item in distributions()}
           forbidden = {
@@ -473,6 +477,8 @@ jobs:
               "/app/ee/scripts/activate_plan.py",
           ))
           assert not Path("/app/app").exists()
+          assert not list(Path("/usr/local/lib").glob("python3*/site-packages/pip"))
+          assert not os.access("/app/.venv/bin", os.W_OK)
           '
       - name: Smoke enterprise image
         run: |

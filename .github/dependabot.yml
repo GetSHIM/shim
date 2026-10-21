@@ -24,9 +24,13 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: docker
-    directories: ["/", "/ee"]
+    directories: ["/", "/ee", "/ee/cloud"]
     schedule:
       interval: weekly
+    groups:
+      images:
+        patterns: ["*"]
+        group-by: dependency-name
     ignore:
       - dependency-name: python
         update-types:
