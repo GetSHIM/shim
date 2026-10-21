@@ -518,7 +518,7 @@ the setting is on without it), then set `SHIM_DOCUMENTS`:
 | `SHIM_DOCUMENTS` | An inline PDF, `.docx`, or text file (`text/plain`, `text/markdown`, `text/csv`, `application/json`) |
 | --- | --- |
 | `as_media` (default) | Follows `SHIM_MEDIA_INPUTS`, as above. |
-| `scan` | Its text is read and scanned with the same actions and rules as message text. Nothing to mask: it is forwarded as it came, except that a PDF goes as its scanned text while any type masks or blocks or a rule hides values (a provider reads a PDF's drawn pages, which hold images and appearances no scan saw). A value to mask: 400 `PII_BLOCKED` (`SECRET_BLOCKED` for `SECRET` and `DB_URI`) naming the types and saying to turn on conversion; no provider call. A type whose action is `block`: refused as for message text. |
+| `scan` | Its text is read and scanned with the same actions and rules as message text. Nothing to mask: it is forwarded as it came, except that a PDF or `.docx` goes as its scanned text while any type masks or blocks or a rule hides values (a provider reads a PDF's drawn pages, which hold images and appearances no scan saw, and every part of a Word file, while only the parts listed below are read; links, field codes, alt text, charts and SmartArt are not). A value to mask: 400 `PII_BLOCKED` (`SECRET_BLOCKED` for `SECRET` and `DB_URI`) naming the types and saying to turn on conversion; no provider call. A type whose action is `block`: refused as for message text. |
 | `scan_and_convert` | The same, except that a document with a value to mask is sent as its masked text, and the answer gets the values back. |
 
 A document shim cannot read (a URL or file id, a PDF without pypdf, an encrypted or
@@ -540,8 +540,11 @@ encoding is not read.
 provider bills that less: PDFs as text to Anthropic and OpenAI, natively to Gemini
 (which does not bill the embedded text, so its pages reach the model unscanned even
 while values are masked), Word files as text everywhere. A document in a Gemini
-function response stays a file: a clean one is sent as it came, one with a value to
-mask is refused with 400 `PII_BLOCKED`. A converted
+function response stays a file: one with a value to mask is refused with 400
+`PII_BLOCKED`, and a clean one is sent as it came only where it would not go as text
+anyway. While any type masks or blocks or a rule hides values, a clean `.docx` there
+(and a clean PDF, except to Gemini with `by_provider`) is refused with 400
+`PRIVACY_POLICY_BLOCKED`, since its unread parts would reach the provider. A converted
 document loses its layout, images and figures; the model reads its text only. A
 document sent as text becomes, in Anthropic, a `document` with a `text` source (title,
 context, citations and cache control kept); in chat a `text` part and in Responses an

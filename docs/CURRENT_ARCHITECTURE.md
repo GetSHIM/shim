@@ -260,7 +260,9 @@ pypdf is the optional `documents` extra), scans it with the same actions and rul
 forwards the part, stops the request, or replaces the part with its (masked) text,
 recorded as a `document_text` entry of `transforms_applied`. A tenant that hides any
 value gets every scanned PDF as its text (Gemini with `by_provider` excepted), since a
-provider reads a PDF's drawn pages. PDF reading and image decoding run in
+provider reads a PDF's drawn pages, and every scanned Word file as its text, since only
+some of its parts are read. In a function response, where text cannot replace a file,
+such a file is refused with 400 `PRIVACY_POLICY_BLOCKED` instead. PDF reading and image decoding run in
 `src/shim/core/isolation.py`: two spawned worker processes per gateway process, each
 with a 1 GB address-space cap (Linux) and a signal alarm per call (10 s, and 20 s for
 all of a request's files). A caller thread waits on a two-slot semaphore and then on

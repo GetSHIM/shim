@@ -18,6 +18,8 @@ from shim.privacy.documents import (
 )
 from shim.privacy.pii_scrubber import PIIScrubberService
 from shim.privacy.policies import effective_entity_actions
+from shim.rules.content import content_rules
+from shim.rules.kinds import validate_rule_set
 
 DEFAULT_ACTIONS = effective_entity_actions()
 MONITOR_ONLY = dict.fromkeys(DEFAULT_ACTIONS, "monitor")
@@ -384,26 +386,103 @@ def test_a_clean_document_is_forwarded_unchanged(shape) -> None:
     assert (report.scanned, report.native, report.converted) == (1, 1, 0)
 
 
+# A tenant hides values through a built-in type, or through an enforced rule alone.
+TERM_MASK = {
+    "revision": 1,
+    "rules": [
+        {
+            "id": "projects",
+            "name": "n",
+            "kind": "term",
+            "action": "mask",
+            "state": "enforced",
+            "match": {"terms": ["Atlas"]},
+        }
+    ],
+}
+HIDING = ("types", "rule")
+
+
+def _hiding(hiding: str) -> dict:
+    # Content rules keep per-request state, so each scrub gets its own.
+    if hiding == "types":
+        return {}
+    return {
+        "actions": MONITOR_ONLY,
+        "content": content_rules(validate_rule_set(TERM_MASK), lambda _rule: True),
+    }
+
+
+@pytest.mark.parametrize("hiding", HIDING)
 @pytest.mark.parametrize("shape", SHAPES)
-def test_a_tenant_that_hides_values_sends_a_clean_pdf_as_its_text(shape) -> None:
+def test_a_tenant_that_hides_values_sends_a_clean_pdf_as_its_text(
+    shape, hiding
+) -> None:
     pdf = SHAPES[shape](_b64(_pdf(TEXT_PAGE)), "application/pdf")
 
-    as_text, _, converted, _ = _scrub(pdf, documents="scan")
-    native, _, kept, _ = _scrub(pdf, documents="scan", native_pdf=True)
+    as_text, _, converted, _ = _scrub(pdf, documents="scan", **_hiding(hiding))
+    native, _, kept, _ = _scrub(
+        pdf, documents="scan", native_pdf=True, **_hiding(hiding)
+    )
 
     assert TEXT_PAGE in str(_first_part(shape, as_text))
     assert converted.converted == 1 and converted.native == 0
     assert _first_part(shape, native) == _first_part(shape, pdf) and kept.native == 1
 
 
-def test_a_clean_word_file_stays_as_it_came_for_a_tenant_that_hides_values() -> None:
-    # A Word file has no drawn pages, so D1's conversion is for PDFs only.
-    docx = SHAPES["gemini"](_b64(_docx(TEXT_PAGE)), DOCX)
+WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+LEAK = "ayse.yilmaz@example.com"
+# Word parts and attributes the extractor does not read, each holding a value.
+UNREAD_IN_WORD = {
+    "hyperlink": {
+        "word/_rels/document.xml.rels": f'<Relationships><Relationship Id="rId9" '
+        f'Type="hyperlink" Target="mailto:{LEAK}" TargetMode="External"/></Relationships>'
+    },
+    "field_code": {
+        "word/document.xml": f'<w:document xmlns:w="{WORD_NS}"><w:body><w:p><w:r><w:t>'
+        f"{TEXT_PAGE}</w:t></w:r><w:r><w:instrText> HYPERLINK mailto:{LEAK} "
+        "</w:instrText></w:r></w:p></w:body></w:document>"
+    },
+    "alt_text": {
+        "word/document.xml": f'<w:document xmlns:w="{WORD_NS}" xmlns:wp="urn:wp"><w:body>'
+        f'<w:p><w:r><w:t>{TEXT_PAGE}</w:t></w:r><w:r><wp:docPr id="1" name="x" '
+        f'descr="Musteri {LEAK}"/></w:r></w:p></w:body></w:document>'
+    },
+    "app_properties": {
+        "docProps/app.xml": f"<Properties><Company>{LEAK}</Company></Properties>"
+    },
+    "custom_xml": {"customXml/item1.xml": f"<data><owner>{LEAK}</owner></data>"},
+    "chart": {"word/charts/chart1.xml": f'<c xmlns:a="urn:a"><a:t>{LEAK}</a:t></c>'},
+    "smartart": {
+        "word/diagrams/data1.xml": f'<d xmlns:a="urn:a"><a:t>{LEAK}</a:t></d>'
+    },
+}
 
-    word, _, report, _ = _scrub(docx, documents="scan")
 
-    assert _first_part("gemini", word) == _first_part("gemini", docx)
-    assert report.native == 1
+@pytest.mark.parametrize("hiding", HIDING)
+@pytest.mark.parametrize("unread", UNREAD_IN_WORD)
+def test_a_clean_word_file_goes_as_its_text_for_a_tenant_that_hides_values(
+    unread, hiding
+) -> None:
+    # Only part of a Word file is read; the rest must not reach the provider.
+    data = _zip(
+        {
+            "word/document.xml": _docx_document(TEXT_PAGE),
+            **{name: xml.encode() for name, xml in UNREAD_IN_WORD[unread].items()},
+        }
+    )
+    assert LEAK.encode() in data and LEAK not in _text_of("docx", data, DOCX)
+    payload = SHAPES["gemini"](_b64(data), DOCX)
+
+    for options in ({}, {"native_pdf": True}):
+        safe, _, report, _ = _scrub(
+            payload, documents="scan", **options, **_hiding(hiding)
+        )
+
+        assert _first_part("gemini", safe) == {"text": TEXT_PAGE}
+        assert (report.native, report.converted) == (0, 1)
+    monitored, _, kept, _ = _scrub(payload, documents="scan", actions=MONITOR_ONLY)
+    assert monitored == payload and kept.native == 1
 
 
 @pytest.mark.parametrize("shape", SHAPES)
@@ -707,12 +786,88 @@ def test_a_document_in_a_gemini_function_response_is_never_replaced_by_text() ->
     dirty = _function_response(EMAIL_PDF, "application/pdf")
 
     safe, _, report, _ = _scrub(
-        clean, documents="scan_and_convert", convert_clean=frozenset({"docx", "pdf"})
+        clean,
+        documents="scan_and_convert",
+        convert_clean=frozenset({"docx", "pdf"}),
+        actions=MONITOR_ONLY,
     )
+    pdf = _function_response(_pdf(TEXT_PAGE), "application/pdf")
+    native, _, kept, _ = _scrub(pdf, documents="scan", native_pdf=True)
     with pytest.raises(HTTPException) as stopped:
         _scrub(dirty, documents="scan_and_convert")
 
     assert safe == clean and report.native == 1 and report.converted == 0
+    assert native == pdf and kept.native == 1
     assert stopped.value.detail["code"] == "PII_BLOCKED"
     assert stopped.value.detail["reason_code"] == "DOCUMENT_MASKING_REQUIRED"
     assert "function response" in stopped.value.detail["message"]
+
+
+def _chat_function_response(data: bytes, mime: str) -> dict:
+    # Any route: a client may put a file under a key of that name.
+    return {
+        "messages": [
+            {
+                "role": "user",
+                "functionResponse": {
+                    "parts": [
+                        {
+                            "type": "file",
+                            "file": {
+                                "filename": "r.pdf"
+                                if mime == "application/pdf"
+                                else "r.docx",
+                                "file_data": f"data:{mime};base64,{_b64(data)}",
+                            },
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize("hiding", HIDING)
+@pytest.mark.parametrize("documents", ["scan", "scan_and_convert"])
+@pytest.mark.parametrize("shape", [_function_response, _chat_function_response])
+def test_a_tenant_that_hides_values_refuses_a_clean_word_file_in_a_function_response(
+    shape, documents, hiding
+) -> None:
+    # It cannot go as text there, and its unread parts must not go at all (D5).
+    data = _zip(
+        {
+            "word/document.xml": _docx_document(TEXT_PAGE),
+            **{n: x.encode() for n, x in UNREAD_IN_WORD["hyperlink"].items()},
+        }
+    )
+    payload = shape(data, DOCX)
+
+    for options in ({}, {"native_pdf": True}):
+        with pytest.raises(HTTPException) as stopped:
+            _scrub(payload, documents=documents, **options, **_hiding(hiding))
+        assert stopped.value.status_code == 400
+        assert stopped.value.detail["code"] == "PRIVACY_POLICY_BLOCKED"
+        assert "function response" in stopped.value.detail["message"]
+    monitored, _, kept, _ = _scrub(payload, documents=documents, actions=MONITOR_ONLY)
+    assert monitored == payload and kept.native == 1
+
+
+@pytest.mark.parametrize("hiding", HIDING)
+@pytest.mark.parametrize("documents", ["scan", "scan_and_convert"])
+@pytest.mark.parametrize("shape", [_function_response, _chat_function_response])
+def test_a_tenant_that_hides_values_refuses_a_clean_pdf_in_a_function_response(
+    shape, documents, hiding
+) -> None:
+    # Its drawn pages were never scanned; only native_pdf lets them through.
+    payload = shape(_pdf(TEXT_PAGE), "application/pdf")
+
+    with pytest.raises(HTTPException) as stopped:
+        _scrub(payload, documents=documents, **_hiding(hiding))
+    native, _, kept, _ = _scrub(
+        payload, documents=documents, native_pdf=True, **_hiding(hiding)
+    )
+
+    assert stopped.value.status_code == 400
+    assert stopped.value.detail["code"] == "PRIVACY_POLICY_BLOCKED"
+    assert "function response" in stopped.value.detail["message"]
+    assert native == payload and kept.native == 1

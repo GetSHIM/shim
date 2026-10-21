@@ -582,9 +582,11 @@ def scrub_payload(
     )
     protects = rules_protect or any(action in _HIDING for action in actions.values())
     # A provider reads a PDF's pages drawn: images, glyphs without text and form
-    # appearances no scan saw. A tenant that hides values sends the text that was scanned.
-    if protects and not native_pdf:
-        convert_clean |= {"pdf"}
+    # appearances no scan saw, and every part of a Word file, where only some are
+    # read (links, field codes, alt text, charts). A tenant that hides values sends
+    # the text that was scanned.
+    if protects:
+        convert_clean |= {"docx"} if native_pdf else {"docx", "pdf"}
     unmasked = {} if unmasked is None else unmasked
     report = DocumentReport() if report is None else report
     document_parts = {
@@ -797,6 +799,14 @@ def scrub_payload(
                     ),
                     "reason_code": "DOCUMENT_MASKING_REQUIRED",
                 },
+            )
+        # Nor can a file that goes as text while values are hidden: its unread parts
+        # would reach the provider.
+        if native_only and protects and part.kind in convert_clean:
+            DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="stopped").inc()
+            reject(
+                "A document in a function response cannot be sent as text, and is "
+                "not sent as a file while values are hidden."
             )
         if masked == text and (native_only or part.kind not in convert_clean):
             report.native += 1
