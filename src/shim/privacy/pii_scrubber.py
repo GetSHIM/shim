@@ -4,28 +4,38 @@ from __future__ import annotations
 
 import codecs
 import hmac
+import json
 import re
 import secrets
 import unicodedata
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+from time import monotonic
 from typing import Any, get_args
 
 from presidio_analyzer import RecognizerResult
 
-from shim.privacy.policies import EntityAction
+from shim.privacy.policies import EntityAction, placeholder_map
 from shim.privacy.presidio_analyzer import PresidioAnalyzer, after_tax_word
-from shim.rules.content import ContentHit, ContentRules, first_fit, fold_digits
+from shim.rules.content import (
+    ContentHit,
+    ContentRules,
+    first_fit,
+    fold_dashes,
+    fold_digits,
+)
 from shim.rules.model import ACTION_RANK
 
 
-_INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
 # A right-to-left override shows the characters after it reversed, up to a pop or the
 # end of the line.
 _OVERRIDE, _POP, _LINE_ENDS = "\u202e", "\u202c", "\n\r\u2029"
+# The unassigned (Cn) Default_Ignorable_Code_Point ranges: renderers hide them like a
+# format character, so they are invisible too. The assigned ones are Cf or marks.
+_IGNORABLE_UNASSIGNED = re.compile("[\u2065\ufff0-\ufff8\U000e0000-\U000e0fff]")
 # Separators inside an identifier, dropped for detection: "1 0 0 0 0 0 0 0 1 4 6" and
 # "+ 9 0 5 3 2 ..." (a character per word), "TR3-300-061-005-..." (hyphenated digit
 # groups) and a line break after an email's @. A run is not glued to a letter or a
@@ -42,13 +52,36 @@ PLACEHOLDER = re.compile(
     r"<\s*([A-Z][A-Z0-9_]*_(?:[0-9a-f]{8}|[0-9a-f]{32}))(~[0-9A-Z]{4})?\s*>"
 )
 _PERCENT_BYTE = re.compile(r"%([0-9A-Fa-f]{2})")
+# A JSON string escape; a lone surrogate stays as written.
+JSON_ESCAPE = re.compile(
+    r"\\(?:u(?P<high>[Dd][89ABab][0-9A-Fa-f]{2})\\u(?P<low>[Dd][C-Fc-f][0-9A-Fa-f]{2})"
+    r"|u(?P<code>(?![Dd][89A-Fa-f])[0-9A-Fa-f]{4})|(?P<simple>[\"\\/bfnrt]))"
+)
+_JSON_SIMPLE = dict(zip('"\\/bfnrt', '"\\/\b\f\n\r\t'))
+# json.dumps applied this many times over is still read; each level doubles the
+# backslashes, so 2**8 of them before one escape.
+JSON_NESTING = 8
+_LINE = re.compile(r"[^\n\r\u2029]*[\n\r\u2029]?")
 _SourceSpan = tuple[int, int]
+# Where a JSON object or array can open: `{` before a key or `}`, `[` before a value.
+_JSON_OPENING = re.compile(r'\{\s*["}]|\[\s*(?:["\[{\]\d-]|true|false|null)')
+_JSON_DECODER = json.JSONDecoder()
+_JSON_SEARCH_FAILURES = 256
+_JSON_SEARCH_PASSES = 8
 MAX_ANALYZABLE_TEXT_LENGTH = 1_000_000
 # Between texts scanned in one pass: no detector matches it, its line breaks end every
 # line-bound pattern, and it is longer than any character look-back (24 for an
 # identifier's cue words). Presidio's context words may still reach across it, which
 # can only add a detection.
 _BATCH_SEPARATOR = "\n\n" + "." * 24 + "\n\n"
+# Longer text is read in windows, so its cost grows linearly, not with the square of
+# its matches, and a deadline stops it between them: a window of match-dense text
+# costs about 1.5 s (docs/BENCHMARKS.md, B1).
+WINDOW = 16_384
+# Read beyond each end of the part a window decides: more than any look-back, cue
+# word or Presidio's five context words reach. A third of a window at most, so each
+# window decides some of the text.
+_MARGIN = 1_024
 
 
 class PIIInputTooLarge(ValueError):
@@ -108,6 +141,102 @@ def _decode_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
         else:
             assert not pending
     return "".join(output), spans
+
+
+def json_character(escape: re.Match[str]) -> str:
+    """The character a `JSON_ESCAPE` match stands for."""
+    if simple := escape["simple"]:
+        return _JSON_SIMPLE[simple]
+    if code := escape["code"]:
+        return chr(int(code, 16))
+    high, low = int(escape["high"], 16), int(escape["low"], 16)
+    return chr(0x10000 + (high - 0xD800) * 0x400 + low - 0xDC00)
+
+
+def _json_unescaped(
+    text: str, spans: list[_SourceSpan]
+) -> tuple[str, list[_SourceSpan]] | None:
+    # One level decoded, each character mapped to its whole escape; None if none.
+    output: list[str] = []
+    output_spans: list[_SourceSpan] = []
+    cursor = 0
+    for escape in JSON_ESCAPE.finditer(text):
+        output.append(text[cursor : escape.start()])
+        output_spans.extend(spans[cursor : escape.start()])
+        output.append(json_character(escape))
+        output_spans.append(_source_span(spans, *escape.span()))
+        cursor = escape.end()
+    if not cursor:
+        return None
+    output.append(text[cursor:])
+    output_spans.extend(spans[cursor:])
+    return "".join(output), output_spans
+
+
+def _add_json_unescaped(
+    text: str, spans: list[_SourceSpan]
+) -> tuple[str, list[_SourceSpan]]:
+    # A line with a JSON string escape is read as stored, then, after a separator,
+    # decoded until no escape is left: a model reads a json.dumps tool result, and
+    # JSON nested in it, decoded, and a Windows path as written.
+    output: list[str] = []
+    output_spans: list[_SourceSpan] = []
+    for line in _LINE.finditer(text):
+        start, end = line.span()
+        output.append(line[0])
+        output_spans.extend(spans[start:end])
+        decoded = _json_unescaped(line[0], spans[start:end])
+        if decoded is None:
+            continue
+        # ponytail: fixed depth; deeper nesting stays escaped in the decoded view.
+        for _ in range(1, JSON_NESTING):
+            deeper = _json_unescaped(*decoded)
+            if deeper is None:
+                break
+            decoded = deeper
+        output.append(_BATCH_SEPARATOR)
+        output_spans.extend([spans[end - 1]] * len(_BATCH_SEPARATOR))
+        output.append(decoded[0])
+        output_spans.extend(decoded[1])
+    return "".join(output), output_spans
+
+
+def _json_spans(text: str) -> list[_SourceSpan]:
+    """The JSON documents in `text` holding an escape, where its values read decoded.
+
+    The whole text when it parses; otherwise each object or array that parses from
+    where it opens, such as NDJSON lines, a labelled tool result, JSON quoted in
+    prose, or the closed rows of a truncated document.
+    """
+    if "\\" not in text:
+        return []
+    try:
+        json.loads(text)
+    except (ValueError, RecursionError):
+        pass
+    else:
+        return [(0, len(text))]
+    spans: list[_SourceSpan] = []
+    # ponytail: failed parses stop the search past a fixed count or a few reads of
+    # the text, so it stays linear; JSON after that point is recorded as written.
+    failures, budget = 0, _JSON_SEARCH_PASSES * len(text)
+    opening = _JSON_OPENING.search(text)
+    while opening is not None and failures < _JSON_SEARCH_FAILURES and budget > 0:
+        start = opening.start()
+        try:
+            _, end = _JSON_DECODER.raw_decode(text, start)
+        except json.JSONDecodeError as error:
+            failures += 1
+            # An unterminated string reports where it opened but was read to the end.
+            unterminated = error.msg.startswith("Unterminated string")
+            budget -= (len(text) if unterminated else error.pos) - start
+            opening = _JSON_OPENING.search(text, start + 1)
+            continue
+        except RecursionError:
+            break
+        spans.append((start, end))
+        opening = _JSON_OPENING.search(text, end)
+    return spans
 
 
 def _normalization_continues(previous: str, current: str) -> bool:
@@ -188,12 +317,15 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
     if not isinstance(text, str):
         raise TypeError("PII input must be text")
 
-    if text.isascii() and "%" not in text:
-        return _join_split_identifiers(
-            text, [(index, index + 1) for index in range(len(text))]
-        )
+    if "%" in text:
+        decoded, spans = _decode_with_spans(text)
+    else:
+        decoded, spans = text, [(index, index + 1) for index in range(len(text))]
+    if "\\" in decoded:
+        decoded, spans = _add_json_unescaped(decoded, spans)
+    if decoded.isascii():
+        return _join_split_identifiers(decoded, spans)
 
-    decoded, spans = _decode_with_spans(text)
     visible_characters: list[str] = []
     visible_spans: list[_SourceSpan] = []
     # The current line's start, its override segments, and the open one's start.
@@ -247,24 +379,30 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
         # a variation selector, a keycap, a joiner) would split an identifier: it is
         # dropped for detection and masked with the character it follows. A
         # lower-cased İ is i and a combining dot (JavaScript and Python lower()).
+        # Every format character (Cf: U+180E, tag characters) is invisible, and so is
+        # an unassigned default-ignorable one (U+2065).
+        category = unicodedata.category(character)
+        invisible = category == "Cf" or (
+            category == "Cn" and _IGNORABLE_UNASSIGNED.fullmatch(character) is not None
+        )
         if (
             visible_characters
             and (visible_characters[-1].isdigit() or visible_characters[-1].isascii())
-            and (
-                unicodedata.category(character)[0] == "M"
-                or _INVISIBLE.fullmatch(character)
-            )
+            and (category[0] == "M" or invisible)
         ):
             visible_spans[-1] = (visible_spans[-1][0], span[1])
             continue
-        if not _INVISIBLE.fullmatch(character):
+        if not invisible:
             visible_characters.append(character)
             visible_spans.append(span)
     show_line()
     normalized, normalized_spans = _normalize_with_spans(
         "".join(visible_characters), visible_spans
     )
-    return _join_split_identifiers(fold_digits(normalized), normalized_spans)
+    # After NFKD, so a compatibility form of a dash (U+FE58, U+207B) is one too.
+    return _join_split_identifiers(
+        fold_dashes(fold_digits(normalized)), normalized_spans
+    )
 
 
 def _source_span(spans: list[_SourceSpan], start: int, end: int) -> _SourceSpan:
@@ -318,16 +456,18 @@ class PIIScrubberService:
         unmasked: dict[str, str] | None = None,
         placeholder_key: bytes | None = None,
         content: ContentRules | None = None,
+        deadline: float | None = None,
     ) -> tuple[str, dict[str, str]]:
         """Mask `mask` detections; record `monitor`/`block` ones in `unmasked` (value to type).
 
         Tenant rule matches are recorded on `content`, never in `unmasked`.
+        `TimeoutError` when detection is not done by the `time.monotonic()` `deadline`.
         """
         if not isinstance(text, str):
             raise TypeError("PII input must be text")
         if content is None and all(action == "off" for action in actions.values()):
             return text, {}
-        detections, hits = self._source_detections(text, actions, content)
+        detections, hits = self._source_detections(text, actions, content, deadline)
         return self._redact(
             text,
             detections,
@@ -338,6 +478,7 @@ class PIIScrubberService:
             unmasked=unmasked,
             placeholder_key=placeholder_key,
             content=content,
+            json_spans=_json_spans(text),
         )
 
     def scrub_many(
@@ -349,6 +490,7 @@ class PIIScrubberService:
         placeholders_by_value: dict[str, str] | None = None,
         unmasked: dict[str, str] | None = None,
         placeholder_key: bytes | None = None,
+        deadline: float | None = None,
     ) -> tuple[list[str], dict[str, str]] | None:
         """`scrub` for many texts in one analyzer pass, without tenant rules.
 
@@ -362,12 +504,16 @@ class PIIScrubberService:
             _BATCH_SEPARATOR in text for text in texts
         ):
             return None
-        detections, _ = self._source_detections(joined, actions)
-        separators, cursor = [], 0
-        for text in texts[:-1]:
+        detections, _ = self._source_detections(joined, actions, deadline=deadline)
+        separators, json_spans, cursor = [], [], 0
+        for text in texts:
+            json_spans += [
+                (cursor + start, cursor + end) for start, end in _json_spans(text)
+            ]
             cursor += len(text)
             separators.append(cursor)
             cursor += len(_BATCH_SEPARATOR)
+        separators.pop()
         for item in detections:
             # The last separator starting before the detection ends is the only one
             # it can overlap.
@@ -384,6 +530,7 @@ class PIIScrubberService:
             placeholders_by_value=placeholders_by_value,
             unmasked=kept,
             placeholder_key=placeholder_key,
+            json_spans=json_spans,
         )
         if unmasked is not None:
             unmasked.update(kept)
@@ -401,7 +548,10 @@ class PIIScrubberService:
         unmasked: dict[str, str] | None,
         placeholder_key: bytes | None,
         content: ContentRules | None = None,
+        json_spans: Sequence[_SourceSpan],
     ) -> tuple[str, dict[str, str]]:
+        """Placeholders for `text`; the JSON documents in `json_spans` (sorted) record
+        a value as its decoded string content, the value a model reads there."""
         if not detections and not hits:
             return text, {}
         placeholders, marks = _settle(detections, hits, actions)
@@ -422,6 +572,9 @@ class PIIScrubberService:
         cursor = 0
         for item in placeholders:
             value = text[item.start : item.end]
+            document = bisect_right(json_spans, item.start, key=lambda span: span[0])
+            if document and item.end <= json_spans[document - 1][1]:
+                value = JSON_ESCAPE.sub(json_character, value)
             entity_type = item.entity_type
             placeholder = placeholders_by_value.get(value)
             if placeholder is None:
@@ -449,27 +602,31 @@ class PIIScrubberService:
         scrubbed.append(text[cursor:])
         return "".join(scrubbed), verification_map
 
-    def deanonymize(self, text: str, verification_map: Mapping[str, str]) -> str:
+    def deanonymize(
+        self,
+        text: str,
+        verification_map: Mapping[str, str],
+        *,
+        json_string: bool = False,
+    ) -> str:
+        """Put the values back; `json_string` text gets them JSON-escaped.
+
+        A model writes a placeholder in JSON text (tool-call arguments) inside a
+        string literal, so its value is escaped to stay that string's content.
+        """
         if not text or not verification_map:
             return text
+        placeholders = placeholder_map(verification_map)
 
         def restore(match: re.Match[str]) -> str:
             identifier, tail = match.groups()
-            if tail:
-                return verification_map.get(f"<{identifier}{tail}>", match.group())
-            value = verification_map.get(f"<{identifier}>")
-            if value is None:
+            value = verification_map.get(f"<{identifier}{tail or ''}>")
+            if value is None and not tail:
                 # A model may write a tailed placeholder back without its tail.
-                prefix = f"<{identifier}~"
-                value = next(
-                    (
-                        original
-                        for placeholder, original in verification_map.items()
-                        if placeholder.startswith(prefix)
-                    ),
-                    None,
-                )
-            return match.group() if value is None else value
+                value = placeholders.untailed.get(f"<{identifier}>")
+            if value is None:
+                return match.group()
+            return json.dumps(value, ensure_ascii=False)[1:-1] if json_string else value
 
         return PLACEHOLDER.sub(restore, text)
 
@@ -477,11 +634,12 @@ class PIIScrubberService:
         self,
         text: str,
         actions: Mapping[str, EntityAction],
+        deadline: float | None,
     ) -> list[RecognizerResult]:
         enabled_entities = {
             entity_type for entity_type, action in actions.items() if action != "off"
         }
-        results = self._deduplicate(self._analyzer.analyze(text, enabled_entities))
+        results = self._deduplicate(self._windows(text, enabled_entities, deadline))
         # Ten digits both rules claim are a tax ID after a tax word, unless the phone
         # action is stronger: the tie never weakens what happens to the value.
         strength = get_args(EntityAction).index
@@ -505,13 +663,16 @@ class PIIScrubberService:
         text: str,
         actions: Mapping[str, EntityAction],
         content: ContentRules | None = None,
+        deadline: float | None = None,
     ) -> tuple[list[RecognizerResult], list[ContentHit]]:
         if len(text) > MAX_ANALYZABLE_TEXT_LENGTH:
             raise PIIInputTooLarge
         prepared, spans = _preprocess_with_spans(text)
         if len(prepared) > MAX_ANALYZABLE_TEXT_LENGTH:
             raise PIIInputTooLarge
-        detections = self._non_overlapping(self._detections(prepared, actions), actions)
+        detections = self._non_overlapping(
+            self._detections(prepared, actions, deadline), actions
+        )
         mapped: list[RecognizerResult] = []
         for item in detections:
             start, end = _source_span(spans, item.start, item.end)
@@ -531,6 +692,38 @@ class PIIScrubberService:
             ContentHit(*_source_span(spans, hit.start, hit.end), hit.rules)
             for hit in content.search(prepared)
         ]
+
+    def _windows(
+        self, text: str, entities: set[str], deadline: float | None
+    ) -> list[RecognizerResult]:
+        """The analyzer's detections in `text`, read `WINDOW` characters at a time.
+
+        A window decides the detections that end in its part, from its start to its
+        cut: a point about `_MARGIN` before its end that no detection or word crosses,
+        so every one is read with the context it has in the whole text. `TimeoutError`
+        once `deadline` passes, checked before and after every window.
+        """
+        results: list[RecognizerResult] = []
+        start = 0
+        while True:
+            if deadline is not None and monotonic() > deadline:
+                raise TimeoutError
+            low = max(0, start - _MARGIN)
+            high = min(len(text), low + WINDOW)
+            found = self._analyzer.analyze(text[low:high], entities)
+            for item in found:
+                item.start += low
+                item.end += low
+            cut = high if high == len(text) else _cut(text, found, start, high)
+            # One that starts before the window's start was read in part by the window
+            # before, which may have found nothing.
+            results.extend(item for item in found if start < item.end <= cut)
+            if cut == len(text):
+                break
+            start = cut
+        if deadline is not None and monotonic() > deadline:
+            raise TimeoutError
+        return results
 
     @staticmethod
     def _deduplicate(items: Iterable[RecognizerResult]) -> list[RecognizerResult]:
@@ -684,6 +877,39 @@ def _settle(
         for item in counted
         if isinstance(item, ContentHit) or actions[item.entity_type] not in _MASKING
     ]
+
+
+def _cut(text: str, found: Iterable[RecognizerResult], start: int, high: int) -> int:
+    """Where a window that decides from `start` and reads to `high` stops: `_MARGIN`
+    before `high`, or the start of the run of overlapping detections and the word over
+    that point, or that run's end when the run began before `start`. A word, letters,
+    digits and `_-.` as in every token-shaped secret, is not cut: a JWT read in part
+    matches nothing.
+
+    ponytail: a run or word longer than a window is decided up to the window's end; the
+    text after it is read as the next window's.
+    """
+    limit = word_start = word_end = high - _MARGIN
+    while word_start > start and _in_word(text[word_start - 1]):
+        word_start -= 1
+    while word_end < high and _in_word(text[word_end]):
+        word_end += 1
+    first = reach = 0
+    for span_start, span_end in sorted(
+        [(item.start, item.end) for item in found] + [(word_start, word_end)]
+    ):
+        if span_start >= reach:
+            if reach > limit:
+                break
+            first = span_start
+        reach = max(reach, span_end)
+    if not first < limit < reach:
+        return limit
+    return first if first > start else reach
+
+
+def _in_word(character: str) -> bool:
+    return character.isalnum() or character in "_-."
 
 
 def placeholder_period_key(root_key: bytes, tenant_id: object, at: datetime) -> bytes:

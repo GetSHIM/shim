@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import random
+import sys
 from time import thread_time
 import timeit
+import unicodedata
 
 import pytest
 
@@ -389,6 +391,51 @@ def test_first_fit_takes_spans_in_key_order_and_kept_ones_always() -> None:
     ] == [(2, 9), (0, 5), (10, 14)]
 
 
+def test_first_fit_takes_what_a_check_against_every_taken_span_takes() -> None:
+    rng = random.Random(20261021)
+    for _ in range(500):
+        hits = [
+            ContentHit(start, start + rng.randint(0, 6), ())
+            for start in (rng.randint(0, 40) for _ in range(rng.randint(0, 30)))
+        ]
+        order = {id(hit): rng.random() for hit in hits}
+        kept = {id(hit) for hit in hits if rng.random() < 0.2}
+
+        def key(hit):
+            return order[id(hit)]
+
+        def keep(hit):
+            return id(hit) in kept
+
+        expected: list[ContentHit] = []
+        for hit in sorted(hits, key=key):
+            if keep(hit) or not any(
+                hit.start < other.end and other.start < hit.end for other in expected
+            ):
+                expected.append(hit)
+
+        assert list(map(id, first_fit(hits, key=key, keep=keep))) == list(
+            map(id, expected)
+        )
+
+
+def test_first_fit_is_not_quadratic_in_the_spans() -> None:
+    # A log of 20,000 addresses: every detection is taken, none overlaps another.
+    hits = [ContentHit(10 * index, 10 * index + 8, ()) for index in range(20_000)]
+
+    # This thread's CPU time, collection paused (timeit).
+    elapsed = min(
+        timeit.repeat(
+            lambda: first_fit(hits, key=lambda hit: (hit.start - hit.end, hit.start)),
+            timer=thread_time,
+            number=1,
+            repeat=3,
+        )
+    )
+
+    assert elapsed < 0.25
+
+
 @pytest.mark.parametrize(
     ("term", "text"),
     [
@@ -430,6 +477,10 @@ def test_first_fit_takes_spans_in_key_order_and_kept_ones_always() -> None:
         # Digits of any script are the number they are.
         ("PRJ-2024-001", "PRJ-٢٠٢٤-٠٠١"),
         ("PRJ-٢٠٢٤-٠٠١", "PRJ-२०२४-००१"),
+        # JSON string escapes, as json.dumps writes them by default.
+        ("Güneş Projesi", '{"proje": "G\\u00fcne\\u015f Projesi b\\u00fct\\u00e7esi"}'),
+        ("Atlas", '{\\"r\\": \\"\\u0041tlas\\"}'),
+        ("Güneş Projesi", '{"body": "{\\"p\\": \\"G\\\\u00fcne\\\\u015f Projesi\\"}"}'),
     ],
 )
 def test_a_term_is_found_in_every_form_it_is_written_in(term, text) -> None:
@@ -459,6 +510,35 @@ def test_a_longer_word_is_not_the_term(term, text) -> None:
 @pytest.mark.parametrize("text", ["PRJ–1234", "PRJ−1234", "prj‐1234", "PRJ-١٢٣٤"])
 def test_a_template_hyphen_takes_any_dash(text) -> None:
     assert _found(_pattern(templates=["PRJ-####"]), text) == 1
+
+
+def test_every_unicode_dash_folds_to_a_hyphen() -> None:
+    dashes = {
+        chr(code)
+        for code in range(sys.maxunicode + 1)
+        if unicodedata.category(chr(code)) == "Pd"
+    }
+    assert set(content.DASHES) == dashes - {"-"} | {"−"}
+
+
+# Rules read the text with every dash as a hyphen; a dash written in a rule still
+# matches the text it was written for, and any other dash.
+@pytest.mark.parametrize(
+    ("rule", "text"),
+    [
+        (_pattern(regexes=[r"PRJ–\d{4}"]), "PRJ–1234"),
+        (_pattern(regexes=[r"PRJ–\d{4}"]), "PRJ⸺1234"),
+        (_pattern(regexes=[r"PRJ[–—]\d{4}"]), "PRJ—1234"),
+        (_pattern(regexes=[r"PRJ\–\d{4}"]), "PRJ–1234"),
+        (_pattern(regexes=[r"PRJ\\–\d{4}"]), "PRJ\\–1234"),
+        (_pattern(templates=["PRJ–####"]), "PRJ–1234"),
+        (_pattern(templates=["PRJ–####"]), "PRJ-1234"),
+        (_term("e⸺Devlet"), "e⸺Devlet"),
+        (_term("e-Devlet"), "e﹘Devlet"),
+    ],
+)
+def test_a_dash_written_in_a_rule_matches_every_dash(rule, text) -> None:
+    assert _found(rule, text) == 1
 
 
 def test_the_matcher_stays_fast_at_the_set_limits() -> None:

@@ -1126,14 +1126,16 @@ def test_provider_boundary_defaults_match_sdk_limits() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_placeholder_overflow_on_finished_choice_is_a_terminal_error():
+async def test_a_long_carry_on_a_finished_choice_is_sent_and_the_stream_completes():
+    # "<" and 300 spaces could still open a placeholder; past 256 characters it goes
+    # out as written instead of failing a valid answer.
     async def chunks():
         yield SimpleNamespace(
             model_dump=lambda **kwargs: {
                 "choices": [
                     {
                         "index": 0,
-                        "delta": {"content": "<" + " " * 256},
+                        "delta": {"content": "if a <" + " " * 300},
                         "finish_reason": "stop",
                     }
                 ]
@@ -1160,9 +1162,101 @@ async def test_chat_placeholder_overflow_on_finished_choice_is_a_terminal_error(
                 )
             ]
         )
-    assert b"PROVIDER_UNAVAILABLE" in wire
-    assert b"[DONE]" not in wire
-    assert b"alice@example.com" not in wire
+    events = [line[6:] for line in wire.split(b"\n\n") if line.startswith(b"data: ")]
+    assert events[-1] == b"[DONE]"
+    content = "".join(
+        json.loads(event)["choices"][0]["delta"].get("content") or ""
+        for event in events[:-1]
+    )
+    assert content == "if a <" + " " * 300
+    assert b"PROVIDER_UNAVAILABLE" not in wire
+
+
+@pytest.mark.asyncio
+async def test_restoring_a_large_answer_does_not_hold_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 5,000 masked values and an answer with 20,000 placeholder-shaped tokens no
+    # request masked: a scan of the map per token held every request for seconds.
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    mapping = {
+        f"<EMAIL_ADDRESS_{index:08x}>": f"user{index}@example.com"
+        for index in range(5_000)
+    }
+    unknown = "<A_00000000> " * 20_000
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl_1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-5.6-luna",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "logprobs": None,
+                        "message": {
+                            "role": "assistant",
+                            "content": unknown + "<EMAIL_ADDRESS_00001387>",
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    lags: list[float] = []
+    done = asyncio.Event()
+
+    async def probe() -> None:
+        while not done.is_set():
+            started = perf_counter()
+            await asyncio.sleep(0.005)
+            lags.append(perf_counter() - started)
+
+    def call(execution: OpenAIExecution, masked: dict[str, str] | None):
+        return execution.execute(
+            invocation=SimpleNamespace(
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-1"),
+            ),
+            prepared=_prepared(
+                {
+                    "model": "gpt-5.6-luna",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                protocol="chat",
+                tenant="11111111-1111-1111-1111-111111111111",
+                mapping=masked,
+            ),
+            provider_start_callback=AsyncMock(),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http, SimpleNamespace(save=AsyncMock()))
+        # The same answer with nothing masked first: the first SDK call's one-time
+        # setup is not restoration.
+        await call(execution, None)
+        prober = asyncio.create_task(probe())
+        await asyncio.sleep(0.01)
+        try:
+            result = await call(execution, mapping)
+        finally:
+            done.set()
+            await prober
+
+    assert isinstance(result, ProviderNonStream)
+    assert result.payload["choices"][0]["message"]["content"] == (
+        unknown + "user4999@example.com"
+    )
+    assert lags and max(lags) < 0.5
 
 
 @pytest.mark.asyncio
@@ -1870,7 +1964,8 @@ def _chunk(delta: dict, finish: str | None = None) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("protocol", "stream"), [("chat", False), ("chat", True), ("responses", False)]
+    ("protocol", "stream"),
+    [("chat", False), ("chat", True), ("responses", False), ("responses", True)],
 )
 async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
     monkeypatch: pytest.MonkeyPatch, protocol: str, stream: bool
@@ -1886,6 +1981,40 @@ async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
     split = text.index(tckn) + len(tckn) // 2
 
     async def handler(_request: httpx.Request) -> httpx.Response:
+        if protocol == "responses" and stream:
+            events = [
+                {
+                    "type": "response.created",
+                    "response": {**_response("resp_withheld"), "status": "in_progress"},
+                },
+                *(
+                    {
+                        "type": "response.output_text.delta",
+                        "item_id": "msg_1",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": delta,
+                        "logprobs": [],
+                    }
+                    for delta in (text[:split], text[split:])
+                ),
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": "fc_1",
+                    "output_index": 1,
+                    "delta": arguments,
+                },
+                {"type": "response.completed", "response": _response("resp_withheld")},
+            ]
+            return httpx.Response(
+                200,
+                content="".join(
+                    f"event: {event['type']}\n"
+                    f"data: {json.dumps({**event, 'sequence_number': number})}\n\n"
+                    for number, event in enumerate(events)
+                ),
+                headers={"content-type": "text/event-stream"},
+            )
         if protocol == "responses":
             response = _response("resp_withheld")
             response["output"] = [
@@ -1967,7 +2096,7 @@ async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
         )
 
     body = (
-        {"model": "gpt-5.6-luna", "input": text}
+        {"model": "gpt-5.6-luna", "input": text, "stream": stream}
         if protocol == "responses"
         else {
             "model": "gpt-5.6-luna",

@@ -70,6 +70,7 @@ from shim.observability.metrics import (
 from shim.observability.tracing import safe_attributes
 from shim.privacy.classification import content_ref
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim.privacy.policies import placeholder_map
 
 # After a request settled: its terminal facts and, when kept, its answer text and
 # tool calls and whether they were cut. Runs off the response path.
@@ -233,9 +234,11 @@ class ResponsePostprocessor:
                 completion_outcome=answer.completion_outcome,
                 restore=partial(
                     PIIScrubberService().deanonymize,
-                    verification_map=prepared.privacy.verification_map
-                    if prepared.privacy is not None
-                    else {},
+                    verification_map=placeholder_map(
+                        prepared.privacy.verification_map
+                        if prepared.privacy is not None
+                        else {}
+                    ),
                 ),
             )
             try:

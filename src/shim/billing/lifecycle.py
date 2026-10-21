@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from shim.billing.pricing import DATE_SUFFIX, DEFAULT_PRICE_BOOK
+from shim.billing.pricing import DATE_SUFFIX, DEFAULT_PRICE_BOOK, MODEL_ID
 
 # Between Anthropic's 60-day and OpenAI's six-month minimum notice.
 RETIREMENT_WARNING_DAYS = 90
@@ -63,7 +63,13 @@ def _parse(text: str, *, operator: bool) -> dict[str, dict[str, Retirement]]:
         for provider, entries in models.items()
         if provider != "registry"
         for model in entries
-        if not DEFAULT_PRICE_BOOK.supports(model, provider)
+        # Any model of a catalog family: a deployment may serve one the catalog
+        # does not price, such as gpt-4o-realtime-preview.
+        if not MODEL_ID.fullmatch(model)
+        or _longest_prefix(
+            model.casefold(), DEFAULT_PRICE_BOOK.provider_prices.get(provider, {})
+        )
+        is None
     )
     if unknown:
         raise ValueError(f"models not in the catalog: {', '.join(unknown)}")
@@ -74,7 +80,7 @@ def _parse(text: str, *, operator: bool) -> dict[str, dict[str, Retirement]]:
 
 
 class ModelLifecycle:
-    """Retirement dates by provider and model, looked up with the catalog's rule."""
+    """Retirement dates by provider and model, for catalog models and their family."""
 
     def __init__(self, models: Mapping[str, Mapping[str, Retirement]]) -> None:
         self.models = models

@@ -21,7 +21,7 @@ DEFAULT_MAX_OUTPUT_TOKENS = 200_000
 UNSPECIFIED_PROVIDER_MODEL = "__unspecified_provider_model__"
 # The repo's existing id rules (deployment aliases, Gemini path ids, the catalog's
 # 200 cap) in one: it bounds what a caller can make the gateway store as a model.
-_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
+MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 # A dated snapshot id: the model it is dated from, then the date.
 DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 _CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
@@ -160,7 +160,7 @@ class ModelPrice:
 
 @dataclass(frozen=True, slots=True)
 class PriceBook:
-    """Immutable model price registry with deterministic longest-prefix lookup."""
+    """Immutable model price registry: exact ids and their dated snapshots."""
 
     version: str
     prices: Mapping[str, ModelPrice]
@@ -194,34 +194,28 @@ class PriceBook:
     def resolve(self, model: str | None, provider: str = "openai") -> ModelPrice:
         if model is None or not model.strip():
             return self.fallback
+        return self._entry(model, provider) or self.fallback
+
+    def _entry(self, model: str, provider: str) -> ModelPrice | None:
+        """The catalog id itself, or a dated snapshot of it. Any other suffix names
+        another model (``o3-deep-research`` is not ``o3``), so it has no price."""
+
         normalized = _normalize_model(model)
         prices = self.provider_prices.get(provider, {})
         exact = prices.get(normalized)
-        if exact is not None:
-            return exact
-        candidates = (
-            (prefix, price)
-            for prefix, price in prices.items()
-            if normalized.startswith(f"{prefix}-")
+        return (
+            exact if exact is not None else prices.get(DATE_SUFFIX.sub("", normalized))
         )
-        return max(
-            candidates, key=lambda item: len(item[0]), default=("", self.fallback)
-        )[1]
 
     def exact(self, model: str, provider: str = "openai") -> ModelPrice | None:
-        """The model's own entry, never a prefix match that describes another model."""
+        """The model's own entry, never the base entry a dated snapshot is priced at."""
 
         return self.provider_prices.get(provider, {}).get(model.strip().casefold())
 
     def supports(self, model: str | None, provider: str = "openai") -> bool:
-        if model is None or not _MODEL_ID.fullmatch(model):
+        if model is None or not MODEL_ID.fullmatch(model):
             return False
-        normalized = _normalize_model(model)
-        prices = self.provider_prices.get(provider, {})
-        return any(
-            normalized == prefix or normalized.startswith(f"{prefix}-")
-            for prefix in prices
-        )
+        return self._entry(model, provider) is not None
 
     def compute(
         self,

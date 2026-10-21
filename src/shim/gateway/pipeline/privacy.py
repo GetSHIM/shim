@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+import contextvars
 from dataclasses import dataclass, field, replace
 from functools import partial
 import logging
@@ -31,6 +33,7 @@ from shim.privacy.pii_scrubber import (
     PLACEHOLDER,
     PIIInputTooLarge,
     PIIScrubberService,
+    WINDOW,
     placeholder_period_key,
 )
 from shim.privacy.policies import (
@@ -46,7 +49,7 @@ from shim.privacy.policies import (
     is_protocol_field,
     placeholder_type,
 )
-from shim.core.isolation import request_deadline
+from shim.core.isolation import REQUEST_SECONDS, request_deadline
 from shim.privacy.continuation import PrivacyContinuationStore
 from shim.privacy.documents import (
     DOCUMENT_FORMAT_V1,
@@ -67,6 +70,30 @@ logger = logging.getLogger(__name__)
 
 # Actions that keep a value from the provider.
 _HIDING = frozenset({"mask", "mask_last4", "block"})
+# Refusals a privacy.input verdict names; any other refusal is PRIVACY_POLICY_BLOCKED.
+_REASON_CODES = frozenset(
+    {
+        "SECRET_BLOCKED",
+        "PII_BLOCKED",
+        "DOCUMENT_UNSCANNABLE",
+        "PRIVACY_SCAN_TOO_LARGE",
+        "PRIVACY_SCAN_TIMEOUT",
+    }
+)
+# What one request may give the analyzer, counted over its distinct strings before any
+# is read: about what the REQUEST_SECONDS deadline scans of PII-dense prose, at 2.7 ms
+# per 1,000 characters, or of short strings, at about 0.3 ms each (docs/BENCHMARKS.md,
+# B1). Text that is nearly all matches scans 10 to 35 times slower; the deadline
+# refuses it.
+MAX_REQUEST_TEXT_CHARS = 4_000_000
+MAX_REQUEST_TEXTS = 50_000
+# Not the loop's default executor, which every other asyncio.to_thread caller shares,
+# so none of them can hold a request's scan behind its own work, nor a scan theirs.
+# A request with more than one analyzer window of bytes scans on two threads of its
+# own, so long scans never hold a short one in a queue. Two: scanning holds the GIL,
+# so more would only slow every scan, and the rest wait their turn on their deadline.
+_EXECUTOR = ThreadPoolExecutor(thread_name_prefix="privacy")
+_LONG_EXECUTOR = ThreadPoolExecutor(2, thread_name_prefix="privacy-long")
 
 
 class PrivacyStage:
@@ -103,7 +130,7 @@ class PrivacyStage:
                 stage="privacy",
                 outcome="deny" if refused else "error",
                 reason_code=detail.get("reason_code", code)
-                if code in {"SECRET_BLOCKED", "PII_BLOCKED", "DOCUMENT_UNSCANNABLE"}
+                if code in _REASON_CODES
                 else "PRIVACY_POLICY_BLOCKED"
                 if refused
                 else "PRIVACY_UNAVAILABLE",
@@ -254,6 +281,8 @@ class PrivacyStage:
             native_pdf=value.document_format == "by_provider"
             and DOCUMENT_FORMAT_V1.get(str(value.provider)) == "native",
             report=report,
+            # Counted from here: a scan waiting for a thread spends it too.
+            deadline=request_deadline(),
             # An enforced block cannot see inside media either.
             protects=any(
                 (rule.state, rule.action) == ("enforced", "block")
@@ -283,8 +312,14 @@ class PrivacyStage:
                 )
                 return *scrubbed, {"error": True}
 
-        safe_payload, verification_map, injection_markers = await asyncio.to_thread(
-            scrub_and_scan
+        long = (
+            value.admission is None or value.admission.estimated_input_tokens > WINDOW
+        )
+        loop = asyncio.get_running_loop()
+        safe_payload, verification_map, injection_markers = await loop.run_in_executor(
+            _LONG_EXECUTOR if long else _EXECUTOR,
+            contextvars.copy_context().run,
+            scrub_and_scan,
         )
         if (
             verification_map
@@ -516,6 +551,7 @@ def scrub_payload(
     convert_clean: frozenset[str] = frozenset(),
     native_pdf: bool = False,
     report: DocumentReport | None = None,
+    deadline: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """`batch`: texts scanned together in one analyzer pass before the walk.
 
@@ -525,6 +561,8 @@ def scrub_payload(
     `convert_clean` names the kinds sent as text even when nothing was masked, and
     `native_pdf` keeps a clean PDF native for a tenant that hides values;
     `report` collects what happened to them.
+    `deadline`: the `time.monotonic()` by which all of the request's text and documents
+    are scanned, `request_deadline()` from the start of the scan when None.
     """
     verification_map = dict(known_placeholders or {})
     if content is None and all(action == "off" for action in actions.values()):
@@ -544,12 +582,13 @@ def scrub_payload(
     )
     protects = rules_protect or any(action in _HIDING for action in actions.values())
     # A provider reads a PDF's pages drawn: images, glyphs without text and form
-    # appearances no scan saw. A tenant that hides values sends the text that was scanned.
-    if protects and not native_pdf:
-        convert_clean |= {"pdf"}
+    # appearances no scan saw, and every part of a Word file, where only some are
+    # read (links, field codes, alt text, charts). A tenant that hides values sends
+    # the text that was scanned.
+    if protects:
+        convert_clean |= {"docx"} if native_pdf else {"docx", "pdf"}
     unmasked = {} if unmasked is None else unmasked
     report = DocumentReport() if report is None else report
-    deadline: float | None = None
     document_parts = {
         id(value_at(payload, part.path)): part
         for part in media
@@ -566,6 +605,24 @@ def scrub_payload(
         for part in media
         if part.data_path is not None
     }
+
+    texts: set[str] = set()
+    _collect_texts(payload, unread, texts)
+    characters = sum(map(len, texts))
+    if characters > MAX_REQUEST_TEXT_CHARS or len(texts) > MAX_REQUEST_TEXTS:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail={
+                "code": "PRIVACY_SCAN_TOO_LARGE",
+                "message": "Privacy scanning reads at most "
+                f"{MAX_REQUEST_TEXT_CHARS:,} characters in {MAX_REQUEST_TEXTS:,} "
+                f"texts a request; this one has {characters:,} in {len(texts):,}.",
+                "param": "characters"
+                if characters > MAX_REQUEST_TEXT_CHARS
+                else "texts",
+            },
+        )
+    deadline = request_deadline() if deadline is None else deadline
 
     placeholders_by_value = {
         value: placeholder for placeholder, value in verification_map.items()
@@ -588,6 +645,19 @@ def scrub_payload(
             },
         )
 
+    def expired() -> NoReturn:
+        reject(
+            f"Privacy scanning did not finish within {REQUEST_SECONDS:g} seconds.",
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            code="PRIVACY_SCAN_TIMEOUT",
+        )
+
+    def scan(text: str, **kwargs: Any) -> tuple[str, dict[str, str]]:
+        try:
+            return scrubber.scrub(text, actions, deadline=deadline, **kwargs)
+        except TimeoutError:
+            expired()
+
     def inspect_identifier(value: Any) -> Any:
         if isinstance(value, str):
             if not protects:
@@ -595,7 +665,7 @@ def scrub_payload(
             detected = pii_cache.get(value)
             if detected is None:
                 kept: dict[str, str] = {}
-                _, found = scrubber.scrub(value, actions, unmasked=kept)
+                _, found = scan(value, unmasked=kept)
                 detected = protected(found, kept)
                 pii_cache[value] = detected
                 # Identifiers are not searched for tenant terms, so a clean
@@ -630,9 +700,8 @@ def scrub_payload(
         if value in text_cache:
             return text_cache[value]
         kept: dict[str, str] = {}
-        scrubbed, found = scrubber.scrub(
+        scrubbed, found = scan(
             value,
-            actions,
             known_placeholders=verification_map,
             placeholders_by_value=placeholders_by_value,
             unmasked=kept,
@@ -659,9 +728,12 @@ def scrub_payload(
                 placeholders_by_value=placeholders_by_value,
                 unmasked=kept,
                 placeholder_key=placeholder_key,
+                deadline=deadline,
             )
         except PIIInputTooLarge:
             done = None
+        except TimeoutError:
+            expired()
         if done is not None:
             scrubbed_texts, found = done
             verification_map.update(found)
@@ -669,10 +741,7 @@ def scrub_payload(
             text_cache.update(zip(distinct, scrubbed_texts))
 
     def document(part: MediaPart, scanned: dict[str, Any]) -> dict[str, Any]:
-        nonlocal deadline
         data = value_at(payload, part.data_path) if part.data_path else None
-        # One deadline for all of a request's documents.
-        deadline = request_deadline() if deadline is None else deadline
         try:
             text = read_document(part, data, deadline)
             if report.characters + len(text) > MAX_REQUEST_CHARS:
@@ -691,9 +760,8 @@ def scrub_payload(
         report.scanned += 1
         DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="scanned").inc()
         kept: dict[str, str] = {}
-        masked, found = scrubber.scrub(
+        masked, found = scan(
             text,
-            actions,
             known_placeholders=verification_map,
             placeholders_by_value=placeholders_by_value,
             unmasked=kept,
@@ -731,6 +799,14 @@ def scrub_payload(
                     ),
                     "reason_code": "DOCUMENT_MASKING_REQUIRED",
                 },
+            )
+        # Nor can a file that goes as text while values are hidden: its unread parts
+        # would reach the provider.
+        if native_only and protects and part.kind in convert_clean:
+            DOCUMENTS_TOTAL.labels(kind=part.kind, outcome="stopped").inc()
+            reject(
+                "A document in a function response cannot be sent as text, and is "
+                "not sent as a file while values are hidden."
             )
         if masked == text and (native_only or part.kind not in convert_clean):
             report.native += 1
@@ -804,6 +880,22 @@ def scrub_payload(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             code="REQUEST_TOO_LARGE",
         )
+
+
+def _collect_texts(
+    value: Any, unread: set[tuple[int, str | int]], texts: set[str]
+) -> None:
+    """Every string `scrub_payload` may read, keys included; never a part's data."""
+    if isinstance(value, str):
+        texts.add(value)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_texts(item, unread, texts)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            texts.add(key)
+            if (id(value), key) not in unread:
+                _collect_texts(item, unread, texts)
 
 
 @dataclass(slots=True)

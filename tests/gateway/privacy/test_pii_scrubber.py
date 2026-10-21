@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import base64
 import hashlib
 import hmac
 import json
@@ -40,6 +41,8 @@ from shim.rules.content import ContentRules, content_rules
 
 
 DEFAULT_ACTIONS = effective_entity_actions()
+# Between a line as stored and the same line with its JSON escapes decoded.
+_SEPARATOR = pii_scrubber_module._BATCH_SEPARATOR
 
 
 @pytest.fixture
@@ -1288,6 +1291,215 @@ def test_chat_stream_restores_split_tool_arguments(
     assert arguments == "alice@example.com"
 
 
+def _client_arguments(
+    carrier: str, arguments: str, mapping: dict[str, str], scrubber
+) -> list[str]:
+    """Each tool-call arguments text a client gets when the model writes `arguments`."""
+    pieces = [arguments[start : start + 7] for start in range(0, len(arguments), 7)]
+    if carrier == "chat":
+        restored = restore_openai_payload(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [{"function": {"arguments": arguments}}],
+                            "function_call": {"arguments": arguments},
+                        }
+                    }
+                ]
+            },
+            mapping,
+            scrubber,
+        )
+        message = restored["choices"][0]["message"]
+        return [
+            message["tool_calls"][0]["function"]["arguments"],
+            message["function_call"]["arguments"],
+        ]
+    if carrier == "responses":
+        restored = restore_openai_payload(
+            {"output": [{"type": "function_call", "arguments": arguments}]},
+            mapping,
+            scrubber,
+        )
+        return [restored["output"][0]["arguments"]]
+    if carrier == "chat_stream":
+        restorer = OpenAIStreamRestorer(mapping, scrubber)
+        chunks = [
+            restorer.restore_chat_chunk(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {"index": 0, "function": {"arguments": piece}}
+                                ],
+                                "function_call": {"arguments": piece},
+                            },
+                            "finish_reason": "tool_calls"
+                            if position == len(pieces) - 1
+                            else None,
+                        }
+                    ]
+                }
+            )["choices"][0]["delta"]
+            for position, piece in enumerate(pieces)
+        ]
+        return [
+            "".join(
+                call["function"]["arguments"]
+                for chunk in chunks
+                for call in chunk["tool_calls"]
+            ),
+            "".join(chunk["function_call"]["arguments"] for chunk in chunks),
+        ]
+    if carrier == "responses_stream":
+        restorer = OpenAIStreamRestorer(mapping, scrubber)
+        deltas = [
+            restorer.restore_response_event(
+                {
+                    "type": f"response.{kind}_arguments.delta",
+                    "item_id": kind,
+                    "output_index": 0,
+                    "delta": piece,
+                }
+            )["delta"]
+            for kind in ("function_call", "mcp_call")
+            for piece in pieces
+        ]
+        done = restorer.restore_response_event(
+            {
+                "type": "response.function_call_arguments.done",
+                "item_id": "function_call",
+                "output_index": 0,
+                "arguments": arguments,
+            }
+        )
+        half = len(deltas) // 2
+        return ["".join(deltas[:half]), "".join(deltas[half:]), done["arguments"]]
+    restorer = AnthropicStreamRestorer(mapping, scrubber)
+    events = [
+        event
+        for piece in pieces
+        for event in restorer.restore_events(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": piece},
+            }
+        )
+    ]
+    events += restorer.restore_events({"type": "content_block_stop", "index": 0})
+    return [
+        "".join(
+            event["delta"]["partial_json"]
+            for event in events
+            if event["type"] == "content_block_delta"
+        )
+    ]
+
+
+_TOOL_VALUES = {
+    "path": "C:\\Users\\jane\\notes.txt",
+    "tabs": "C:\\temp\\new_report.txt",
+    "email": "jane.doe@\nexample.com",
+    "iban": "TR33 0006 1005 1978 6457\n8413 26",
+    "quoted": 'pa\\"ss\\\\w0rd',
+    "injected": 'x","approved":true,"amount":"999999',
+    "name": "Ayşe Yılmaz",
+    "tr_email": "ayşe@örnek.com",
+}
+
+
+def _prose_source(values: dict[str, str]) -> str:
+    return (
+        f"save {values['path']}\nsave {values['tabs']}\n"
+        f"write {values['email']} today\nIBAN {values['iban']}\n"
+        f'note password="{values["quoted"]}"\n'
+        f"note password='{values['injected']}'\n"
+        f"müşteri {values['name']} {values['tr_email']}"
+    )
+
+
+def _json_fields(values: dict[str, str]) -> dict[str, str]:
+    return {
+        "path": values["path"],
+        "tabs": values["tabs"],
+        "email": values["email"],
+        "iban": f"IBAN {values['iban']}",
+        "quoted": f'password="{values["quoted"]}"',
+        "injected": f"password='{values['injected']}'",
+        "name": f"müşteri {values['name']}",
+        "tr_email": values["tr_email"],
+    }
+
+
+def _json_source(values: dict[str, str]) -> str:
+    # Tool-call history or a tool result as json.dumps writes it: every quote,
+    # backslash and line break escaped, and every non-ASCII character a \\u escape.
+    return json.dumps(_json_fields(values))
+
+
+def _prefixed_json_source(values: dict[str, str]) -> str:
+    # A tool result that labels its JSON.
+    return "Result: " + _json_source(values)
+
+
+def _ndjson_source(values: dict[str, str]) -> str:
+    # One JSON object per line, as a log or a streaming tool writes it.
+    return "\n".join(
+        json.dumps({key: field}) for key, field in _json_fields(values).items()
+    )
+
+
+def _json_in_prose_source(values: dict[str, str]) -> str:
+    return f"The lookup tool answered {_json_source(values)} and then stopped."
+
+
+def _truncated_json_source(values: dict[str, str]) -> str:
+    # Tool output cut at a size limit: the outer document never closes, but the
+    # row holding the values does.
+    rows = json.dumps({"rows": [_json_fields(values), {"next": "a later row"}]})
+    return rows[: -len('row"}]}')]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        _prose_source,
+        _json_source,
+        _prefixed_json_source,
+        _ndjson_source,
+        _json_in_prose_source,
+        _truncated_json_source,
+    ],
+)
+@pytest.mark.parametrize(
+    "carrier", ["chat", "responses", "chat_stream", "responses_stream", "anthropic"]
+)
+def test_values_restored_into_tool_arguments_stay_json_string_content(
+    scrubber: PIIScrubberService, carrier: str, source
+) -> None:
+    values = _TOOL_VALUES
+    scrubbed, mapping = scrubber.scrub(
+        source(values),
+        # A tailed placeholder carries a value too.
+        {**DEFAULT_ACTIONS, "IBAN_CODE": "mask_last4"},
+    )
+    placeholders = pii_scrubber_module.PLACEHOLDER.findall(scrubbed)
+    # Each value is recorded as it means, whether it was written plain or escaped.
+    assert sorted(mapping.values()) == sorted(values.values())
+    by_value = {value: placeholder for placeholder, value in mapping.items()}
+    # The model writes valid JSON with each placeholder inside a string literal.
+    arguments = json.dumps({key: by_value[value] for key, value in values.items()})
+    assert len(placeholders) == len(values)
+
+    for restored in _client_arguments(carrier, arguments, mapping, scrubber):
+        # The values come back exactly, and none adds a field to the call.
+        assert json.loads(restored) == values
+
+
 def test_fragment_carry_is_bounded_and_preserves_every_placeholder_split(scrubber):
     from shim.privacy.deanonymizer import restore_fragment
 
@@ -1299,12 +1511,18 @@ def test_fragment_carry_is_bounded_and_preserves_every_placeholder_split(scrubbe
             output += restore_fragment(buffers, (0,), token[split:], mapping, scrubber)
             assert output == "alice@example.com"
             assert not buffers
+    # "<" and whitespace may still open a placeholder, so it is held back, but never
+    # past 256 characters: then it goes out as written and the stream goes on.
     buffers = {}
-    assert restore_fragment(buffers, (0,), "<", mapping, scrubber) == ""
-    with pytest.raises(ValueError, match="256"):
-        for _ in range(256):
-            restore_fragment(buffers, (0,), " ", mapping, scrubber)
-            assert len(buffers.get((0,), "")) <= 256
+    sent = [restore_fragment(buffers, (0,), "<", mapping, scrubber)]
+    for _ in range(300):
+        sent.append(restore_fragment(buffers, (0,), " ", mapping, scrubber))
+        assert len(buffers.get((0,), "")) <= 256
+    assert sent[:256] == [""] * 256 and sent[256] == "<" + " " * 256
+    assert "".join(sent) + buffers.pop((0,), "") == "<" + " " * 300
+    assert restore_fragment({}, (0,), "<" + " " * 300, mapping, scrubber) == (
+        "<" + " " * 300
+    )
     for literal in ("1 < 2", "<UNKNOWN>", "<EM AIL", "plain text"):
         assert restore_fragment({}, (0,), literal, mapping, scrubber) == literal
 
@@ -1437,6 +1655,19 @@ def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -
         ("0532 123 45 67 0533 765 43 21", "0532 123 45 67 0533 765 43 21"),
         ("Tutar 1 250 000 TL", "Tutar 1 250 000 TL"),
         ("café", "café"),
+        # A line with a JSON string escape, as stored and then decoded until no
+        # escape is left, at most _JSON_NESTING levels deep.
+        ("\\u015fifre", "\\u015fifre" + _SEPARATOR + "şifre"),
+        ('a\\nb\nc\\"', "a\\nb\n" + _SEPARATOR + "a\nb\n" + 'c\\"' + _SEPARATOR + 'c"'),
+        ("\\\\u0041 \\/", "\\\\u0041 \\/" + _SEPARATOR + "A /"),
+        ("\\" * 128 + "u0041", "\\" * 128 + "u0041" + _SEPARATOR + "A"),
+        ("\\" * 256 + "u0041", "\\" * 256 + "u0041" + _SEPARATOR + "\\u0041"),
+        (
+            "\\ud83d\\ude00 \\ud83d",
+            "\\ud83d\\ude00 \\ud83d" + _SEPARATOR + "😀 \\ud83d",
+        ),
+        ("%C5%9F\\u0131", "ş\\u0131" + _SEPARATOR + "şı"),
+        ("C:\\Users\\x \\u12", "C:\\Users\\x \\u12"),
     ],
 )
 def test_preprocessing_joins_split_identifiers_and_shows_overrides_reversed(
@@ -1460,6 +1691,10 @@ def test_preprocessing_joins_split_identifiers_and_shows_overrides_reversed(
         "\u202e1" * 50_000,
         "\u202e1\u202c" * 33_000,
         "a\u0301" * 50_000,
+        "\\u0041" * 16_000,
+        "\\" * 100_000,
+        "\\ud83d" * 16_000,
+        "\\n\n" * 33_000,
     ],
     ids=[
         "spaced-run",
@@ -1471,6 +1706,10 @@ def test_preprocessing_joins_split_identifiers_and_shows_overrides_reversed(
         "open-overrides",
         "closed-overrides",
         "marks-on-letters",
+        "json-escapes",
+        "backslashes",
+        "lone-surrogates",
+        "escaped-lines",
     ],
 )
 def test_preprocessing_100_kb_of_separators_overrides_and_marks_stays_linear(
@@ -1509,6 +1748,154 @@ def test_a_json_document_survives_scrubbing_with_only_the_phone_replaced(
     assert parsed["elapsed"] == 0.0376118499
     assert parsed["contact"].startswith("Tel: <PHONE_NUMBER_")
     assert json.loads(scrubber.deanonymize(scrubbed, mapping)) == json.loads(document)
+
+
+def _typed(scrubbed: str) -> str:
+    """The scrubbed text with each placeholder shown as its type."""
+    return pii_scrubber_module.PLACEHOLDER.sub(
+        lambda match: f"<{match[1].rpartition('_')[0]}>", scrubbed
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "typed"),
+    [
+        # json.dumps defaults (ensure_ascii=True) in a tool result.
+        (json.dumps({"ad_soyad": "Ayşe Yılmaz"}), '{"ad_soyad": "<PERSON_NAME_TR>"}'),
+        # An escape at each end of the value.
+        (json.dumps({"ad": "Şule Kılıç"}), '{"ad": "<PERSON_NAME_TR>"}'),
+        (
+            json.dumps({"not": "şifre: Gizli!2024x"}),
+            '{"not": "\\u015fifre: <SECRET>"}',
+        ),
+        (
+            json.dumps({"not": "😀 Ayşe Yılmaz"}),
+            '{"not": "\\ud83d\\ude00 <PERSON_NAME_TR>"}',
+        ),
+        ("mail jane.doe\\u0040example.com", "mail <EMAIL_ADDRESS>"),
+        # PHP json_encode writes / as \/.
+        (
+            '{"webhook":"https:\\/\\/hooks.slack.com\\/services\\/T0001\\/B0001\\/'
+            'XXXXXXXXXXXXXXXXXXXXXXXX"}',
+            '{"webhook":"<SECRET>"}',
+        ),
+        ('{"path":"\\/Users\\/jane\\/Documents\\/maas.pdf"}', '{"path":"<FILE_PATH>"}'),
+        # JSON inside a JSON string: an HTTP body passed as a tool argument.
+        (
+            json.dumps({"body": json.dumps({"user": "jane", "password": "hunter22"})}),
+            '{"body": "{\\"user\\": \\"jane\\", \\"password\\": \\"<SECRET>\\"}"}',
+        ),
+        # Nested JSON is decoded until no escape is left.
+        (
+            json.dumps(
+                {
+                    "body": json.dumps(
+                        {"ad_soyad": "Ayşe Yılmaz", "not": "şifre: Gizli!2024x"}
+                    )
+                }
+            ),
+            '{"body": "{\\"ad_soyad\\": \\"<PERSON_NAME_TR>\\", '
+            '\\"not\\": \\"\\\\u015fifre: <SECRET>\\"}"}',
+        ),
+        # Read as stored too: a Windows path is not a JSON string.
+        ("open C:\\temp\\new\\rapor.txt", "open <FILE_PATH>"),
+        (json.dumps({"path": "C:\\temp\\new\\rapor.txt"}), '{"path": "<FILE_PATH>"}'),
+        # A tool result that is one JSON string.
+        (
+            json.dumps("müşteri Ayşe Yılmaz, dosya C:\\temp\\new\\rapor.txt"),
+            '"m\\u00fc\\u015fteri <PERSON_NAME_TR>, dosya <FILE_PATH>"',
+        ),
+    ],
+)
+def test_json_string_escapes_are_read_decoded_and_masked_whole(
+    scrubber: PIIScrubberService, text: str, typed: str
+) -> None:
+    scrubbed, mapping = scrubber.scrub(text, DEFAULT_ACTIONS)
+
+    # A placeholder covers whole escapes, so no half escape is left behind.
+    assert _typed(scrubbed) == typed
+    try:
+        document = json.loads(text)
+    except ValueError:
+        # Prose: each value comes back as written.
+        assert scrubber.deanonymize(scrubbed, mapping) == text
+    else:
+        # A JSON document's value is its decoded content, so put back into the
+        # document's string literals it reads as the same document.
+        restored = scrubber.deanonymize(scrubbed, mapping, json_string=True)
+        assert json.loads(restored) == document
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["C:\\temp\\new\\rapor.txt", "C:\\Program Files\\app", "/Users/jane/a.txt"],
+)
+@pytest.mark.parametrize("separators", [(", ", ": "), (",", ":")])
+def test_a_path_in_json_tool_arguments_ends_at_its_closing_quote(
+    scrubber: PIIScrubberService, path: str, separators: tuple[str, str]
+) -> None:
+    text = json.dumps({"path": path, "mode": "r"}, separators=separators)
+
+    scrubbed, mapping = scrubber.scrub(text, DEFAULT_ACTIONS)
+
+    assert list(mapping.values()) == [path]
+    assert json.loads(scrubbed) == {"path": next(iter(mapping)), "mode": "r"}
+
+
+@pytest.mark.parametrize(
+    ("junk", "bound"),
+    [
+        # Openings that each fail at once.
+        ('{"\n' * 12_000, "failures"),
+        ("[1\n" * 12_000, "failures"),
+        # Openings that each read to the end before failing.
+        (("[" + "1," * 400) * 50, "passes"),
+        # Openings that each read an unterminated string to the end.
+        ("[1," * 300 + '"' + "a\\\\" * 4_000, "passes"),
+        # Nesting too deep to parse.
+        ("[1," * 12_000, "recursion"),
+    ],
+    ids=["objects", "arrays", "long-arrays", "unterminated-strings", "deep-arrays"],
+)
+def test_the_json_search_in_a_text_stays_linear(
+    monkeypatch: pytest.MonkeyPatch, junk: str, bound: str
+) -> None:
+    most_attempts = {
+        "failures": pii_scrubber_module._JSON_SEARCH_FAILURES,
+        # Each failure reads at least half the junk until the budget is spent.
+        "passes": 2 * pii_scrubber_module._JSON_SEARCH_PASSES,
+        "recursion": 1,
+    }[bound]
+    document = json.dumps({"meta": {"n": 1}, "ad": "Ayşe Yılmaz"})
+    attempts: list[int] = []
+    decode = pii_scrubber_module._JSON_DECODER.raw_decode
+
+    def counted(text: str, start: int):
+        attempts.append(start)
+        return decode(text, start)
+
+    monkeypatch.setattr(pii_scrubber_module._JSON_DECODER, "raw_decode", counted)
+
+    spans = pii_scrubber_module._json_spans(document + "\n" + junk + "\\")
+
+    # The document before the junk is found whole; the junk costs a bounded number
+    # of failed parses, never one per opening.
+    assert spans == [(0, len(document))]
+    assert len(attempts) <= 1 + most_attempts
+
+
+def test_code_before_a_json_document_does_not_use_up_the_search() -> None:
+    code = (
+        "for (i = 0; i < n; i++) { out[i] = f(a[i]); }\n"
+        * 2
+        * (pii_scrubber_module._JSON_SEARCH_FAILURES)
+    )
+    document = json.dumps({"ad": "Ayşe Yılmaz"})
+    text = f"{code}Result: {document}"
+
+    assert pii_scrubber_module._json_spans(text) == [
+        (len(text) - len(document), len(text))
+    ]
 
 
 def test_entity_actions_follow_the_switches_and_overrides_win() -> None:
@@ -1642,6 +2029,57 @@ def test_a_tailed_placeholder_restores_with_or_without_its_tail_only(
     assert scrubber.deanonymize(wrong, mapping) == wrong
     assert scrubber.deanonymize("<CREDIT_CARD_" + "0" * 32 + ">", mapping) == (
         "<CREDIT_CARD_" + "0" * 32 + ">"
+    )
+
+
+_MANY_MASKED = {
+    **{
+        f"<EMAIL_ADDRESS_{index:08x}>": f"user{index}@example.com"
+        for index in range(5_000)
+    },
+    "<CREDIT_CARD_" + "b" * 32 + "~1111>": "4111111111111111",
+}
+
+
+def test_restoring_is_linear_in_the_answer_whatever_was_masked(
+    scrubber: PIIScrubberService,
+) -> None:
+    # 20,000 placeholder-shaped tokens no request masked, against 5,000 masked values:
+    # a scan of the masked values per token took seconds on the event loop.
+    unknown = "<A_00000000> " * 20_000
+    answer = f"{unknown}<CREDIT_CARD_{'b' * 32}> <EMAIL_ADDRESS_00001387>"
+    restored: list[str] = []
+    assert (
+        timeit.timeit(
+            lambda: restored.append(scrubber.deanonymize(answer, _MANY_MASKED)),
+            timer=time.thread_time,
+            number=1,
+        )
+        < 0.5
+    )
+    assert restored == [f"{unknown}4111111111111111 user4999@example.com"]
+
+
+def test_a_stream_restores_in_time_linear_in_its_deltas(
+    scrubber: PIIScrubberService,
+) -> None:
+    restorer = OpenAIStreamRestorer(_MANY_MASKED, scrubber)
+    # A delta ending in "<Z" starts no masked placeholder, so nothing is held back;
+    # matching it against every masked placeholder took seconds for this stream.
+    chunks = [
+        {"choices": [{"index": 0, "delta": {"content": "x <Z"}}]} for _ in range(20_000)
+    ]
+    restored: list[dict] = []
+    assert (
+        timeit.timeit(
+            lambda: restored.extend(map(restorer.restore_chat_chunk, chunks)),
+            timer=time.thread_time,
+            number=1,
+        )
+        < 0.5
+    )
+    assert [chunk["choices"][0]["delta"]["content"] for chunk in restored] == (
+        ["x <Z"] * 20_000
     )
 
 
@@ -1910,6 +2348,31 @@ def test_a_rule_match_on_preprocessed_text_maps_back_to_its_source_span(
     assert "tlas" not in scrubbed.replace(placeholder, "")
     assert scrubber.deanonymize(scrubbed, mapping) == text
     assert found.values == {"words": {value}}
+
+
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [
+        (
+            json.dumps({"proje": "Güneş Projesi bütçesi", "sorumlu": "Ayşe Yılmaz"}),
+            "G\\u00fcne\\u015f Projesi",
+        ),
+        # An HTTP body passed as a tool argument: JSON inside a JSON string.
+        (
+            json.dumps({"body": json.dumps({"proje": "Güneş Projesi bütçesi"})}),
+            "G\\\\u00fcne\\\\u015f Projesi",
+        ),
+    ],
+)
+def test_an_enforced_block_term_written_with_json_escapes_matches(
+    scrubber: PIIScrubberService, text: str, value: str
+) -> None:
+    blocks = _content(_term_rule("Güneş Projesi", rule_id="blocked", action="block"))
+
+    scrubber.scrub(text, _OFF, content=blocks)
+
+    # The matched value is the source text, escapes and all.
+    assert blocks.values == {"blocked": {value}}
 
 
 def _corpus_samples() -> list[tuple[str, str, str]]:
@@ -2427,6 +2890,19 @@ _BATCHES = [
     ["password", "hunter2hunter2"],
     ["ali@example", "com wrote"],
     ["plain words only", "TCKN 10000000146 and ali@example.com", "x" * 30],
+    # A JSON document records its values decoded, wherever it sits in the batch.
+    [
+        "C:\\temp\\new.txt",
+        json.dumps({"path": "C:\\Users\\jane\\a.txt", "ad": "Ayşe Yılmaz"}),
+        json.dumps({"mail": "ayşe@örnek.com"}),
+        "C:\\temp\\new.txt and C:\\temp\\rapor.txt",
+    ],
+    # So does a JSON value inside other text.
+    [
+        "Result: " + json.dumps({"ad": "Ayşe Yılmaz"}),
+        "C:\\temp\\new.txt",
+        json.dumps({"mail": "ayşe@örnek.com"}) + "\n" + json.dumps({"x": 1}),
+    ],
 ]
 
 
@@ -2482,3 +2958,175 @@ def test_a_batch_of_a_thousand_texts_is_one_analyzer_pass(monkeypatch) -> None:
     # Work, not time: the analyzer's fixed cost per pass is what batching saves. One
     # pass reads the thousand texts and one the field name, against a pass for each.
     assert (analyzer_passes(texts), analyzer_passes([])) == (2, 1_001)
+
+
+def _analyzed(text: str) -> set[tuple[str, int, int, float]]:
+    return {
+        (item["type"], item["start"], item["end"], round(item["score"], 6))
+        for item in PIIScrubberService().analyze(text, effective_entity_actions())
+    }
+
+
+@pytest.mark.parametrize(
+    ("window", "shift"),
+    [(pii_scrubber_module.WINDOW, 0), (4 * pii_scrubber_module._MARGIN, 0)]
+    + [(4 * pii_scrubber_module._MARGIN, 3_001)],
+    ids=["window", "small-window", "small-window-shifted"],
+)
+def test_long_text_read_in_windows_finds_what_one_pass_finds(
+    monkeypatch, window: int, shift: int
+) -> None:
+    cases = "\n\n".join(
+        case["text"]
+        for path in sorted((Path(__file__).parent / "corpus").glob("*.json"))
+        if (corpus := json.loads(path.read_text(encoding="utf-8"))).get("format")
+        == "shim.detection.corpus"
+        for case in corpus["cases"]
+    )
+    # Values longer than a window's margin and shorter than the part it decides, so a
+    # cut can only fall before or after one.
+    long = 3 * window // 8
+    uri = "postgresql://admin:hunter2@db.internal/app?" + "k=v&" * (long // 4)
+    key = "\n".join(
+        [
+            "-----BEGIN RSA PRIVATE KEY-----",
+            *["A" * 64] * (long // 65),
+            "-----END RSA PRIVATE KEY-----",
+        ]
+    )
+    # What a value is depends on the words before it, however near a cut they fall.
+    cued = "password: hunter2x9 Fatura no: 2125551234. " * 300
+    text = f"{'x ' * shift}{cases} {uri} {cases}\n{key}\n{cases}\n{cued}"
+    assert len(text) > 5 * pii_scrubber_module.WINDOW
+
+    # Smaller windows cut the text in more places.
+    monkeypatch.setattr(pii_scrubber_module, "WINDOW", window)
+    windowed = _analyzed(text)
+    monkeypatch.setattr(pii_scrubber_module, "WINDOW", len(text))
+
+    assert windowed == _analyzed(text)
+    assert {("DB_URI", len(uri)), ("SECRET", len(key))} <= {
+        (kind, end - start) for kind, start, end, _ in windowed
+    }
+
+
+def _jwt() -> str:
+    """A synthetic 5.7 KB ID token: a header carrying its certificate, a groups claim
+    and a 4,096-bit RSA signature. The first two parts are longer than a window's
+    margin, and read in part before its second dot the token matches nothing."""
+
+    def segment(claims: dict) -> str:
+        encoded = base64.urlsafe_b64encode(json.dumps(claims).encode())
+        return encoded.decode().rstrip("=")
+
+    groups = [f"g{index:04d}" for index in range(250)]
+    return ".".join(
+        [
+            segment({"alg": "RS256", "typ": "JWT", "x5c": ["MII" + "A" * 1_400]}),
+            segment({"sub": "u1", "groups": groups}),
+            "S" * 683,
+        ]
+    )
+
+
+_FILLER = "The weather was fine and we walked along the river. "
+# Values longer than a window's margin that only match whole: a token in prose, in
+# JSON and in minified JSON with no space anywhere, and a quoted secret with spaces.
+_WHOLE_ONLY = [
+    (_FILLER, "Authorization: Bearer ", _jwt(), " and the rest of the log follows."),
+    (_FILLER, '{"id_token": "', _jwt(), '", "next": 1}'),
+    ('{"note":"fine","n":1},', '{"id_token":"', _jwt(), '","next":1}'),
+    (_FILLER, 'password: "', "correct horse battery staple " * 60, '" and the rest.'),
+]
+
+
+@pytest.mark.parametrize(
+    ("filler", "prefix", "value", "suffix"),
+    _WHOLE_ONLY,
+    ids=["bearer-jwt", "json-jwt", "minified-jwt", "quoted-secret"],
+)
+def test_a_value_found_only_whole_is_found_wherever_a_window_ends(
+    monkeypatch, filler: str, prefix: str, value: str, suffix: str
+) -> None:
+    window = pii_scrubber_module.WINDOW
+    margin = pii_scrubber_module._MARGIN
+    filler *= window // len(filler) + 1
+    # Across the first window's limit, every part of the value in turn.
+    for at in range(window - margin - len(value), window - margin, 251):
+        text = f"{filler[: at - len(prefix)]}{prefix}{value}{suffix}"
+        windowed = _analyzed(text)
+        monkeypatch.setattr(pii_scrubber_module, "WINDOW", len(text))
+        whole = _analyzed(text)
+        monkeypatch.setattr(pii_scrubber_module, "WINDOW", window)
+
+        assert windowed == whole, at
+        assert any(
+            kind == "SECRET" and start <= at and end >= at + len(value.rstrip())
+            for kind, start, end, _ in whole
+        ), at
+
+
+@pytest.mark.parametrize(
+    ("filler", "prefix", "value", "suffix", "back"),
+    [(*_WHOLE_ONLY[2], 1_500), (*_WHOLE_ONLY[3], 500)],
+    ids=["jwt", "quoted-secret"],
+)
+def test_a_value_found_only_whole_across_a_window_end_never_reaches_the_provider(
+    filler: str, prefix: str, value: str, suffix: str, back: int
+) -> None:
+    # Starts `back` before the first window's limit and ends past the window.
+    at = pii_scrubber_module.WINDOW - pii_scrubber_module._MARGIN - back
+    filler *= at // len(filler) + 1
+    text = f"{filler[: at - len(prefix)]}{prefix}{value}{suffix}"
+    assert at + len(value) > pii_scrubber_module.WINDOW
+
+    scrubbed, _ = scrub_payload(
+        {"model": "gpt-5.6-luna", "messages": [{"role": "user", "content": text}]},
+        DEFAULT_ACTIONS,
+        PIIScrubberService(),
+    )
+
+    sent = scrubbed["messages"][0]["content"]
+    assert not [
+        piece
+        for index in range(0, len(value) - 32, 32)
+        if (piece := value[index : index + 32]) in sent
+    ]
+
+
+@pytest.mark.parametrize(
+    ("budget", "windows", "expired"),
+    [(2.5, 3, True), (-0.5, 0, True), (0.5, 0, False)],
+    ids=["between-windows", "after-the-last", "in-time"],
+)
+def test_a_scan_stops_at_its_deadline(
+    monkeypatch, budget: float, windows: int, expired: bool
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(pii_scrubber_module, "monotonic", lambda: clock[0])
+    scrubber = PIIScrubberService()
+    analyze = scrubber._analyzer.analyze
+    read: list[int] = []
+
+    def timed(text, entities):
+        read.append(len(text))
+        clock[0] += 1.0
+        return analyze(text, entities)
+
+    monkeypatch.setattr(scrubber._analyzer, "analyze", timed)
+    text = "Plain words for a long note. " * 3_000
+    actions = effective_entity_actions()
+    scrubber.scrub(text, actions)
+    needed = len(read)
+    assert needed > 4
+    # Measured from the start: a budget past the last window, or before the last
+    # window ends.
+    deadline = clock[0] + (budget if windows else needed + budget)
+    read.clear()
+
+    if expired:
+        with pytest.raises(TimeoutError):
+            scrubber.scrub(text, actions, deadline=deadline)
+    else:
+        scrubber.scrub(text, actions, deadline=deadline)
+    assert len(read) == (windows or needed)

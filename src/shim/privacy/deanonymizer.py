@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim.privacy.policies import PlaceholderMap, placeholder_map
 
 
 _DEEP_CONTENT_FIELDS = frozenset({"arguments", "input"})
@@ -93,6 +94,7 @@ def restore_openai_payload(
 
     if not verification_map:
         return payload
+    verification_map = placeholder_map(verification_map)
 
     def visit(
         value: Any,
@@ -113,6 +115,11 @@ def restore_openai_payload(
             for key, item in value.items():
                 if deep_content:
                     restored[key] = visit(item, deep_content=True)
+                elif key == "arguments" and isinstance(item, str):
+                    # Function and MCP call arguments are JSON text.
+                    restored[key] = scrubber.deanonymize(
+                        item, verification_map, json_string=True
+                    )
                 elif (
                     _is_protocol_field(key, _OPENAI_PROTOCOL_FIELDS)
                     or (value_type == "image_generation_call" and key == "result")
@@ -149,6 +156,7 @@ def restore_anthropic_payload(
 
     if not verification_map:
         return payload
+    verification_map = placeholder_map(verification_map)
 
     def visit(
         value: Any,
@@ -194,7 +202,7 @@ class AnthropicStreamRestorer:
         verification_map: Mapping[str, str],
         scrubber: PIIScrubberService,
     ) -> None:
-        self._verification_map = verification_map
+        self._verification_map = placeholder_map(verification_map)
         self._scrubber = scrubber
         self._buffers: dict[tuple[object, ...], str] = {}
 
@@ -207,9 +215,13 @@ class AnthropicStreamRestorer:
             for field in ("text", "partial_json", "thinking", "content"):
                 fragment = delta.get(field)
                 if isinstance(fragment, str):
-                    delta[field] = self._restore_fragment(
+                    delta[field] = restore_fragment(
+                        self._buffers,
                         (payload.get("index"), field),
                         fragment,
+                        self._verification_map,
+                        self._scrubber,
+                        json_string=field == "partial_json",
                     )
         flushed: list[dict[str, Any]] = []
         if event_type == "content_block_stop":
@@ -224,11 +236,6 @@ class AnthropicStreamRestorer:
                 self._scrubber,
             ),
         ]
-
-    def _restore_fragment(self, key: tuple[object, ...], fragment: str) -> str:
-        return restore_fragment(
-            self._buffers, key, fragment, self._verification_map, self._scrubber
-        )
 
     def _flush_events(self, index: object | None = None) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -250,6 +257,7 @@ class AnthropicStreamRestorer:
                         field: self._scrubber.deanonymize(
                             self._buffers.pop(key),
                             self._verification_map,
+                            json_string=field == "partial_json",
                         ),
                     },
                 }
@@ -265,7 +273,7 @@ class OpenAIStreamRestorer:
         verification_map: Mapping[str, str],
         scrubber: PIIScrubberService,
     ) -> None:
-        self._verification_map = verification_map
+        self._verification_map = placeholder_map(verification_map)
         self._scrubber = scrubber
         self._buffers: dict[tuple[object, ...], str] = {}
 
@@ -283,7 +291,9 @@ class OpenAIStreamRestorer:
                 payload.get("output_index"),
                 payload.get("content_index"),
             )
-            payload["delta"] = self._restore_fragment(key, delta)
+            payload["delta"] = self._restore_fragment(
+                key, delta, json_string=event_type.endswith("_arguments.delta")
+            )
         payload = restore_openai_payload(
             payload,
             self._verification_map,
@@ -324,6 +334,7 @@ class OpenAIStreamRestorer:
                 function_call["arguments"] = self._restore_fragment(
                     ("chat", choice_index, "function_call"),
                     function_call["arguments"],
+                    json_string=True,
                 )
             for tool_call in delta.get("tool_calls") or ():
                 if not isinstance(tool_call, dict):
@@ -335,6 +346,7 @@ class OpenAIStreamRestorer:
                     function["arguments"] = self._restore_fragment(
                         ("chat", choice_index, "tool", tool_call.get("index", 0)),
                         function["arguments"],
+                        json_string=True,
                     )
             if choice.get("finish_reason") is not None:
                 self._flush_chat_choice(choice_index, delta)
@@ -344,9 +356,16 @@ class OpenAIStreamRestorer:
             self._scrubber,
         )
 
-    def _restore_fragment(self, key: tuple[object, ...], fragment: str) -> str:
+    def _restore_fragment(
+        self, key: tuple[object, ...], fragment: str, *, json_string: bool = False
+    ) -> str:
         return restore_fragment(
-            self._buffers, key, fragment, self._verification_map, self._scrubber
+            self._buffers,
+            key,
+            fragment,
+            self._verification_map,
+            self._scrubber,
+            json_string=json_string,
         )
 
     def _drop_buffers(self, event_prefix: str, item_id: object) -> None:
@@ -359,7 +378,11 @@ class OpenAIStreamRestorer:
             if key[:2] != ("chat", choice_index):
                 continue
             carry = self._buffers.pop(key)
-            restored = self._scrubber.deanonymize(carry, self._verification_map)
+            restored = self._scrubber.deanonymize(
+                carry,
+                self._verification_map,
+                json_string=key[2] in {"function_call", "tool"},
+            )
             if key[2] in {"content", "refusal"}:
                 delta[str(key[2])] = str(delta.get(str(key[2])) or "") + restored
             elif key[2] == "function_call":
@@ -384,17 +407,20 @@ def restore_fragment(
     fragment: str,
     placeholders: Mapping[str, str],
     scrubber: PIIScrubberService,
+    *,
+    json_string: bool = False,
 ) -> str:
+    placeholders = placeholder_map(placeholders)
     text = buffers.pop(key, "") + fragment
     ready, carry = _split_placeholder_prefix(text, placeholders)
     if carry:
         buffers[key] = carry
-    return scrubber.deanonymize(ready, placeholders)
+    return scrubber.deanonymize(ready, placeholders, json_string=json_string)
 
 
 def _split_placeholder_prefix(
     text: str,
-    placeholders: Mapping[str, str],
+    placeholders: PlaceholderMap,
 ) -> tuple[str, str]:
     last_open = text.rfind("<")
     if last_open < 0:
@@ -404,11 +430,8 @@ def _split_placeholder_prefix(
     compact_tail = "<" + identifier
     if tail[-1:].isspace() and identifier and f"{compact_tail}>" not in placeholders:
         return text, ""
-    if any(
-        len(compact_tail) < len(placeholder) and placeholder.startswith(compact_tail)
-        for placeholder in placeholders
-    ):
-        if len(tail) > 256:
-            raise ValueError("provider placeholder suffix exceeds 256 characters")
+    # Held back while it may still open a placeholder, at most 256 characters: past
+    # that it goes out as written, and a placeholder it opens stays unrestored.
+    if len(tail) <= 256 and placeholders.continues(compact_tail):
         return text[:last_open], tail
     return text, ""

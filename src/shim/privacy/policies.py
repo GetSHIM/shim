@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import cached_property
 from types import MappingProxyType
 from typing import Any, Literal, cast, get_args
 
@@ -205,6 +207,48 @@ def effective_entity_actions(
 def placeholder_type(placeholder: str) -> str:
     """The entity type or rule label of `<TYPE_hex>` or `<TYPE_hex~tail>`."""
     return placeholder.strip("<>").partition("~")[0].rpartition("_")[0]
+
+
+class PlaceholderMap(Mapping[str, str]):
+    """Placeholder to value, indexed so restoring an answer is linear in its length.
+
+    The indexes are built on first use; the wrapped mapping must not change after.
+    """
+
+    def __init__(self, values: Mapping[str, str]) -> None:
+        self._values = values
+
+    def __getitem__(self, placeholder: str) -> str:
+        return self._values[placeholder]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    @cached_property
+    def untailed(self) -> dict[str, str]:
+        """`<TYPE_hex>` to the value of the first `<TYPE_hex~tail>`."""
+        index: dict[str, str] = {}
+        for placeholder, value in self._values.items():
+            head, tilde, _ = placeholder.partition("~")
+            if tilde:
+                index.setdefault(f"{head}>", value)
+        return index
+
+    @cached_property
+    def _ordered(self) -> list[str]:
+        return sorted(self._values)
+
+    def continues(self, prefix: str) -> bool:
+        """Whether a placeholder is longer than `prefix` and starts with it."""
+        index = bisect_right(self._ordered, prefix)
+        return index < len(self._ordered) and self._ordered[index].startswith(prefix)
+
+
+def placeholder_map(values: Mapping[str, str]) -> PlaceholderMap:
+    return values if isinstance(values, PlaceholderMap) else PlaceholderMap(values)
 
 
 def block_code(blocked_types: Iterable[str]) -> str | None:

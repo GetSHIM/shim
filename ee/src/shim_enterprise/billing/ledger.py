@@ -41,6 +41,12 @@ class AccountingConflictError(IdentityConflictError):
     """Persisted accounting identity or counter state conflicts with the request."""
 
 
+# Terminal codes of a call that ended without provider usage: it settles only as an
+# estimate, and has no answer to snapshot.
+_UNVERIFIED_USAGE_CODES = frozenset(
+    {"PROVIDER_USAGE_UNAVAILABLE", "STALE_RESERVATION_RECOVERED"}
+)
+
 _USAGE_LEDGER_REPLAY_FIELDS = (
     "request_id",
     "organization_id",
@@ -318,20 +324,22 @@ class FinalizationCommand:
             raise ValueError("final provider model cannot be blank")
         if self.pricing_metadata is not None and not self.pricing_metadata:
             raise ValueError("final pricing metadata cannot be empty")
-        if self.terminal_error_code in {
-            "PROVIDER_USAGE_UNAVAILABLE",
-            "STALE_RESERVATION_RECOVERED",
-        } and (
-            self.quota_action is TerminalAction.SETTLE
-            or self.spend_action is TerminalAction.SETTLE
+        if (
+            self.terminal_error_code in _UNVERIFIED_USAGE_CODES
+            and TerminalAction.SETTLE in (self.quota_action, self.spend_action)
+            and not self.estimated
         ):
-            raise ValueError("unverified provider usage cannot be settled")
+            raise ValueError("unverified provider usage settles only as an estimate")
 
 
 @dataclass(frozen=True, slots=True)
 class FailureReservationState:
     provider_started: bool
     spend_reserved: bool
+    # What was reserved: a started call whose usage is unknown settles at it.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)
@@ -609,16 +617,20 @@ class DurableAccountingRepository:
         """Lock and return the durable facts that determine failure finalization."""
 
         lifecycle = await self._lock_lifecycle(session, tenant_id, request_id)
-        spend_reservation = await self._find_reservation(
-            session,
-            tenant_id,
-            request_id,
-            "spend_reservation",
-            lock=True,
-        )
+        quota_reservation, spend_reservation = [
+            await self._find_reservation(
+                session, tenant_id, request_id, event_type, lock=True
+            )
+            for event_type in ("quota_reservation", "spend_reservation")
+        ]
         return FailureReservationState(
             provider_started=lifecycle.provider_started_at is not None,
             spend_reserved=spend_reservation is not None,
+            prompt_tokens=quota_reservation.prompt_tokens if quota_reservation else 0,
+            completion_tokens=(
+                quota_reservation.completion_tokens if quota_reservation else 0
+            ),
+            cost_usd=spend_reservation.cost_usd if spend_reservation else Decimal("0"),
         )
 
     async def _finalize_locked(
@@ -687,7 +699,8 @@ class DurableAccountingRepository:
                 "cached_input_tokens": command.cached_input_tokens,
                 "warnings": list(command.warnings),
                 "shim_latency_ms": command.shim_latency_ms,
-                # Only a settled answer carries a snapshot; refunds record none of these.
+                # Only a settled answer carries a snapshot; a refund, or a started
+                # call settled at its reservation without usage, records none of these.
                 **(
                     {
                         "provider_latency_ms": command.provider_latency_ms,
@@ -696,6 +709,7 @@ class DurableAccountingRepository:
                         "reasoning_seen": command.reasoning_seen,
                     }
                     if command.quota_action is TerminalAction.SETTLE
+                    and command.terminal_error_code not in _UNVERIFIED_USAGE_CODES
                     else {}
                 ),
                 **(
@@ -942,10 +956,12 @@ class DurableAccountingRepository:
                 lock=True,
             )
             provider_started = lifecycle.provider_started_at is not None
+            # A started call may have been billed in full: it settles at what it reserved.
+            action = (
+                TerminalAction.SETTLE if provider_started else TerminalAction.REFUND
+            )
             spend_action = (
-                TerminalAction.REFUND
-                if spend_reservation is not None
-                else TerminalAction.NONE
+                action if spend_reservation is not None else TerminalAction.NONE
             )
             terminal_status = (
                 "rejected" if lifecycle.status == "routing_rejected" else "failed"
@@ -966,8 +982,18 @@ class DurableAccountingRepository:
                     FinalizationCommand(
                         tenant_id=tenant_id,
                         request_id=request_id,
-                        quota_action=TerminalAction.REFUND,
+                        quota_action=action,
                         spend_action=spend_action,
+                        prompt_tokens=quota_reservation.prompt_tokens
+                        if provider_started
+                        else 0,
+                        completion_tokens=quota_reservation.completion_tokens
+                        if provider_started
+                        else 0,
+                        actual_cost_usd=spend_reservation.cost_usd
+                        if provider_started and spend_reservation is not None
+                        else Decimal("0"),
+                        estimated=provider_started,
                         lifecycle_status=terminal_status,
                         terminal_error_code=terminal_error_code,
                         terminal_error_message=terminal_error_message,

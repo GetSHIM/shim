@@ -61,9 +61,11 @@ request it:
   number is masked as a phone. A tax word (`vergi`, `VKN`, `tax`) in front of
   it overrules both and makes it a tax number. A number that passes the Luhn
   check is masked as a card, so about one numeric id in ten that starts like a
-  Visa or Mastercard number is masked too. When in doubt it is masked: a masked order
-  number comes back in the answer, a missed phone number would have reached the
-  provider. Each detected value becomes a
+  Visa or Mastercard number is masked too. A card or national ID number glued to
+  a word is masked like any other (`musteri_10000000146.pdf`,
+  `card_4111111111111111`); the checksum decides, not the word around it. When in
+  doubt it is masked: a masked order number comes back in the answer, a missed
+  phone number would have reached the provider. Each detected value becomes a
   placeholder before the request leaves, and is restored in the answer before
   it reaches your caller. What happens to each type is its action: `mask` (the
   default), `monitor` (sent unchanged and counted), `block` (the request is

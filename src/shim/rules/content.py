@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -42,9 +43,15 @@ _OTHER_DIGIT = re.compile(r"[^\D0-9]")
 _CAMEL = regex.compile(r"\p{Ll}\p{Lu}")
 _SPACES = re.compile(r"\s+")
 _DASH = "-"
-# Hyphen, non-breaking hyphen, figure, en and em dash, horizontal bar, minus sign.
-_DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
-# Turkish letters typed without their marks, and every dash as a hyphen.
+# Every Unicode dash (category Pd) but the hyphen-minus, and the minus sign: each
+# reads as a hyphen.
+DASHES = (
+    "\u058a\u05be\u1400\u1806\u2010\u2011\u2012\u2013\u2014\u2015\u2e17\u2e1a"
+    "\u2e3a\u2e3b\u2e40\u2e5d\u301c\u3030\u30a0\ufe31\ufe32\ufe58\ufe63\uff0d"
+    "\U00010ead\u2212"
+)
+_OTHER_DASH = re.compile(f"[{DASHES}]")
+# Turkish letters typed without their marks.
 _ASCII = (
     ("ı", "i"),
     ("ş", "s"),
@@ -52,7 +59,7 @@ _ASCII = (
     ("ğ", "g"),
     ("ö", "o"),
     ("ü", "u"),
-) + tuple((dash, _DASH) for dash in _DASHES)
+)
 # U+02BC is a letter, so a run can carry it: "Atlasʼa".
 _APOSTROPHE_LETTER = "ʼ"
 _TURKISH_I = "İIıi"
@@ -67,6 +74,12 @@ def fold_digits(text: str) -> str:
     return _OTHER_DIGIT.sub(lambda digit: str(unicodedata.decimal(digit[0])), text)
 
 
+def fold_dashes(text: str) -> str:
+    """Every dash as a hyphen, one character for one."""
+
+    return _OTHER_DASH.sub(_DASH, text)
+
+
 def _fold(text: str) -> str:
     """The fold terms are compared in; one character for one, so offsets hold.
 
@@ -76,7 +89,7 @@ def _fold(text: str) -> str:
     """
 
     # str.replace runs in C; a translate table walks a dict per character.
-    folded = fold_digits(text).replace("İ", "i").lower()
+    folded = fold_dashes(fold_digits(text)).replace("İ", "i").lower()
     for letter, plain in _ASCII:
         folded = folded.replace(letter, plain)
     return folded
@@ -91,7 +104,23 @@ def turkish_fold(text: str) -> str:
 def _letter(character: str) -> str:
     if character in _TURKISH_I:
         return f"[{_TURKISH_I}]"
-    return f"[-{_DASHES}]" if character == _DASH else regex.escape(character)
+    if character == _DASH or character in DASHES:
+        return f"[-{DASHES}]"
+    return regex.escape(character)
+
+
+def _hyphen_dashes(source: str) -> str:
+    """A tenant regex with every dash written in it as a hyphen, the text it reads."""
+
+    parts: list[str] = []
+    escaped = False
+    for character in source:
+        if character in DASHES:
+            parts.append(_DASH if escaped else rf"\{_DASH}")
+        else:
+            parts.append(character)
+        escaped = character == "\\" and not escaped
+    return "".join(parts)
 
 
 def _template_regex(template: str) -> str:
@@ -271,7 +300,7 @@ class Matchers:
                         if templates
                         else []
                     )
-                    + rule.match["regexes"]
+                    + [_hyphen_dashes(source) for source in rule.match["regexes"]]
                 )
         self.root = _Node()
         for term, rules in owners.items():
@@ -519,12 +548,18 @@ def first_fit(
     """The spans, in `key` order, that overlap none taken before; `keep` ones always."""
 
     taken: list[Any] = []
-    # ponytail: O(n²) over one string's detections; an interval index if counts grow.
+    # The characters the taken spans cover, as sorted [start, end) runs that do not
+    # overlap: a span overlaps a taken one exactly when it overlaps a run.
+    starts: list[int] = []
+    ends: list[int] = []
     for item in sorted(items, key=key):
-        if keep(item) or not any(
-            item.start < other.end and other.start < item.end for other in taken
-        ):
+        after = bisect_left(starts, item.end)
+        if keep(item) or not after or ends[after - 1] <= item.start:
             taken.append(item)
+            # The runs it overlaps become one with it.
+            first = bisect_right(ends, item.start)
+            starts[first:after] = [min([item.start, *starts[first:after]])]
+            ends[first:after] = [max([item.end, *ends[first:after]])]
     return taken
 
 

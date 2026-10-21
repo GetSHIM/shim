@@ -79,21 +79,22 @@ bands (same row and request id, recorded as `route_decision`), and, after a
 Each extra attempt is its own request: a new request id and start, the same privacy
 outcome and admission, the bands run again for its target from the masked payload
 before the bands, a usage reservation (rate limits and the repeat detector never see
-it) that takes the client request's one request unit only when no earlier attempt was
-answered (`AttemptInfo.counted`), its own spend reservation and settlement, and the
-`attempt_group_id`, `attempt_number`, `attempt_reason` and `attempt_rule_id` of its
-row. Core guards skip a target with a `gateway.attempt` verdict: at most
-`MAX_ATTEMPTS` (3), never from an internal deployment to another kind when the
-request carried personal data or a privacy rule match (term, pattern, record set,
-destination), never to a target for which an enforced mask, block or approval rule
-of a privacy kind is in scope that was not in scope for the target privacy ran for
-(`ATTEMPT_DESTINATION_CHANGED`: privacy ran once, for the first target), never off
-the deployment a Responses continuation is pinned to, never without a stored
-credential after a BYOK key was consumed. An extra attempt starts without the pin
-matches and answer warnings of the one before it, since its bands and answer run
-again; a cancelled start gives back its row and its lease. A stream is never offered once it has started. The client sees the serving
-attempt's `X-Shim-Request-Id` and, when more than one ran, `X-Shim-Attempts`; an
-answered attempt a later one supersedes is settled and never returned.
+it) that takes the client request's one request unit only when no earlier attempt
+settled, with an answer or as a started call without usage (`AttemptInfo.counted`),
+its own spend reservation and settlement, and the `attempt_group_id`,
+`attempt_number`, `attempt_reason` and `attempt_rule_id` of its row. Core guards skip
+a target with a `gateway.attempt` verdict: at most `MAX_ATTEMPTS` (3), never from an
+internal deployment to another kind when the request carried personal data or a
+privacy rule match (term, pattern, record set, destination), never to a target for
+which an enforced mask, block or approval rule of a privacy kind is in scope that was
+not in scope for the target privacy ran for (`ATTEMPT_DESTINATION_CHANGED`: privacy
+ran once, for the first target), never off the deployment a Responses continuation is
+pinned to, never without a stored credential after a BYOK key was consumed. An extra
+attempt starts without the pin matches and answer warnings of the one before it, since
+its bands and answer run again; a cancelled start gives back its row and its lease. A
+stream is never offered once it has started. The client sees the serving attempt's
+`X-Shim-Request-Id` and, when more than one ran, `X-Shim-Attempts`; an answered
+attempt a later one supersedes is settled and never returned.
 
 The kernel also takes an optional `ShadowSender` (`src/shim/gateway/kernel/shadow.py`;
 none in community, none in enterprise until a tenant feature supplies one). Right
@@ -123,7 +124,8 @@ acquires a lease for the request's target (tenant, provider, base URL) sized
 time. A refusal is 429 `CONCURRENCY_LIMITED` with `Retry-After` (or
 `x-should-retry: false` when the work can never fit) and the request is rejected
 without a reservation. The lease is released exactly once on every terminal: after a
-JSON postprocess, in a stream's finalizer (heartbeats renew it), on every error after
+JSON postprocess, in a stream's finalizer (a timer heartbeat renews it until the
+stream ends, whether or not the client reads), on every error after
 admission; an S57 move takes room on the new target first, without waiting, and a
 refusal skips the move (`ATTEMPT_TARGET_SATURATED`); a move to the same target keeps
 the room it holds; a shadow copy asks with priority
@@ -258,7 +260,9 @@ pypdf is the optional `documents` extra), scans it with the same actions and rul
 forwards the part, stops the request, or replaces the part with its (masked) text,
 recorded as a `document_text` entry of `transforms_applied`. A tenant that hides any
 value gets every scanned PDF as its text (Gemini with `by_provider` excepted), since a
-provider reads a PDF's drawn pages. PDF reading and image decoding run in
+provider reads a PDF's drawn pages, and every scanned Word file as its text, since only
+some of its parts are read. In a function response, where text cannot replace a file,
+such a file is refused with 400 `PRIVACY_POLICY_BLOCKED` instead. PDF reading and image decoding run in
 `src/shim/core/isolation.py`: two spawned worker processes per gateway process, each
 with a 1 GB address-space cap (Linux) and a signal alarm per call (10 s, and 20 s for
 all of a request's files). A caller thread waits on a two-slot semaphore and then on
@@ -305,7 +309,8 @@ The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `CONCURRENCY_LIMITED`,
 `AGENT_LOOP_DETECTED`,
 `ZERO_RETENTION_REQUIRED`, `RATE_LIMIT_EXCEEDED`, `PRIVACY_POLICY_BLOCKED`,
-`SECRET_BLOCKED`, `PII_BLOCKED`, `DOCUMENT_UNSCANNABLE`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,
+`SECRET_BLOCKED`, `PII_BLOCKED`, `DOCUMENT_UNSCANNABLE`, `PRIVACY_SCAN_TOO_LARGE`,
+`PRIVACY_SCAN_TIMEOUT`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,
 `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE`,
 `PRIVACY_STATE_UNAVAILABLE`, `PROVIDER_NOT_CONFIGURED`, `PROVIDER_RATE_LIMITED`,
 `PROVIDER_REJECTED_REQUEST`, `PROVIDER_CONTENT_FILTERED`, `PROVIDER_UNAVAILABLE`,
@@ -357,8 +362,9 @@ with the rules themselves only in process memory. A stored rule this build
 cannot run is kept aside as unusable (`load_rule_set`): enforced, it blocks the
 requests in its scope. The `term` and `pattern` kinds (`src/shim/rules/content.py`)
 are searched by `PIIScrubberService` on its normalized text (percent-decoded,
-invisible characters dropped, NFKC, every script's decimal digits as 0-9, each
-character mapped back to its source offsets for masking): terms through a
+each line with JSON string escapes also read decoded, invisible characters
+dropped, NFKC, every script's decimal digits as 0-9, each character mapped back
+to its source offsets for masking): terms through a
 word index and pattern regexes, both built once per `RuleSet` object
 (`RuleSet.matchers`), the Turkish endings from a grammar
 (`src/shim/rules/tr_suffixes.py`). The `destination` kind (`src/shim/rules/destination.py`)

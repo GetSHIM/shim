@@ -814,8 +814,8 @@ def _custom_recognizers() -> list[EntityRecognizer]:
             patterns=[
                 Pattern(
                     "Private file path",
-                    r"(?<![\w])(?:/(?:Users|home|var|etc|opt|srv|tmp)/[^\s,;]+|"
-                    r"[A-Za-z]:\\[^\r\n]+)",
+                    r"(?<![\w])(?:/(?:Users|home|var|etc|opt|srv|tmp)/[^\s,;\"]+|"
+                    r"[A-Za-z]:\\[^\r\n\"]+)",
                     0.85,
                 )
             ],
@@ -841,19 +841,29 @@ def _build_registry() -> RecognizerRegistry:
             supported_regions=(*PhoneRecognizer.DEFAULT_SUPPORTED_REGIONS, "TR"),
             context=[*PhoneRecognizer.CONTEXT, "telefon", "cep", "gsm"],
         ),
+        # Card and TCKN patterns end at a digit edge, not Presidio's \b: '_' and a
+        # letter are word characters, and "musteri_10000000146.pdf" or
+        # "card_4111111111111111" carries the number all the same. The Luhn and
+        # TCKN checksums still decide.
         CreditCardRecognizer(
             supported_language=_LANGUAGE,
             patterns=[
-                *CreditCardRecognizer.PATTERNS,
+                Pattern(
+                    "All Credit Cards (weak)",
+                    r"(?<!\d)(?!1\d{12}(?!\d))"
+                    r"(?:4\d{3}|5[0-5]\d{2}|6\d{3}|1\d{3}|3\d{3})"
+                    r"[- ]?\d{3,4}[- ]?\d{3,4}[- ]?\d{3,5}(?!\d)",
+                    0.3,
+                ),
                 Pattern(
                     "Troy (weak)",
-                    r"\b9792[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b",
+                    r"(?<!\d)9792[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}(?!\d)",
                     0.3,
                 ),
                 Pattern(
                     "Mastercard 2-series (weak)",
-                    r"\b(?:222[1-9]|22[3-9]\d|2[3-6]\d{2}|27[01]\d|2720)"
-                    r"[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b",
+                    r"(?<!\d)(?:222[1-9]|22[3-9]\d|2[3-6]\d{2}|27[01]\d|2720)"
+                    r"[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}(?!\d)",
                     0.3,
                 ),
             ],
@@ -866,11 +876,11 @@ def _build_registry() -> RecognizerRegistry:
         TrNationalIdRecognizer(
             supported_language=_LANGUAGE,
             patterns=[
-                *TrNationalIdRecognizer.PATTERNS,
+                Pattern("TR_NATIONAL_ID", r"(?<!\d)[1-9][0-9]{10}(?!\d)", 0.3),
                 Pattern(
                     "TR_NATIONAL_ID in groups",
-                    r"\b[1-9][0-9]{2}([ -])[0-9]{3}\1"
-                    r"(?:[0-9]{3}\1[0-9]{2}|[0-9]{2}\1[0-9]{3})\b",
+                    r"(?<!\d)[1-9][0-9]{2}([ -])[0-9]{3}\1"
+                    r"(?:[0-9]{3}\1[0-9]{2}|[0-9]{2}\1[0-9]{3})(?!\d)",
                     0.3,
                 ),
             ],

@@ -60,8 +60,10 @@ answer = client.responses.create(model="gpt-5-nano", input="Summarise the invoic
 To send the provider key per request instead, add
 `default_headers={"x-provider-key": os.environ["OPENAI_API_KEY"]}` to the client.
 
-Notes: the model must be in shim's price catalog, which `GET /v1/models` lists;
-any other model gets 400 `MODEL_NOT_PRICED`. A model id is at most 200 letters,
+Notes: the model must be in shim's price catalog, which `GET /v1/models` lists, or
+be a dated snapshot of a model there (`gpt-4o-2024-08-06`, `claude-sonnet-4-5-20250929`);
+any other model gets 400 `MODEL_NOT_PRICED`, a longer name that starts with a catalog
+id included (`o3-deep-research`, `gpt-4-32k`). A model id is at most 200 letters,
 digits, `.`, `_`, `:` and `-`; any other id is refused the same way, and the usage
 event records it as `unsupported`, never the id itself. With no provider key at all the
 answer is 503 `PROVIDER_NOT_CONFIGURED`, and an empty `x-provider-key` is 400
@@ -335,14 +337,25 @@ Digits of any script count as the number they are: a TCKN, IBAN, card or phone
 number written in Arabic-Indic, Devanagari or fullwidth digits is found and
 masked like one written in 0-9, and so is a rule term or template. Marks and
 invisible characters on the digits (an accent after each digit, a variation
-selector, a keycap, a zero-width joiner) do not hide the number; they are masked
-with it and restored with it, and so are marks on the letters of an email or an
-IBAN. A TCKN, card, IBAN or phone number with a space between every character
+selector, a keycap, a zero-width joiner, any other format character such as
+U+180E or a tag character, an unassigned default-ignorable code point such as
+U+2065) do not hide the number; they are masked with it and restored with it,
+and so are marks on the letters of an email or an IBAN. Every Unicode dash and
+the minus sign (non-breaking hyphen, en and em dash, wave dash, their small and
+fullwidth forms) reads as a hyphen, between digit groups and in rule matches. A
+TCKN, card, IBAN or phone number with a space between every character
 (`1 0 0 0 0 0 0 0 1 4 6`) or in hyphenated groups of one size
 (`TR3-300-061-005-...`) is read without the separators when it has ten digits or
 more, and an email broken over a line after its `@` is read whole. Text after a
 right-to-left override (U+202E) is also read in the order it is shown, so a value
 stored reversed is found; the mask covers the separators and the reversed text.
+A line with JSON string escapes (`\u015f`, `\/`, `\"`, `\n`, surrogate pairs), as
+`json.dumps` and PHP `json_encode` write tool results by default, is read both as
+written and decoded until no escape is left (JSON nested in a JSON string
+up to eight levels deep), so `Ay\u015fe Y\u0131lmaz`, a nested
+`{\"password\": \"...\"}` and a rule term are found while a Windows path such as
+`C:\temp\new` still is; the mask covers whole escapes. Injection markers are read
+with the escapes decoded.
 A number after `fatura no`, `sipariş no`, `order no`, `invoice no` or `takip no`
 (and `numarası`, `numaranız`) is not taken for a phone; after `tel no`,
 `telefon no` or `cep no` it is. A date such as `05.03.2026` is not a phone.
@@ -449,7 +462,11 @@ Notes: an unknown type or action, `mask_last4` on another type, `stable`
 without a key, an invalid bulk threshold, or a `PII_RESPONSE_SCAN` other than
 `off` or `count`, stops the gateway at start-up with the setting named. A tailed placeholder is restored
 whether the model writes it back with or without its tail; with a different
-tail it is left as written. The tail reaches only the provider: events and
+tail it is left as written. Inside tool-call arguments, which are JSON text, a
+restored value is JSON-escaped, so a quote or backslash in it stays part of the
+string. A value masked inside JSON in a message text (tool-call history, a
+`json.dumps` tool result, NDJSON, JSON after a label or inside prose) is kept
+decoded, as the model reads it. The tail reaches only the provider: events and
 metrics carry counts. The types are those listed in [Scan text before you send it](#scan-text-before-you-send-it).
 Where two detections overlap, as an e-mail inside a file path, the span takes
 the stronger action (`block`, then `mask`, then `mask_last4`, then `monitor`), so
@@ -503,13 +520,13 @@ the setting is on without it), then set `SHIM_DOCUMENTS`:
 | `SHIM_DOCUMENTS` | An inline PDF, `.docx`, or text file (`text/plain`, `text/markdown`, `text/csv`, `application/json`) |
 | --- | --- |
 | `as_media` (default) | Follows `SHIM_MEDIA_INPUTS`, as above. |
-| `scan` | Its text is read and scanned with the same actions and rules as message text. Nothing to mask: it is forwarded as it came, except that a PDF goes as its scanned text while any type masks or blocks or a rule hides values (a provider reads a PDF's drawn pages, which hold images and appearances no scan saw). A value to mask: 400 `PII_BLOCKED` (`SECRET_BLOCKED` for `SECRET` and `DB_URI`) naming the types and saying to turn on conversion; no provider call. A type whose action is `block`: refused as for message text. |
+| `scan` | Its text is read and scanned with the same actions and rules as message text. Nothing to mask: it is forwarded as it came, except that a PDF or `.docx` goes as its scanned text while any type masks or blocks or a rule hides values (a provider reads a PDF's drawn pages, which hold images and appearances no scan saw, and every part of a Word file, while only the parts listed below are read; links, field codes, alt text, charts and SmartArt are not). A value to mask: 400 `PII_BLOCKED` (`SECRET_BLOCKED` for `SECRET` and `DB_URI`) naming the types and saying to turn on conversion; no provider call. A type whose action is `block`: refused as for message text. |
 | `scan_and_convert` | The same, except that a document with a value to mask is sent as its masked text, and the answer gets the values back. |
 
 A document shim cannot read (a URL or file id, a PDF without pypdf, an encrypted or
 corrupt file, a PDF without a text layer, over 32 MB decoded, 1,000 pages, 1,000,000
 characters, 4,000,000 characters in one request, a page stream over 4 MB decoded, or
-10 seconds of reading a file and 20 seconds for all of a request's files) is refused
+10 seconds of reading a file and 20 seconds for the request's whole scan) is refused
 with 400 `DOCUMENT_UNSCANNABLE` naming the reason while media is refused, and
 forwarded unscanned otherwise. A PDF is read with its form field values,
 annotation texts and document information, in one of two worker processes with 1 GB
@@ -525,8 +542,11 @@ encoding is not read.
 provider bills that less: PDFs as text to Anthropic and OpenAI, natively to Gemini
 (which does not bill the embedded text, so its pages reach the model unscanned even
 while values are masked), Word files as text everywhere. A document in a Gemini
-function response stays a file: a clean one is sent as it came, one with a value to
-mask is refused with 400 `PII_BLOCKED`. A converted
+function response stays a file: one with a value to mask is refused with 400
+`PII_BLOCKED`, and a clean one is sent as it came only where it would not go as text
+anyway. While any type masks or blocks or a rule hides values, a clean `.docx` there
+(and a clean PDF, except to Gemini with `by_provider`) is refused with 400
+`PRIVACY_POLICY_BLOCKED`, since its unread parts would reach the provider. A converted
 document loses its layout, images and figures; the model reads its text only. A
 document sent as text becomes, in Anthropic, a `document` with a `text` source (title,
 context, citations and cache control kept); in chat a `text` part and in Responses an
@@ -589,6 +609,8 @@ except openai.APIStatusError as error:
 | Provider call timed out | 504 `PROVIDER_TIMEOUT` | none from shim |
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
 | Body over `MAX_REQUEST_BODY_SIZE` (default 32,000,000 bytes) | 413 `REQUEST_TOO_LARGE` | none |
+| With any entity type on or a tenant rule in scope, the request's distinct strings (keys included, inline file data not) are over 4,000,000 characters or 50,000 strings | 413 `PRIVACY_SCAN_TOO_LARGE` before any is scanned; the message names both counts, `error.param` the limit (`characters` or `texts`) | none: send less text, or split it |
+| The privacy scan, message text and documents together, has not finished 20 seconds after the privacy stage received the request (time waiting for a scanning thread counts) | 413 `PRIVACY_SCAN_TIMEOUT`, at most one 16,384-character window of scanning past the 20 seconds; no provider call | none: send less text, or split it |
 | A detected type whose action is `block` | 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` | none: remove the value the message names |
 | With `SHIM_DOCUMENTS=scan`, a document holds a value to mask | 400 `PII_BLOCKED` or `SECRET_BLOCKED`; the message names the types | none: remove the values, or turn on `scan_and_convert` |
 | With document scanning on, a document cannot be read and media is refused | 400 `DOCUMENT_UNSCANNABLE`; the message names the reason | none: send the document's text instead, or ask the admin |
@@ -730,7 +752,7 @@ usually much larger. The output limit counts against the window only for OpenAI
 models and deployments: Gemini's is separate, and Claude stops at the window. A
 request with Responses `truncation: "auto"`, `context_management`, `compaction`
 or a compaction block is never refused for size. Refusals use only a model's own
-catalog entry, never a longer model name matched by prefix. A capability is
+catalog entry, never the entry a dated snapshot is priced at. A capability is
 refused only when the catalog says the model lacks it; an unknown capability is
 never refused, and an OpenAI file part is never refused as a PDF.
 

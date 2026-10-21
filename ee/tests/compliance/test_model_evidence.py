@@ -490,11 +490,14 @@ async def test_a_slow_collection_stops_at_one_deadline_and_stores_nothing(
 
     async def slow(*args, **kwargs):
         # Each statement is bounded; their sum is not.
-        await asyncio.sleep(5)
+        await asyncio.sleep(60)
         return await collect(*args, **kwargs)
 
     monkeypatch.setattr(model_evidence_api, "collect", slow)
-    monkeypatch.setattr(model_evidence_api, "COLLECT_SECONDS", 0.2)
+    # The deadline also covers the two statements before collect. One it cuts
+    # mid-flight invalidates this test's connection, so the deadline leaves them
+    # room on a slow runner and fires inside `slow`.
+    monkeypatch.setattr(model_evidence_api, "COLLECT_SECONDS", 1.0)
 
     refused = await _call(
         db,

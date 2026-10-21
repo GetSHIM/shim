@@ -87,6 +87,7 @@ from shim_enterprise.billing.models import (
     SpendPeriodUsage,
     UsageLedger,
 )
+from shim_enterprise.observability.enterprise_metrics import USAGE_SETTLEMENT_TOTAL
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.observability import analytics_projection, overview
 from shim_enterprise.outbox.models import OutboxEvent
@@ -1029,6 +1030,7 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
         privacy=PrivacyOutcome(
             action=PrivacyAction.SCRUBBED,
             pii_detected=True,
+            pii_entities={"EMAIL_ADDRESS": 1},
             verification_map={"<EMAIL_ADDRESS_ff8d9819>": "alice@example.com"},
         ),
     )
@@ -1040,15 +1042,23 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
         await DurableAccountingCoordinator().record_privacy(checked, session)
 
     values = dict(update_lifecycle.await_args.kwargs["values"])
-    assert "policy_verdicts" in str(
-        values.pop("lifecycle_metadata")
-        .compile(compile_kwargs={"literal_binds": False})
-        .params
-    )
+    # The JSONB merge's one bound value is everything the request adds to the metadata.
+    merged = list(values.pop("lifecycle_metadata").compile().params.values())
+    assert merged == [
+        {
+            "policy_verdicts": [],
+            "pii_entities": {"EMAIL_ADDRESS": 1},
+            "monitored_entities": {},
+            "blocked_entities": {},
+            "bulk_disclosure": None,
+            "repeat_digest": None,
+        }
+    ]
     assert values == {
         "privacy_status": "scrubbed",
         "pii_detected": True,
     }
+    assert "alice@example.com" not in json.dumps([values, merged])
     session.commit.assert_awaited_once()
     session.rollback.assert_not_awaited()
 
@@ -1306,6 +1316,7 @@ async def test_failure_before_openai_start_refunds_reserved_money() -> None:
         error_code="REQUEST_ABORTED",
         error_message="Request ended before a provider value was delivered.",
         lifecycle_status="failed",
+        reserved=None,
     )
 
 
@@ -1335,6 +1346,7 @@ async def test_provider_rejection_refunds_reserved_ceiling() -> None:
         error_code="PROVIDER_UNAVAILABLE",
         error_message="The provider rejected the request without usage.",
         lifecycle_status="failed",
+        reserved=None,
     )
 
 
@@ -1391,14 +1403,18 @@ async def test_a_provider_refusal_after_start_is_refunded_as_a_rejection(
 
 @pytest.mark.parametrize("spend_reserved", [True, False])
 @pytest.mark.asyncio
-async def test_failure_after_openai_start_refunds_unverified_usage(
+async def test_failure_after_openai_start_settles_unverified_usage_at_the_reservation(
     spend_reserved: bool,
 ) -> None:
     prepared = _prepared()
+    state = replace(
+        _failure_state(True, spend_reserved),
+        prompt_tokens=20,
+        completion_tokens=30,
+        cost_usd=Decimal("0.000041") if spend_reserved else Decimal("0"),
+    )
     accounting = SimpleNamespace(
-        failure_reservation_state=AsyncMock(
-            return_value=_failure_state(True, spend_reserved)
-        ),
+        failure_reservation_state=AsyncMock(return_value=state),
         refund=AsyncMock(),
     )
     session = object()
@@ -1420,6 +1436,7 @@ async def test_failure_after_openai_start_refunds_unverified_usage(
         error_code="PROVIDER_USAGE_UNAVAILABLE",
         error_message="Provider execution began but usage could not be verified.",
         lifecycle_status="failed",
+        reserved=state,
     )
 
 
@@ -1493,6 +1510,7 @@ async def test_admission_abort_skips_failure_state_and_refunds_quota_only() -> N
         error_code="ADMISSION_ABORTED",
         error_message="Request ended before a provider value was delivered.",
         lifecycle_status="failed",
+        reserved=None,
     )
 
 
@@ -2960,6 +2978,381 @@ async def test_streams_cut_after_the_first_token_settle_at_the_reservation_and_f
         assert sorted(settlements) == [(reservation, True)] * 2
     finally:
         await _drop_tenant(factory, organization_id)
+
+
+async def _admitted_with_spend(
+    factory, label: str, privacy: PrivacyOutcome | None = None, *, stream: bool = False
+):
+    """A tenant with one admitted request whose quota and provider spend are reserved."""
+
+    coordinator = DurableAccountingCoordinator()
+    async with factory.begin() as setup:
+        organization_id, _, api_key_id = await _create_tenant(setup, label)
+        await _cap_organization(setup, organization_id)
+        setup.add(
+            ProviderSecret(
+                organization_id=organization_id,
+                provider="openai",
+                secret_ref=f"reference-{label}",
+                secret_backend="fernet",
+                secret_version="v2",
+                masked_key="masked",
+                monthly_limit_usd=Decimal("10"),
+            )
+        )
+    prepared = _admitted(organization_id, api_key_id)
+    prepared.stream = stream
+    prepared.admission.maximum_output_tokens = 100_000
+    async with factory() as session:
+        await coordinator.reserve_quota(prepared, prepared.admission, session)
+    if privacy is not None:
+        prepared.privacy = privacy
+        async with factory() as session:
+            await coordinator.record_privacy(prepared, session)
+    async with factory() as session:
+        await coordinator.reserve_spend(prepared, False, session)
+    return coordinator, prepared
+
+
+async def _terminal_accounting(factory, organization_id: UUID):
+    async with factory() as verification:
+        events = {
+            event.event_type: event
+            for event in await verification.scalars(
+                select(UsageLedger).where(
+                    UsageLedger.organization_id == organization_id
+                )
+            )
+        }
+        quota = (
+            await verification.scalars(
+                select(QuotaPeriodUsage).where(
+                    QuotaPeriodUsage.organization_id == organization_id,
+                    QuotaPeriodUsage.period_type == "monthly",
+                )
+            )
+        ).all()
+        spend = await verification.scalar(
+            select(SpendPeriodUsage).where(
+                SpendPeriodUsage.organization_id == organization_id
+            )
+        )
+        lifecycle = await verification.scalar(
+            select(RequestLifecycle).where(
+                RequestLifecycle.organization_id == organization_id
+            )
+        )
+    assert quota and spend is not None and lifecycle is not None
+    return events, quota, spend, lifecycle
+
+
+_ANSWER_SNAPSHOT_KEYS = {
+    "provider_latency_ms",
+    "answer_characters",
+    "tool_call_names",
+    "reasoning_seen",
+}
+
+
+def _assert_settled_at_reservation(events, quota, spend) -> None:
+    reserved_usd = events["spend_reservation"].cost_usd
+    assert reserved_usd > 0
+    assert "quota_refund" not in events and "spend_refund" not in events
+    settled = events["quota_settlement"]
+    assert (settled.prompt_tokens, settled.completion_tokens, settled.estimated) == (
+        20,
+        100_000,
+        True,
+    )
+    assert (
+        events["spend_settlement"].cost_usd,
+        events["spend_settlement"].estimated,
+    ) == (reserved_usd, True)
+    assert {(row.reserved_tokens, row.settled_tokens) for row in quota} == {
+        (0, 100_020)
+    }
+    assert (spend.reserved_usd, spend.settled_usd) == (0, reserved_usd)
+
+
+def _assert_refunded(events, quota, spend) -> None:
+    assert "quota_settlement" not in events and "spend_settlement" not in events
+    assert events["quota_refund"].total_tokens == 0
+    assert events["spend_refund"].cost_usd == 0
+    assert {(row.reserved_tokens, row.settled_tokens) for row in quota} == {(0, 0)}
+    assert (spend.reserved_usd, spend.settled_usd) == (0, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "started", "settled", "error_code"),
+    [
+        (
+            ProviderCallError(504, "PROVIDER_TIMEOUT", True, provider="openai"),
+            True,
+            True,
+            "PROVIDER_USAGE_UNAVAILABLE",
+        ),
+        (
+            ProviderCallError(408, "PROVIDER_TIMEOUT", True, provider="openai"),
+            True,
+            True,
+            "PROVIDER_USAGE_UNAVAILABLE",
+        ),
+        (
+            ProviderCallError(502, "PROVIDER_UNAVAILABLE", False, provider="openai"),
+            True,
+            True,
+            "PROVIDER_USAGE_UNAVAILABLE",
+        ),
+        (asyncio.CancelledError(), True, True, "PROVIDER_USAGE_UNAVAILABLE"),
+        (
+            ProviderCallError(504, "PROVIDER_TIMEOUT", True, provider="openai"),
+            False,
+            False,
+            "REQUEST_ABORTED",
+        ),
+        (
+            ProviderCallError(
+                400, "PROVIDER_REJECTED_REQUEST", False, provider="openai"
+            ),
+            True,
+            False,
+            "PROVIDER_UNAVAILABLE",
+        ),
+    ],
+    ids=[
+        "timeout-after-start",
+        "provider-408-after-start",
+        "5xx-after-start",
+        "disconnect-after-start",
+        "never-started",
+        "4xx-after-start",
+    ],
+)
+async def test_a_started_call_without_usage_settles_at_the_reservation(
+    async_engine, error, started, settled, error_code
+):
+    # The provider was sent the call and may bill it in full: the reserved maximum
+    # is the bill until reconciliation knows better. Only a call that never left,
+    # or one the provider refused, gives its reservation back.
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    coordinator, prepared = await _admitted_with_spend(factory, "unverified")
+    usage = DurableUsageLifecycle(coordinator, factory)
+    try:
+        if started:
+            await usage.mark_provider_started(prepared)
+        await usage.fail(prepared, reason=kernel_module._failure_reason(error))
+
+        events, quota, spend, lifecycle = await _terminal_accounting(
+            factory, prepared.tenant_id
+        )
+        if settled:
+            _assert_settled_at_reservation(events, quota, spend)
+        else:
+            _assert_refunded(events, quota, spend)
+        assert (lifecycle.status, lifecycle.terminal_error_code) == (
+            "failed",
+            error_code,
+        )
+        # Nothing was answered, so no answer snapshot is claimed.
+        assert not _ANSWER_SNAPSHOT_KEYS & lifecycle.lifecycle_metadata.keys()
+    finally:
+        await _drop_tenant(factory, prepared.tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_a_pii_bearing_request_writes_no_plaintext_to_any_durable_row(
+    async_engine,
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    coordinator, prepared = await _admitted_with_spend(
+        factory,
+        "plaintext",
+        PrivacyOutcome(
+            action=PrivacyAction.SCRUBBED,
+            pii_detected=True,
+            pii_entities={"EMAIL_ADDRESS": 1},
+            verification_map={"<EMAIL_ADDRESS_ff8d9819>": "alice@example.com"},
+        ),
+    )
+    prepared.payload = {
+        "messages": [{"role": "user", "content": "Write to <EMAIL_ADDRESS_ff8d9819>"}]
+    }
+    usage = DurableUsageLifecycle(coordinator, factory)
+    try:
+        await usage.mark_provider_started(prepared)
+        await usage.fail(prepared, reason="request_aborted")
+
+        written: dict[str, list[str]] = {}
+        async with factory() as verification:
+            for model in (RequestLifecycle, AuditIntent, OutboxEvent, UsageLedger):
+                rows = await verification.scalars(
+                    select(model).where(model.organization_id == prepared.tenant_id)
+                )
+                written[model.__tablename__] = [
+                    json.dumps(
+                        {
+                            column.key: getattr(row, column.key)
+                            for column in model.__mapper__.column_attrs
+                        },
+                        default=str,
+                    )
+                    for row in rows
+                ]
+        lifecycle = json.loads(written["request_lifecycle"][0])
+        assert lifecycle["lifecycle_metadata"]["pii_entities"] == {"EMAIL_ADDRESS": 1}
+        assert {json.loads(row)["event_type"] for row in written["audit_intent"]} == {
+            "preflight",
+            "completion",
+        }
+        assert written["outbox_event"]
+        for table, rows in written.items():
+            for row in rows:
+                assert "alice@example.com" not in row, table
+    finally:
+        await _drop_tenant(factory, prepared.tenant_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started", [True, False], ids=["started", "never-started"])
+async def test_stale_recovery_settles_a_started_call_at_the_reservation(
+    async_engine, started
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    coordinator, prepared = await _admitted_with_spend(factory, "stale")
+    try:
+        if started:
+            await DurableUsageLifecycle(coordinator, factory).mark_provider_started(
+                prepared
+            )
+        # Due long before any other row, so recovery picks this one alone.
+        due = datetime(2001, 1, 1, tzinfo=timezone.utc)
+        async with factory.begin() as session:
+            await session.execute(
+                text(
+                    "UPDATE request_lifecycle SET reconciliation_due_at = :due "
+                    "WHERE organization_id = :organization_id"
+                ),
+                {"due": due, "organization_id": prepared.tenant_id},
+            )
+        async with factory.begin() as session:
+            recovered = await DurableAccountingRepository().recover_stale(
+                session, now=due, batch_size=1
+            )
+        assert [result.request_id for result in recovered] == [prepared.request_id]
+
+        events, quota, spend, lifecycle = await _terminal_accounting(
+            factory, prepared.tenant_id
+        )
+        if started:
+            _assert_settled_at_reservation(events, quota, spend)
+        else:
+            _assert_refunded(events, quota, spend)
+        assert (lifecycle.status, lifecycle.terminal_error_code) == (
+            "failed",
+            "STALE_RESERVATION_RECOVERED",
+        )
+        assert not _ANSWER_SNAPSHOT_KEYS & lifecycle.lifecycle_metadata.keys()
+    finally:
+        await _drop_tenant(factory, prepared.tenant_id)
+
+
+async def _parked_stream(factory, label: str, interval: float):
+    """A started stream whose client read the first byte and then stopped reading."""
+
+    coordinator, prepared = await _admitted_with_spend(factory, label, stream=True)
+    usage = DurableUsageLifecycle(coordinator, factory)
+    await usage.mark_provider_started(prepared)
+
+    async def events():
+        yield b'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}\n\n'
+        yield (
+            b'data: {"choices":[{"index":0,"finish_reason":"stop"}],"usage":'
+            b'{"prompt_tokens":50,"completion_tokens":900}}\n\ndata: [DONE]\n\n'
+        )
+
+    stream = ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=interval, output_hash_salt=None
+    ).create_stream_session(prepared)
+    stream.bind(events())
+    await anext(stream)
+    # The window set at the first byte has lapsed while the client holds the stream.
+    async with factory.begin() as session:
+        await session.execute(
+            text(
+                "UPDATE request_lifecycle SET reconciliation_due_at = :due "
+                "WHERE organization_id = :organization_id"
+            ),
+            {"due": _LAPSED, "organization_id": prepared.tenant_id},
+        )
+    return prepared, stream
+
+
+_LAPSED = datetime(2002, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_a_stream_its_client_stops_reading_is_not_recovered_and_settles_its_usage(
+    async_engine,
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    prepared, stream = await _parked_stream(factory, "slowreader", 0.02)
+    try:
+        await asyncio.sleep(0.3)
+        async with factory.begin() as session:
+            recovered = await DurableAccountingRepository().recover_stale(
+                session, now=_LAPSED
+            )
+        assert prepared.request_id not in {result.request_id for result in recovered}
+
+        _ = [chunk async for chunk in stream]
+
+        events, _, _, lifecycle = await _terminal_accounting(
+            factory, prepared.tenant_id
+        )
+        assert (lifecycle.status, lifecycle.terminal_error_code) == ("completed", None)
+        settled = events["quota_settlement"]
+        assert (
+            settled.prompt_tokens,
+            settled.completion_tokens,
+            settled.estimated,
+        ) == (
+            50,
+            900,
+            False,
+        )
+        assert "quota_refund" not in events and "spend_refund" not in events
+    finally:
+        await _drop_tenant(factory, prepared.tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_a_settlement_after_stale_recovery_is_counted_as_a_conflict(
+    async_engine, caplog
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    prepared, stream = await _parked_stream(factory, "conflict", 3_600)
+    conflicts = USAGE_SETTLEMENT_TOTAL.labels(status="conflict")
+    before = conflicts._value.get()
+    try:
+        async with factory.begin() as session:
+            recovered = await DurableAccountingRepository().recover_stale(
+                session, now=_LAPSED
+            )
+        assert prepared.request_id in {result.request_id for result in recovered}
+
+        with caplog.at_level(logging.ERROR):
+            _ = [chunk async for chunk in stream]
+
+        assert conflicts._value.get() == before + 1
+        assert "Settlement hit an accounting conflict" in caplog.text
+        _, _, _, lifecycle = await _terminal_accounting(factory, prepared.tenant_id)
+        assert (lifecycle.status, lifecycle.terminal_error_code) == (
+            "failed",
+            "STALE_RESERVATION_RECOVERED",
+        )
+    finally:
+        await _drop_tenant(factory, prepared.tenant_id)
 
 
 def _quota_command(

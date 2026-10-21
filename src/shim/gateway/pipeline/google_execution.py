@@ -30,6 +30,7 @@ from shim.gateway.pipeline.provider_execution import (
 from shim.gateway.streaming.sse import encode_data
 from shim.privacy.deanonymizer import restore_fragment
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim.privacy.policies import placeholder_map
 from shim.secrets.credentials import ProviderCredentialResolver
 
 _SDK_ONLY_RESPONSE_FIELDS = {
@@ -315,7 +316,7 @@ class GoogleStreamRestorer:
         verification_map: Mapping[str, str],
         scrubber: PIIScrubberService,
     ) -> None:
-        self._verification_map = verification_map
+        self._verification_map = placeholder_map(verification_map)
         self._scrubber = scrubber
         self._buffers: dict[tuple[object, ...], str] = {}
 
@@ -412,6 +413,7 @@ def restore_google_payload(
 ) -> dict[str, Any]:
     if not verification_map:
         return payload
+    verification_map = placeholder_map(verification_map)
 
     def visit(value: Any, *, content: bool = False) -> Any:
         if isinstance(value, str) and content:

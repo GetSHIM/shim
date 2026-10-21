@@ -191,7 +191,8 @@ Request fields enter `request_lifecycle.metadata` during quota reservation.
 Completion facts, TTFT and shim processing time join them in the terminal
 accounting transaction, and so do `provider_latency_ms`, `answer_characters`,
 `tool_call_names` and `reasoning_seen` when the request settled with an answer
-(a refund writes none of the four),
+(a refund, or a started call settled at its reservation without usage, writes
+none of the four),
 before audit/analytics outbox intent is constructed. Terminal replay preserves
 the first committed observations. Analytics delivery copies them into
 `request_logs.details` with the existing tenant/request idempotency constraint.

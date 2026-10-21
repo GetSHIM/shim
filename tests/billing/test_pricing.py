@@ -74,19 +74,23 @@ def test_gemini_pro_large_context_uses_the_documented_tier() -> None:
     ) == Decimal("2.600004")
 
 
-def test_price_resolution_uses_the_longest_model_prefix() -> None:
+def test_price_resolution_matches_the_exact_id_or_its_dated_snapshot_only() -> None:
+    model = ModelPrice(Decimal("10"), Decimal("20"))
+    small = ModelPrice(Decimal("1"), Decimal("2"))
+    fallback = ModelPrice(Decimal("100"), Decimal("200"))
     price_book = PriceBook(
         version="test",
-        prices={
-            "model": ModelPrice(Decimal("10"), Decimal("20")),
-            "model-small": ModelPrice(Decimal("1"), Decimal("2")),
-        },
-        fallback=ModelPrice(Decimal("100"), Decimal("200")),
+        prices={"model": model, "model-small": small},
+        fallback=fallback,
     )
 
-    resolved = price_book.resolve("MODEL-SMALL-2026-07-12")
-
-    assert resolved.input_per_million == Decimal("1")
+    assert price_book.resolve("MODEL-SMALL-2026-07-12") is small
+    assert price_book.resolve("model-20260712") is model
+    # Another model that shares the prefix is not this one.
+    assert price_book.resolve("model-large") is fallback
+    assert price_book.resolve("model-small-preview-2026-07-12") is fallback
+    assert price_book.resolve("model-2026-07-12-large") is fallback
+    assert not price_book.supports("model-large")
 
 
 def test_price_book_exposes_model_output_ceiling() -> None:
@@ -166,9 +170,23 @@ def test_a_model_id_that_is_not_id_shaped_is_never_supported(model: str) -> None
     [
         ("openai", "gpt-4o-2024-08-06", "gpt-4o-2024-08-06"),
         ("openai", "gpt-4o-mini-2024-07-18", "gpt-4o-mini"),
-        pytest.param("openai", "GPT-4o-" + "x" * 193, "gpt-4o", id="200-chars"),
+        ("openai", "GPT-4o-2024-08-06", "gpt-4o-2024-08-06"),
+        ("openai", "gpt-4o-2025-01-01", "gpt-4o"),
         ("anthropic", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20250929"),
-        ("google", "gemini-2.5-pro-preview-06-05", "gemini-2.5-pro"),
+        ("anthropic", "claude-opus-4-5-20251101", "claude-opus-4-5-20251101"),
+        ("anthropic", "claude-sonnet-4-6-20260101", "claude-sonnet-4-6"),
+        # Another model that starts with a catalog id is not priced as that id.
+        pytest.param("openai", "GPT-4o-" + "x" * 193, None, id="200-chars"),
+        ("google", "gemini-2.5-pro-preview-06-05", None),
+        ("openai", "o3-deep-research", None),
+        ("openai", "o3-deep-research-2025-06-26", None),
+        ("openai", "gpt-4-32k", None),
+        ("openai", "gpt-5-foo", None),
+        ("openai", "gpt-4o-audio-preview", None),
+        ("openai", "gpt-4o-mini-search-preview", None),
+        ("openai", "gpt-5-10000000146", None),
+        ("openai", "gpt-4o-2024-08-06-audio", None),
+        ("anthropic", "claude-sonnet-4-5-thinking", None),
         # Served only through a registered deployment alias, never the catalog.
         ("openai", "ft:gpt-4o-mini:org::id", None),
         ("anthropic", "anthropic.claude-sonnet-4-5-20250929-v1:0", None),
@@ -181,10 +199,14 @@ def test_real_model_ids_keep_their_catalog_answer_and_price(
     provider: str, model: str, entry: str | None
 ) -> None:
     assert DEFAULT_PRICE_BOOK.supports(model, provider) is (entry is not None)
-    if entry is not None:
-        assert DEFAULT_PRICE_BOOK.resolve(model, provider) is DEFAULT_PRICE_BOOK.exact(
-            entry, provider
-        )
+    assert DEFAULT_PRICE_BOOK.resolve(model, provider) is (
+        DEFAULT_PRICE_BOOK.fallback
+        if entry is None
+        else DEFAULT_PRICE_BOOK.exact(entry, provider)
+    )
+    assert DEFAULT_PRICE_BOOK.resolved_price_metadata(
+        model, provider, input_tokens=1, output_tokens=1
+    )["pricing_resolution"] == ("fallback" if entry is None else "catalog")
 
 
 def test_negative_usage_is_rejected() -> None:

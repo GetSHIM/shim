@@ -270,8 +270,9 @@ material, or with personal data, whose digest is cleared) are never linked; the
 rules count them through `repeat_chain_length` as before. For repeat spend, such
 a request is not counted when the key's previous digest-less request carries a
 `repeat_chain_length` one lower, started within 900 seconds and was refunded:
-an SDK retry after a 503 is not waste with personal data either. Repeated identical requests sent on purpose, such as an evaluation
-batch, look the same: suppress the finding when the pattern is intended.
+an SDK retry after a refunded 503 is not waste with personal data either.
+Repeated identical requests sent on purpose, such as an evaluation batch, look
+the same: suppress the finding when the pattern is intended.
 
 ## gateway.retry_storm
 
@@ -318,7 +319,9 @@ blast radius `key`, risk class `cost`.
 
 **Why.** Repeated identical requests that cost a tenth of a key's spend are
 money spent twice for the same answer. A repeat of a request that failed and
-was refunded did not double the bill, so it is not counted as waste.
+was refunded did not double the bill, so it is not counted as waste. A request
+the provider started and that ended without usage (a timeout or a provider 5xx)
+settles at its reservation, so a retry after it counts as a billed repeat.
 
 **Evidence and impact.** The period start, the repeated cost, the known spend,
 their share, the repeated request count, up to 20 request ids, `classes`,

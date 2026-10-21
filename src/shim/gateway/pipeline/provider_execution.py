@@ -147,6 +147,8 @@ ERROR_HINTS = {
     "SECRET_BLOCKED": "Remove the credential from the request; the privacy policy refuses to send it.",
     "PII_BLOCKED": "Remove the personal data the message names, or ask an administrator to change the policy.",
     "DOCUMENT_UNSCANNABLE": "Send the document's text instead, or ask an administrator to allow unscanned files; sending it unchanged fails again.",
+    "PRIVACY_SCAN_TOO_LARGE": "Send less text, or split it across requests; the message names the limit.",
+    "PRIVACY_SCAN_TIMEOUT": "Send less text, or split it across requests; sending it unchanged fails again.",
     "RULE_BLOCKED": "A tenant rule blocked this request; the rule id is in X-Shim-Rule-Id. Ask the tenant admin.",
     "APPROVAL_REQUIRED": "Ask an administrator to approve the id in X-Shim-Approval-Id, then send the same request again with that header.",
     "APPROVAL_REJECTED": "An administrator rejected this request; change it or ask why.",

@@ -205,7 +205,8 @@ def next_attempt(
 ) -> PreparedInference:
     """Attempt `number`: a new request id and start, the same privacy and admission.
 
-    `answered`: `prepared` settled with an answer, so it counted the request unit.
+    `answered`: `prepared` settled, with an answer or as a started call without
+    usage, so it counted the request unit.
     """
 
     assert prepared.pre_band_payload is not None
