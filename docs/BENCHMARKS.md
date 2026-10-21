@@ -394,6 +394,35 @@ eight requests at once, gains 12–18% at 1–16 KB and nothing at 32–50 KB.
   the upgrade path.
 - **shim's own budget is under 100 ms for prompts up to 32 KB, and it is not met
   yet**: 106.6 ms in-process and 129 ms over HTTP at 32 KB of this PII-dense text.
+- **Text that is nearly all matches scans 10 to 35 times slower than this prose.** In
+  one analyzer pass its cost grows with the square of the matches, because Presidio
+  compares every match with every other: a log of IP addresses took 4.3 s at 32 KB and
+  50 s at 128 KB on the scrubber alone. Since 2026-10-21 text over 16,384 characters is
+  read in windows of that length, overlapping by 1,024 characters on each side and cut
+  only where no detection and no word crosses (a word is letters, digits and `_-.`, the
+  characters of every token-shaped secret), and the overlap check after it no longer
+  compares every pair, so the cost is linear. A value that only matches whole, such as
+  a JWT, is never read in part: a window that sees one cross its start decides it. On the scrubber alone (load average about 13):
+  IP addresses 2.9 s at 32 KB and 11.9 s at 128 KB, phone numbers 1.2 s and 4.7 s, this
+  prose 93 ms and 340 ms, and 2.7 s at 1 MB. A window of IP addresses costs about 1.5 s.
+  Windows cost this prose 2.5 ms at 32 KB (89.6 against 92.1 ms, best of 15) and nothing
+  at 16 and 50 KB, and the word rule (2026-10-21) costs nothing measurable. One value
+  longer than a window (a connection string or a word over about 14,000 characters, or
+  a private key without its end line) is masked to the window's end, and the text after
+  it is scanned as text, not masked whole as in one pass. A value with spaces in it that
+  only matches whole, such as a quoted password, is found whole up to 2,048 characters.
+- **A request's scan must end 20 seconds after the privacy stage received it**, time
+  waiting for a thread included. The deadline is checked before and after every
+  window, so a refusal (`PRIVACY_SCAN_TIMEOUT`) comes at most one window late and
+  nothing scanned late reaches the provider: 256 KB and 990 KB of IP addresses are
+  refused in 20.3 and 20.6 s over HTTP, where 256 KB took 180 s and passed before. A
+  request with more than 16,384 bytes scans on two threads of its own, so short requests
+  never queue behind it: with twelve 32 KB IP-address requests at once, six passed
+  (6, 12 and 18 s), six were refused at 20.6 s, and a small request meanwhile took
+  290 ms p50 and 446 ms at most (16 ms idle; 1.5 s and 41 s before). Before scanning, a
+  request over 4,000,000 characters or 50,000 distinct strings is refused
+  (`PRIVACY_SCAN_TOO_LARGE`): about 11 s of this prose at 2.7 ms per KB, or 15 s of
+  short strings at about 0.3 ms each; denser text meets the deadline first.
 - Over HTTP, v0.4.1 and v0.3.0 are within each other's sweep-to-sweep spread at every
   size (32 KB one at a time: 129.2 and 120.5 ms). In-process, below, they time the
   same. The added evasion handling of v0.4.1 has no measurable cost.

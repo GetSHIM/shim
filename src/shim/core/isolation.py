@@ -27,8 +27,8 @@ _GRACE_SECONDS = 2.0
 
 # A call waits here, not in the pool's queue, so a submitted call is always running.
 _slots = threading.BoundedSemaphore(WORKERS)
-# Calls inside run(), running or waiting for a slot. Each holds a thread of the default
-# executor that every request's privacy stage shares, so a call beyond these fails at once.
+# Calls inside run(), running or waiting for a slot. Each holds a thread of the privacy
+# stage's or the transforms' executor, so a call beyond these fails at once.
 _callers = threading.BoundedSemaphore(2 * WORKERS)
 # How often a waiting call checks that another call has not discarded its pool.
 _POLL_SECONDS = 0.1

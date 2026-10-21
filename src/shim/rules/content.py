@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -547,12 +548,18 @@ def first_fit(
     """The spans, in `key` order, that overlap none taken before; `keep` ones always."""
 
     taken: list[Any] = []
-    # ponytail: O(n²) over one string's detections; an interval index if counts grow.
+    # The characters the taken spans cover, as sorted [start, end) runs that do not
+    # overlap: a span overlaps a taken one exactly when it overlaps a run.
+    starts: list[int] = []
+    ends: list[int] = []
     for item in sorted(items, key=key):
-        if keep(item) or not any(
-            item.start < other.end and other.start < item.end for other in taken
-        ):
+        after = bisect_left(starts, item.end)
+        if keep(item) or not after or ends[after - 1] <= item.start:
             taken.append(item)
+            # The runs it overlaps become one with it.
+            first = bisect_right(ends, item.start)
+            starts[first:after] = [min([item.start, *starts[first:after]])]
+            ends[first:after] = [max([item.end, *ends[first:after]])]
     return taken
 
 

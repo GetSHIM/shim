@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+from time import monotonic
 from typing import Any, get_args
 
 from presidio_analyzer import RecognizerResult
@@ -73,6 +74,14 @@ MAX_ANALYZABLE_TEXT_LENGTH = 1_000_000
 # identifier's cue words). Presidio's context words may still reach across it, which
 # can only add a detection.
 _BATCH_SEPARATOR = "\n\n" + "." * 24 + "\n\n"
+# Longer text is read in windows, so its cost grows linearly, not with the square of
+# its matches, and a deadline stops it between them: a window of match-dense text
+# costs about 1.5 s (docs/BENCHMARKS.md, B1).
+WINDOW = 16_384
+# Read beyond each end of the part a window decides: more than any look-back, cue
+# word or Presidio's five context words reach. A third of a window at most, so each
+# window decides some of the text.
+_MARGIN = 1_024
 
 
 class PIIInputTooLarge(ValueError):
@@ -447,16 +456,18 @@ class PIIScrubberService:
         unmasked: dict[str, str] | None = None,
         placeholder_key: bytes | None = None,
         content: ContentRules | None = None,
+        deadline: float | None = None,
     ) -> tuple[str, dict[str, str]]:
         """Mask `mask` detections; record `monitor`/`block` ones in `unmasked` (value to type).
 
         Tenant rule matches are recorded on `content`, never in `unmasked`.
+        `TimeoutError` when detection is not done by the `time.monotonic()` `deadline`.
         """
         if not isinstance(text, str):
             raise TypeError("PII input must be text")
         if content is None and all(action == "off" for action in actions.values()):
             return text, {}
-        detections, hits = self._source_detections(text, actions, content)
+        detections, hits = self._source_detections(text, actions, content, deadline)
         return self._redact(
             text,
             detections,
@@ -479,6 +490,7 @@ class PIIScrubberService:
         placeholders_by_value: dict[str, str] | None = None,
         unmasked: dict[str, str] | None = None,
         placeholder_key: bytes | None = None,
+        deadline: float | None = None,
     ) -> tuple[list[str], dict[str, str]] | None:
         """`scrub` for many texts in one analyzer pass, without tenant rules.
 
@@ -492,7 +504,7 @@ class PIIScrubberService:
             _BATCH_SEPARATOR in text for text in texts
         ):
             return None
-        detections, _ = self._source_detections(joined, actions)
+        detections, _ = self._source_detections(joined, actions, deadline=deadline)
         separators, json_spans, cursor = [], [], 0
         for text in texts:
             json_spans += [
@@ -622,11 +634,12 @@ class PIIScrubberService:
         self,
         text: str,
         actions: Mapping[str, EntityAction],
+        deadline: float | None,
     ) -> list[RecognizerResult]:
         enabled_entities = {
             entity_type for entity_type, action in actions.items() if action != "off"
         }
-        results = self._deduplicate(self._analyzer.analyze(text, enabled_entities))
+        results = self._deduplicate(self._windows(text, enabled_entities, deadline))
         # Ten digits both rules claim are a tax ID after a tax word, unless the phone
         # action is stronger: the tie never weakens what happens to the value.
         strength = get_args(EntityAction).index
@@ -650,13 +663,16 @@ class PIIScrubberService:
         text: str,
         actions: Mapping[str, EntityAction],
         content: ContentRules | None = None,
+        deadline: float | None = None,
     ) -> tuple[list[RecognizerResult], list[ContentHit]]:
         if len(text) > MAX_ANALYZABLE_TEXT_LENGTH:
             raise PIIInputTooLarge
         prepared, spans = _preprocess_with_spans(text)
         if len(prepared) > MAX_ANALYZABLE_TEXT_LENGTH:
             raise PIIInputTooLarge
-        detections = self._non_overlapping(self._detections(prepared, actions), actions)
+        detections = self._non_overlapping(
+            self._detections(prepared, actions, deadline), actions
+        )
         mapped: list[RecognizerResult] = []
         for item in detections:
             start, end = _source_span(spans, item.start, item.end)
@@ -676,6 +692,38 @@ class PIIScrubberService:
             ContentHit(*_source_span(spans, hit.start, hit.end), hit.rules)
             for hit in content.search(prepared)
         ]
+
+    def _windows(
+        self, text: str, entities: set[str], deadline: float | None
+    ) -> list[RecognizerResult]:
+        """The analyzer's detections in `text`, read `WINDOW` characters at a time.
+
+        A window decides the detections that end in its part, from its start to its
+        cut: a point about `_MARGIN` before its end that no detection or word crosses,
+        so every one is read with the context it has in the whole text. `TimeoutError`
+        once `deadline` passes, checked before and after every window.
+        """
+        results: list[RecognizerResult] = []
+        start = 0
+        while True:
+            if deadline is not None and monotonic() > deadline:
+                raise TimeoutError
+            low = max(0, start - _MARGIN)
+            high = min(len(text), low + WINDOW)
+            found = self._analyzer.analyze(text[low:high], entities)
+            for item in found:
+                item.start += low
+                item.end += low
+            cut = high if high == len(text) else _cut(text, found, start, high)
+            # One that starts before the window's start was read in part by the window
+            # before, which may have found nothing.
+            results.extend(item for item in found if start < item.end <= cut)
+            if cut == len(text):
+                break
+            start = cut
+        if deadline is not None and monotonic() > deadline:
+            raise TimeoutError
+        return results
 
     @staticmethod
     def _deduplicate(items: Iterable[RecognizerResult]) -> list[RecognizerResult]:
@@ -829,6 +877,39 @@ def _settle(
         for item in counted
         if isinstance(item, ContentHit) or actions[item.entity_type] not in _MASKING
     ]
+
+
+def _cut(text: str, found: Iterable[RecognizerResult], start: int, high: int) -> int:
+    """Where a window that decides from `start` and reads to `high` stops: `_MARGIN`
+    before `high`, or the start of the run of overlapping detections and the word over
+    that point, or that run's end when the run began before `start`. A word, letters,
+    digits and `_-.` as in every token-shaped secret, is not cut: a JWT read in part
+    matches nothing.
+
+    ponytail: a run or word longer than a window is decided up to the window's end; the
+    text after it is read as the next window's.
+    """
+    limit = word_start = word_end = high - _MARGIN
+    while word_start > start and _in_word(text[word_start - 1]):
+        word_start -= 1
+    while word_end < high and _in_word(text[word_end]):
+        word_end += 1
+    first = reach = 0
+    for span_start, span_end in sorted(
+        [(item.start, item.end) for item in found] + [(word_start, word_end)]
+    ):
+        if span_start >= reach:
+            if reach > limit:
+                break
+            first = span_start
+        reach = max(reach, span_end)
+    if not first < limit < reach:
+        return limit
+    return first if first > start else reach
+
+
+def _in_word(character: str) -> bool:
+    return character.isalnum() or character in "_-."
 
 
 def placeholder_period_key(root_key: bytes, tenant_id: object, at: datetime) -> bytes:

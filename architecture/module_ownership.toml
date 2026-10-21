@@ -310,6 +310,7 @@ public = [
   "tests/gateway/pipeline/test_analysis.py",
   "tests/gateway/pipeline/test_authenticate.py",
   "tests/gateway/pipeline/test_image_downscale.py",
+  "tests/gateway/pipeline/test_privacy.py",
   "tests/gateway/pipeline/test_settings_band.py",
   "tests/gateway/pipeline/test_transform_band.py",
   "tests/gateway/privacy/test_boundary_types.py",

@@ -524,7 +524,7 @@ the setting is on without it), then set `SHIM_DOCUMENTS`:
 A document shim cannot read (a URL or file id, a PDF without pypdf, an encrypted or
 corrupt file, a PDF without a text layer, over 32 MB decoded, 1,000 pages, 1,000,000
 characters, 4,000,000 characters in one request, a page stream over 4 MB decoded, or
-10 seconds of reading a file and 20 seconds for all of a request's files) is refused
+10 seconds of reading a file and 20 seconds for the request's whole scan) is refused
 with 400 `DOCUMENT_UNSCANNABLE` naming the reason while media is refused, and
 forwarded unscanned otherwise. A PDF is read with its form field values,
 annotation texts and document information, in one of two worker processes with 1 GB
@@ -604,6 +604,8 @@ except openai.APIStatusError as error:
 | Provider call timed out | 504 `PROVIDER_TIMEOUT` | none from shim |
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
 | Body over `MAX_REQUEST_BODY_SIZE` (default 32,000,000 bytes) | 413 `REQUEST_TOO_LARGE` | none |
+| With any entity type on or a tenant rule in scope, the request's distinct strings (keys included, inline file data not) are over 4,000,000 characters or 50,000 strings | 413 `PRIVACY_SCAN_TOO_LARGE` before any is scanned; the message names both counts, `error.param` the limit (`characters` or `texts`) | none: send less text, or split it |
+| The privacy scan, message text and documents together, has not finished 20 seconds after the privacy stage received the request (time waiting for a scanning thread counts) | 413 `PRIVACY_SCAN_TIMEOUT`, at most one 16,384-character window of scanning past the 20 seconds; no provider call | none: send less text, or split it |
 | A detected type whose action is `block` | 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` | none: remove the value the message names |
 | With `SHIM_DOCUMENTS=scan`, a document holds a value to mask | 400 `PII_BLOCKED` or `SECRET_BLOCKED`; the message names the types | none: remove the values, or turn on `scan_and_convert` |
 | With document scanning on, a document cannot be read and media is refused | 400 `DOCUMENT_UNSCANNABLE`; the message names the reason | none: send the document's text instead, or ask the admin |

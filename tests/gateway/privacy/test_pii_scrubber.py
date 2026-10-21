@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import base64
 import hashlib
 import hmac
 import json
@@ -2957,3 +2958,175 @@ def test_a_batch_of_a_thousand_texts_is_one_analyzer_pass(monkeypatch) -> None:
     # Work, not time: the analyzer's fixed cost per pass is what batching saves. One
     # pass reads the thousand texts and one the field name, against a pass for each.
     assert (analyzer_passes(texts), analyzer_passes([])) == (2, 1_001)
+
+
+def _analyzed(text: str) -> set[tuple[str, int, int, float]]:
+    return {
+        (item["type"], item["start"], item["end"], round(item["score"], 6))
+        for item in PIIScrubberService().analyze(text, effective_entity_actions())
+    }
+
+
+@pytest.mark.parametrize(
+    ("window", "shift"),
+    [(pii_scrubber_module.WINDOW, 0), (4 * pii_scrubber_module._MARGIN, 0)]
+    + [(4 * pii_scrubber_module._MARGIN, 3_001)],
+    ids=["window", "small-window", "small-window-shifted"],
+)
+def test_long_text_read_in_windows_finds_what_one_pass_finds(
+    monkeypatch, window: int, shift: int
+) -> None:
+    cases = "\n\n".join(
+        case["text"]
+        for path in sorted((Path(__file__).parent / "corpus").glob("*.json"))
+        if (corpus := json.loads(path.read_text(encoding="utf-8"))).get("format")
+        == "shim.detection.corpus"
+        for case in corpus["cases"]
+    )
+    # Values longer than a window's margin and shorter than the part it decides, so a
+    # cut can only fall before or after one.
+    long = 3 * window // 8
+    uri = "postgresql://admin:hunter2@db.internal/app?" + "k=v&" * (long // 4)
+    key = "\n".join(
+        [
+            "-----BEGIN RSA PRIVATE KEY-----",
+            *["A" * 64] * (long // 65),
+            "-----END RSA PRIVATE KEY-----",
+        ]
+    )
+    # What a value is depends on the words before it, however near a cut they fall.
+    cued = "password: hunter2x9 Fatura no: 2125551234. " * 300
+    text = f"{'x ' * shift}{cases} {uri} {cases}\n{key}\n{cases}\n{cued}"
+    assert len(text) > 5 * pii_scrubber_module.WINDOW
+
+    # Smaller windows cut the text in more places.
+    monkeypatch.setattr(pii_scrubber_module, "WINDOW", window)
+    windowed = _analyzed(text)
+    monkeypatch.setattr(pii_scrubber_module, "WINDOW", len(text))
+
+    assert windowed == _analyzed(text)
+    assert {("DB_URI", len(uri)), ("SECRET", len(key))} <= {
+        (kind, end - start) for kind, start, end, _ in windowed
+    }
+
+
+def _jwt() -> str:
+    """A synthetic 5.7 KB ID token: a header carrying its certificate, a groups claim
+    and a 4,096-bit RSA signature. The first two parts are longer than a window's
+    margin, and read in part before its second dot the token matches nothing."""
+
+    def segment(claims: dict) -> str:
+        encoded = base64.urlsafe_b64encode(json.dumps(claims).encode())
+        return encoded.decode().rstrip("=")
+
+    groups = [f"g{index:04d}" for index in range(250)]
+    return ".".join(
+        [
+            segment({"alg": "RS256", "typ": "JWT", "x5c": ["MII" + "A" * 1_400]}),
+            segment({"sub": "u1", "groups": groups}),
+            "S" * 683,
+        ]
+    )
+
+
+_FILLER = "The weather was fine and we walked along the river. "
+# Values longer than a window's margin that only match whole: a token in prose, in
+# JSON and in minified JSON with no space anywhere, and a quoted secret with spaces.
+_WHOLE_ONLY = [
+    (_FILLER, "Authorization: Bearer ", _jwt(), " and the rest of the log follows."),
+    (_FILLER, '{"id_token": "', _jwt(), '", "next": 1}'),
+    ('{"note":"fine","n":1},', '{"id_token":"', _jwt(), '","next":1}'),
+    (_FILLER, 'password: "', "correct horse battery staple " * 60, '" and the rest.'),
+]
+
+
+@pytest.mark.parametrize(
+    ("filler", "prefix", "value", "suffix"),
+    _WHOLE_ONLY,
+    ids=["bearer-jwt", "json-jwt", "minified-jwt", "quoted-secret"],
+)
+def test_a_value_found_only_whole_is_found_wherever_a_window_ends(
+    monkeypatch, filler: str, prefix: str, value: str, suffix: str
+) -> None:
+    window = pii_scrubber_module.WINDOW
+    margin = pii_scrubber_module._MARGIN
+    filler *= window // len(filler) + 1
+    # Across the first window's limit, every part of the value in turn.
+    for at in range(window - margin - len(value), window - margin, 251):
+        text = f"{filler[: at - len(prefix)]}{prefix}{value}{suffix}"
+        windowed = _analyzed(text)
+        monkeypatch.setattr(pii_scrubber_module, "WINDOW", len(text))
+        whole = _analyzed(text)
+        monkeypatch.setattr(pii_scrubber_module, "WINDOW", window)
+
+        assert windowed == whole, at
+        assert any(
+            kind == "SECRET" and start <= at and end >= at + len(value.rstrip())
+            for kind, start, end, _ in whole
+        ), at
+
+
+@pytest.mark.parametrize(
+    ("filler", "prefix", "value", "suffix", "back"),
+    [(*_WHOLE_ONLY[2], 1_500), (*_WHOLE_ONLY[3], 500)],
+    ids=["jwt", "quoted-secret"],
+)
+def test_a_value_found_only_whole_across_a_window_end_never_reaches_the_provider(
+    filler: str, prefix: str, value: str, suffix: str, back: int
+) -> None:
+    # Starts `back` before the first window's limit and ends past the window.
+    at = pii_scrubber_module.WINDOW - pii_scrubber_module._MARGIN - back
+    filler *= at // len(filler) + 1
+    text = f"{filler[: at - len(prefix)]}{prefix}{value}{suffix}"
+    assert at + len(value) > pii_scrubber_module.WINDOW
+
+    scrubbed, _ = scrub_payload(
+        {"model": "gpt-5.6-luna", "messages": [{"role": "user", "content": text}]},
+        DEFAULT_ACTIONS,
+        PIIScrubberService(),
+    )
+
+    sent = scrubbed["messages"][0]["content"]
+    assert not [
+        piece
+        for index in range(0, len(value) - 32, 32)
+        if (piece := value[index : index + 32]) in sent
+    ]
+
+
+@pytest.mark.parametrize(
+    ("budget", "windows", "expired"),
+    [(2.5, 3, True), (-0.5, 0, True), (0.5, 0, False)],
+    ids=["between-windows", "after-the-last", "in-time"],
+)
+def test_a_scan_stops_at_its_deadline(
+    monkeypatch, budget: float, windows: int, expired: bool
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(pii_scrubber_module, "monotonic", lambda: clock[0])
+    scrubber = PIIScrubberService()
+    analyze = scrubber._analyzer.analyze
+    read: list[int] = []
+
+    def timed(text, entities):
+        read.append(len(text))
+        clock[0] += 1.0
+        return analyze(text, entities)
+
+    monkeypatch.setattr(scrubber._analyzer, "analyze", timed)
+    text = "Plain words for a long note. " * 3_000
+    actions = effective_entity_actions()
+    scrubber.scrub(text, actions)
+    needed = len(read)
+    assert needed > 4
+    # Measured from the start: a budget past the last window, or before the last
+    # window ends.
+    deadline = clock[0] + (budget if windows else needed + budget)
+    read.clear()
+
+    if expired:
+        with pytest.raises(TimeoutError):
+            scrubber.scrub(text, actions, deadline=deadline)
+    else:
+        scrubber.scrub(text, actions, deadline=deadline)
+    assert len(read) == (windows or needed)

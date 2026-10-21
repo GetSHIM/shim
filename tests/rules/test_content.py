@@ -391,6 +391,51 @@ def test_first_fit_takes_spans_in_key_order_and_kept_ones_always() -> None:
     ] == [(2, 9), (0, 5), (10, 14)]
 
 
+def test_first_fit_takes_what_a_check_against_every_taken_span_takes() -> None:
+    rng = random.Random(20261021)
+    for _ in range(500):
+        hits = [
+            ContentHit(start, start + rng.randint(0, 6), ())
+            for start in (rng.randint(0, 40) for _ in range(rng.randint(0, 30)))
+        ]
+        order = {id(hit): rng.random() for hit in hits}
+        kept = {id(hit) for hit in hits if rng.random() < 0.2}
+
+        def key(hit):
+            return order[id(hit)]
+
+        def keep(hit):
+            return id(hit) in kept
+
+        expected: list[ContentHit] = []
+        for hit in sorted(hits, key=key):
+            if keep(hit) or not any(
+                hit.start < other.end and other.start < hit.end for other in expected
+            ):
+                expected.append(hit)
+
+        assert list(map(id, first_fit(hits, key=key, keep=keep))) == list(
+            map(id, expected)
+        )
+
+
+def test_first_fit_is_not_quadratic_in_the_spans() -> None:
+    # A log of 20,000 addresses: every detection is taken, none overlaps another.
+    hits = [ContentHit(10 * index, 10 * index + 8, ()) for index in range(20_000)]
+
+    # This thread's CPU time, collection paused (timeit).
+    elapsed = min(
+        timeit.repeat(
+            lambda: first_fit(hits, key=lambda hit: (hit.start - hit.end, hit.start)),
+            timer=thread_time,
+            number=1,
+            repeat=3,
+        )
+    )
+
+    assert elapsed < 0.25
+
+
 @pytest.mark.parametrize(
     ("term", "text"),
     [
