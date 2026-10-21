@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import codecs
 import hmac
+import json
 import re
 import secrets
 import unicodedata
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -61,6 +62,11 @@ _JSON_SIMPLE = dict(zip('"\\/bfnrt', '"\\/\b\f\n\r\t'))
 JSON_NESTING = 8
 _LINE = re.compile(r"[^\n\r\u2029]*[\n\r\u2029]?")
 _SourceSpan = tuple[int, int]
+# Where a JSON object or array can open: `{` before a key or `}`, `[` before a value.
+_JSON_OPENING = re.compile(r'\{\s*["}]|\[\s*(?:["\[{\]\d-]|true|false|null)')
+_JSON_DECODER = json.JSONDecoder()
+_JSON_SEARCH_FAILURES = 256
+_JSON_SEARCH_PASSES = 8
 MAX_ANALYZABLE_TEXT_LENGTH = 1_000_000
 # Between texts scanned in one pass: no detector matches it, its line breaks end every
 # line-bound pattern, and it is longer than any character look-back (24 for an
@@ -184,6 +190,44 @@ def _add_json_unescaped(
         output.append(decoded[0])
         output_spans.extend(decoded[1])
     return "".join(output), output_spans
+
+
+def _json_spans(text: str) -> list[_SourceSpan]:
+    """The JSON documents in `text` holding an escape, where its values read decoded.
+
+    The whole text when it parses; otherwise each object or array that parses from
+    where it opens, such as NDJSON lines, a labelled tool result, JSON quoted in
+    prose, or the closed rows of a truncated document.
+    """
+    if "\\" not in text:
+        return []
+    try:
+        json.loads(text)
+    except (ValueError, RecursionError):
+        pass
+    else:
+        return [(0, len(text))]
+    spans: list[_SourceSpan] = []
+    # ponytail: failed parses stop the search past a fixed count or a few reads of
+    # the text, so it stays linear; JSON after that point is recorded as written.
+    failures, budget = 0, _JSON_SEARCH_PASSES * len(text)
+    opening = _JSON_OPENING.search(text)
+    while opening is not None and failures < _JSON_SEARCH_FAILURES and budget > 0:
+        start = opening.start()
+        try:
+            _, end = _JSON_DECODER.raw_decode(text, start)
+        except json.JSONDecodeError as error:
+            failures += 1
+            # An unterminated string reports where it opened but was read to the end.
+            unterminated = error.msg.startswith("Unterminated string")
+            budget -= (len(text) if unterminated else error.pos) - start
+            opening = _JSON_OPENING.search(text, start + 1)
+            continue
+        except RecursionError:
+            break
+        spans.append((start, end))
+        opening = _JSON_OPENING.search(text, end)
+    return spans
 
 
 def _normalization_continues(previous: str, current: str) -> bool:
@@ -423,6 +467,7 @@ class PIIScrubberService:
             unmasked=unmasked,
             placeholder_key=placeholder_key,
             content=content,
+            json_spans=_json_spans(text),
         )
 
     def scrub_many(
@@ -448,11 +493,15 @@ class PIIScrubberService:
         ):
             return None
         detections, _ = self._source_detections(joined, actions)
-        separators, cursor = [], 0
-        for text in texts[:-1]:
+        separators, json_spans, cursor = [], [], 0
+        for text in texts:
+            json_spans += [
+                (cursor + start, cursor + end) for start, end in _json_spans(text)
+            ]
             cursor += len(text)
             separators.append(cursor)
             cursor += len(_BATCH_SEPARATOR)
+        separators.pop()
         for item in detections:
             # The last separator starting before the detection ends is the only one
             # it can overlap.
@@ -469,6 +518,7 @@ class PIIScrubberService:
             placeholders_by_value=placeholders_by_value,
             unmasked=kept,
             placeholder_key=placeholder_key,
+            json_spans=json_spans,
         )
         if unmasked is not None:
             unmasked.update(kept)
@@ -486,7 +536,10 @@ class PIIScrubberService:
         unmasked: dict[str, str] | None,
         placeholder_key: bytes | None,
         content: ContentRules | None = None,
+        json_spans: Sequence[_SourceSpan],
     ) -> tuple[str, dict[str, str]]:
+        """Placeholders for `text`; the JSON documents in `json_spans` (sorted) record
+        a value as its decoded string content, the value a model reads there."""
         if not detections and not hits:
             return text, {}
         placeholders, marks = _settle(detections, hits, actions)
@@ -507,6 +560,9 @@ class PIIScrubberService:
         cursor = 0
         for item in placeholders:
             value = text[item.start : item.end]
+            document = bisect_right(json_spans, item.start, key=lambda span: span[0])
+            if document and item.end <= json_spans[document - 1][1]:
+                value = JSON_ESCAPE.sub(json_character, value)
             entity_type = item.entity_type
             placeholder = placeholders_by_value.get(value)
             if placeholder is None:
@@ -534,20 +590,31 @@ class PIIScrubberService:
         scrubbed.append(text[cursor:])
         return "".join(scrubbed), verification_map
 
-    def deanonymize(self, text: str, verification_map: Mapping[str, str]) -> str:
+    def deanonymize(
+        self,
+        text: str,
+        verification_map: Mapping[str, str],
+        *,
+        json_string: bool = False,
+    ) -> str:
+        """Put the values back; `json_string` text gets them JSON-escaped.
+
+        A model writes a placeholder in JSON text (tool-call arguments) inside a
+        string literal, so its value is escaped to stay that string's content.
+        """
         if not text or not verification_map:
             return text
         placeholders = placeholder_map(verification_map)
 
         def restore(match: re.Match[str]) -> str:
             identifier, tail = match.groups()
-            if tail:
-                return verification_map.get(f"<{identifier}{tail}>", match.group())
-            value = verification_map.get(f"<{identifier}>")
-            if value is None:
+            value = verification_map.get(f"<{identifier}{tail or ''}>")
+            if value is None and not tail:
                 # A model may write a tailed placeholder back without its tail.
                 value = placeholders.untailed.get(f"<{identifier}>")
-            return match.group() if value is None else value
+            if value is None:
+                return match.group()
+            return json.dumps(value, ensure_ascii=False)[1:-1] if json_string else value
 
         return PLACEHOLDER.sub(restore, text)
 

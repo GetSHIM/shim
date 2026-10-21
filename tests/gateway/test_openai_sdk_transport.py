@@ -1964,7 +1964,8 @@ def _chunk(delta: dict, finish: str | None = None) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("protocol", "stream"), [("chat", False), ("chat", True), ("responses", False)]
+    ("protocol", "stream"),
+    [("chat", False), ("chat", True), ("responses", False), ("responses", True)],
 )
 async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
     monkeypatch: pytest.MonkeyPatch, protocol: str, stream: bool
@@ -1980,6 +1981,40 @@ async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
     split = text.index(tckn) + len(tckn) // 2
 
     async def handler(_request: httpx.Request) -> httpx.Response:
+        if protocol == "responses" and stream:
+            events = [
+                {
+                    "type": "response.created",
+                    "response": {**_response("resp_withheld"), "status": "in_progress"},
+                },
+                *(
+                    {
+                        "type": "response.output_text.delta",
+                        "item_id": "msg_1",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": delta,
+                        "logprobs": [],
+                    }
+                    for delta in (text[:split], text[split:])
+                ),
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": "fc_1",
+                    "output_index": 1,
+                    "delta": arguments,
+                },
+                {"type": "response.completed", "response": _response("resp_withheld")},
+            ]
+            return httpx.Response(
+                200,
+                content="".join(
+                    f"event: {event['type']}\n"
+                    f"data: {json.dumps({**event, 'sequence_number': number})}\n\n"
+                    for number, event in enumerate(events)
+                ),
+                headers={"content-type": "text/event-stream"},
+            )
         if protocol == "responses":
             response = _response("resp_withheld")
             response["output"] = [
@@ -2061,7 +2096,7 @@ async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
         )
 
     body = (
-        {"model": "gpt-5.6-luna", "input": text}
+        {"model": "gpt-5.6-luna", "input": text, "stream": stream}
         if protocol == "responses"
         else {
             "model": "gpt-5.6-luna",

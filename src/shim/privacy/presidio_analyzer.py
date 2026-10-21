@@ -814,8 +814,8 @@ def _custom_recognizers() -> list[EntityRecognizer]:
             patterns=[
                 Pattern(
                     "Private file path",
-                    r"(?<![\w])(?:/(?:Users|home|var|etc|opt|srv|tmp)/[^\s,;]+|"
-                    r"[A-Za-z]:\\[^\r\n]+)",
+                    r"(?<![\w])(?:/(?:Users|home|var|etc|opt|srv|tmp)/[^\s,;\"]+|"
+                    r"[A-Za-z]:\\[^\r\n\"]+)",
                     0.85,
                 )
             ],

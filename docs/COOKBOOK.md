@@ -460,7 +460,11 @@ Notes: an unknown type or action, `mask_last4` on another type, `stable`
 without a key, an invalid bulk threshold, or a `PII_RESPONSE_SCAN` other than
 `off` or `count`, stops the gateway at start-up with the setting named. A tailed placeholder is restored
 whether the model writes it back with or without its tail; with a different
-tail it is left as written. The tail reaches only the provider: events and
+tail it is left as written. Inside tool-call arguments, which are JSON text, a
+restored value is JSON-escaped, so a quote or backslash in it stays part of the
+string. A value masked inside JSON in a message text (tool-call history, a
+`json.dumps` tool result, NDJSON, JSON after a label or inside prose) is kept
+decoded, as the model reads it. The tail reaches only the provider: events and
 metrics carry counts. The types are those listed in [Scan text before you send it](#scan-text-before-you-send-it).
 Where two detections overlap, as an e-mail inside a file path, the span takes
 the stronger action (`block`, then `mask`, then `mask_last4`, then `monitor`), so
