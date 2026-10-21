@@ -711,6 +711,35 @@ async def test_a_capability_is_refused_only_when_the_catalog_says_it_is_missing(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "model", "admitted"),
+    [
+        ("openai", "gpt-4o-2024-08-06", True),
+        ("openai", "gpt-4o-mini-2024-07-18", True),
+        ("anthropic", "claude-sonnet-4-5-20250929", True),
+        ("openai", "o3-deep-research", False),
+        ("openai", "o3-deep-research-2025-06-26", False),
+        ("openai", "gpt-4-32k", False),
+        ("openai", "gpt-5-foo", False),
+        ("google", "gemini-2.5-pro-preview-06-05", False),
+    ],
+)
+async def test_only_a_catalog_id_or_its_dated_snapshot_is_admitted(
+    provider, model, admitted
+) -> None:
+    prepared = _prepared("hello", model=model, provider=provider)
+    stage = _stage(InMemoryRateLimiter())
+
+    if admitted:
+        await stage.run(prepared)
+        return
+    with pytest.raises(HTTPException) as error:
+        await stage.run(prepared)
+    assert error.value.detail["code"] == "MODEL_NOT_PRICED"
+    assert prepared.policy_verdicts[-1].outcome == "deny"
+
+
+@pytest.mark.asyncio
 async def test_a_deprecated_catalog_model_is_served_with_a_warning() -> None:
     prepared = _prepared("hello", model="gpt-3.5-turbo")
 

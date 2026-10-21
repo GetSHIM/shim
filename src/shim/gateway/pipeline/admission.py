@@ -603,7 +603,7 @@ def _check_catalog_limits(
 ) -> None:
     payload = value.payload
     if value.target is None:
-        # A prefix match describes another model, so only the model's own entry counts.
+        # A dated snapshot may differ from its base entry, so only its own entry counts.
         entry = DEFAULT_PRICE_BOOK.exact(value.pricing_model, str(value.provider))
         if entry is None:
             return

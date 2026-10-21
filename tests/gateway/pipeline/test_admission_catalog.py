@@ -25,7 +25,7 @@ from shim.gateway.contracts.context import (
     TierPolicy,
 )
 from shim.gateway.contracts.ids import ApiKeyId, ProviderId, RequestId, TenantId
-from shim.gateway.kernel.result import PreparedInference
+from shim.gateway.kernel.result import PreparedInference, ProviderTarget
 from shim.gateway.pipeline.admission import AdmissionStage
 from shim.gateway.request_policy import RequestPolicyContext
 
@@ -88,6 +88,7 @@ async def _admit(
     payload: dict[str, Any],
     *,
     protocol: str | None = None,
+    target: ProviderTarget | None = None,
 ) -> PreparedInference:
     context = GatewayContext(
         request_id=RequestId("req_catalog"),
@@ -117,6 +118,7 @@ async def _admit(
         ),
         pii_config=None,
         provider=ProviderId(provider),
+        target=target,
     )
     stage = AdmissionStage(
         SimpleNamespace(headers={}),
@@ -169,10 +171,10 @@ async def test_a_full_window_with_the_largest_output_is_admitted_and_one_more_wo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("provider", "model", "entry"), MODELS)
-async def test_a_prefix_match_never_refuses_for_the_entry_it_borrows(
+async def test_a_dated_snapshot_never_refuses_for_the_entry_it_borrows(
     provider, model, entry
 ) -> None:
-    # gpt-4-0125-preview resolves to gpt-4's prices, not its 8,192-token window.
+    # A snapshot takes its base entry's prices, not the window or modalities.
     variant = f"{model}-2099-01-01"
     payload = _payload(
         provider, variant, [_words(entry["context_window"] + 1), *_IMAGE.values()]
@@ -314,18 +316,39 @@ async def test_earlier_thinking_and_reasoning_summaries_are_not_counted() -> Non
 
 
 @pytest.mark.asyncio
-async def test_real_snapshots_named_after_a_shorter_entry_are_admitted() -> None:
-    audio = {"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}}
+@pytest.mark.parametrize(
+    ("model", "parts"),
+    [
+        # gpt-4-0125-preview has a 128k window; gpt-4's entry says 8,192.
+        ("gpt-4-0125-preview", [_words(10_000)]),
+        # gpt-4o-audio-preview takes audio; gpt-4o's entry does not list it.
+        (
+            "gpt-4o-audio-preview",
+            [
+                "listen",
+                {"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}},
+            ],
+        ),
+    ],
+)
+async def test_a_model_named_after_a_shorter_entry_is_not_that_entry(
+    model, parts
+) -> None:
+    # The catalog prices neither, so it refuses them rather than bill the shorter entry's rate.
+    with pytest.raises(HTTPException) as error:
+        await _admit("openai", model, _payload("openai", model, parts))
+    assert error.value.detail["code"] == "MODEL_NOT_PRICED"
 
-    # gpt-4-0125-preview has a 128k window; gpt-4's entry says 8,192.
-    await _admit(
-        "openai",
-        "gpt-4-0125-preview",
-        _payload("openai", "gpt-4-0125-preview", [_words(10_000)]),
+    # A deployment serves it, and the shorter entry's limits never refuse it.
+    target = ProviderTarget(
+        deployment_id="dep",
+        base_url="https://llm.internal/v1",
+        upstream_model=model,
+        credential_reference="secret",
+        timeout_seconds=5,
+        declared_version="v1",
     )
-    # gpt-4o-audio-preview takes audio; gpt-4o's entry does not list it.
-    await _admit(
-        "openai",
-        "gpt-4o-audio-preview",
-        _payload("openai", "gpt-4o-audio-preview", ["listen", audio]),
+    admitted = await _admit(
+        "openai", "my-alias", _payload("openai", "my-alias", parts), target=target
     )
+    assert admitted.unpriced

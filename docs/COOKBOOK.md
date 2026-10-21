@@ -60,8 +60,10 @@ answer = client.responses.create(model="gpt-5-nano", input="Summarise the invoic
 To send the provider key per request instead, add
 `default_headers={"x-provider-key": os.environ["OPENAI_API_KEY"]}` to the client.
 
-Notes: the model must be in shim's price catalog, which `GET /v1/models` lists;
-any other model gets 400 `MODEL_NOT_PRICED`. A model id is at most 200 letters,
+Notes: the model must be in shim's price catalog, which `GET /v1/models` lists, or
+be a dated snapshot of a model there (`gpt-4o-2024-08-06`, `claude-sonnet-4-5-20250929`);
+any other model gets 400 `MODEL_NOT_PRICED`, a longer name that starts with a catalog
+id included (`o3-deep-research`, `gpt-4-32k`). A model id is at most 200 letters,
 digits, `.`, `_`, `:` and `-`; any other id is refused the same way, and the usage
 event records it as `unsupported`, never the id itself. With no provider key at all the
 answer is 503 `PROVIDER_NOT_CONFIGURED`, and an empty `x-provider-key` is 400
@@ -750,7 +752,7 @@ usually much larger. The output limit counts against the window only for OpenAI
 models and deployments: Gemini's is separate, and Claude stops at the window. A
 request with Responses `truncation: "auto"`, `context_management`, `compaction`
 or a compaction block is never refused for size. Refusals use only a model's own
-catalog entry, never a longer model name matched by prefix. A capability is
+catalog entry, never the entry a dated snapshot is priced at. A capability is
 refused only when the catalog says the model lacks it; an unknown capability is
 never refused, and an OpenAI file part is never refused as a PDF.
 
