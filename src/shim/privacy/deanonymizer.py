@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim.privacy.policies import PlaceholderMap, placeholder_map
 
 
 _DEEP_CONTENT_FIELDS = frozenset({"arguments", "input"})
@@ -93,6 +94,7 @@ def restore_openai_payload(
 
     if not verification_map:
         return payload
+    verification_map = placeholder_map(verification_map)
 
     def visit(
         value: Any,
@@ -149,6 +151,7 @@ def restore_anthropic_payload(
 
     if not verification_map:
         return payload
+    verification_map = placeholder_map(verification_map)
 
     def visit(
         value: Any,
@@ -194,7 +197,7 @@ class AnthropicStreamRestorer:
         verification_map: Mapping[str, str],
         scrubber: PIIScrubberService,
     ) -> None:
-        self._verification_map = verification_map
+        self._verification_map = placeholder_map(verification_map)
         self._scrubber = scrubber
         self._buffers: dict[tuple[object, ...], str] = {}
 
@@ -265,7 +268,7 @@ class OpenAIStreamRestorer:
         verification_map: Mapping[str, str],
         scrubber: PIIScrubberService,
     ) -> None:
-        self._verification_map = verification_map
+        self._verification_map = placeholder_map(verification_map)
         self._scrubber = scrubber
         self._buffers: dict[tuple[object, ...], str] = {}
 
@@ -385,6 +388,7 @@ def restore_fragment(
     placeholders: Mapping[str, str],
     scrubber: PIIScrubberService,
 ) -> str:
+    placeholders = placeholder_map(placeholders)
     text = buffers.pop(key, "") + fragment
     ready, carry = _split_placeholder_prefix(text, placeholders)
     if carry:
@@ -394,7 +398,7 @@ def restore_fragment(
 
 def _split_placeholder_prefix(
     text: str,
-    placeholders: Mapping[str, str],
+    placeholders: PlaceholderMap,
 ) -> tuple[str, str]:
     last_open = text.rfind("<")
     if last_open < 0:
@@ -404,11 +408,8 @@ def _split_placeholder_prefix(
     compact_tail = "<" + identifier
     if tail[-1:].isspace() and identifier and f"{compact_tail}>" not in placeholders:
         return text, ""
-    if any(
-        len(compact_tail) < len(placeholder) and placeholder.startswith(compact_tail)
-        for placeholder in placeholders
-    ):
-        if len(tail) > 256:
-            raise ValueError("provider placeholder suffix exceeds 256 characters")
+    # Held back while it may still open a placeholder, at most 256 characters: past
+    # that it goes out as written, and a placeholder it opens stays unrestored.
+    if len(tail) <= 256 and placeholders.continues(compact_tail):
         return text[:last_open], tail
     return text, ""

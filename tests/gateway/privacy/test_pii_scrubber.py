@@ -1301,12 +1301,18 @@ def test_fragment_carry_is_bounded_and_preserves_every_placeholder_split(scrubbe
             output += restore_fragment(buffers, (0,), token[split:], mapping, scrubber)
             assert output == "alice@example.com"
             assert not buffers
+    # "<" and whitespace may still open a placeholder, so it is held back, but never
+    # past 256 characters: then it goes out as written and the stream goes on.
     buffers = {}
-    assert restore_fragment(buffers, (0,), "<", mapping, scrubber) == ""
-    with pytest.raises(ValueError, match="256"):
-        for _ in range(256):
-            restore_fragment(buffers, (0,), " ", mapping, scrubber)
-            assert len(buffers.get((0,), "")) <= 256
+    sent = [restore_fragment(buffers, (0,), "<", mapping, scrubber)]
+    for _ in range(300):
+        sent.append(restore_fragment(buffers, (0,), " ", mapping, scrubber))
+        assert len(buffers.get((0,), "")) <= 256
+    assert sent[:256] == [""] * 256 and sent[256] == "<" + " " * 256
+    assert "".join(sent) + buffers.pop((0,), "") == "<" + " " * 300
+    assert restore_fragment({}, (0,), "<" + " " * 300, mapping, scrubber) == (
+        "<" + " " * 300
+    )
     for literal in ("1 < 2", "<UNKNOWN>", "<EM AIL", "plain text"):
         assert restore_fragment({}, (0,), literal, mapping, scrubber) == literal
 
@@ -1727,6 +1733,57 @@ def test_a_tailed_placeholder_restores_with_or_without_its_tail_only(
     assert scrubber.deanonymize(wrong, mapping) == wrong
     assert scrubber.deanonymize("<CREDIT_CARD_" + "0" * 32 + ">", mapping) == (
         "<CREDIT_CARD_" + "0" * 32 + ">"
+    )
+
+
+_MANY_MASKED = {
+    **{
+        f"<EMAIL_ADDRESS_{index:08x}>": f"user{index}@example.com"
+        for index in range(5_000)
+    },
+    "<CREDIT_CARD_" + "b" * 32 + "~1111>": "4111111111111111",
+}
+
+
+def test_restoring_is_linear_in_the_answer_whatever_was_masked(
+    scrubber: PIIScrubberService,
+) -> None:
+    # 20,000 placeholder-shaped tokens no request masked, against 5,000 masked values:
+    # a scan of the masked values per token took seconds on the event loop.
+    unknown = "<A_00000000> " * 20_000
+    answer = f"{unknown}<CREDIT_CARD_{'b' * 32}> <EMAIL_ADDRESS_00001387>"
+    restored: list[str] = []
+    assert (
+        timeit.timeit(
+            lambda: restored.append(scrubber.deanonymize(answer, _MANY_MASKED)),
+            timer=time.thread_time,
+            number=1,
+        )
+        < 0.5
+    )
+    assert restored == [f"{unknown}4111111111111111 user4999@example.com"]
+
+
+def test_a_stream_restores_in_time_linear_in_its_deltas(
+    scrubber: PIIScrubberService,
+) -> None:
+    restorer = OpenAIStreamRestorer(_MANY_MASKED, scrubber)
+    # A delta ending in "<Z" starts no masked placeholder, so nothing is held back;
+    # matching it against every masked placeholder took seconds for this stream.
+    chunks = [
+        {"choices": [{"index": 0, "delta": {"content": "x <Z"}}]} for _ in range(20_000)
+    ]
+    restored: list[dict] = []
+    assert (
+        timeit.timeit(
+            lambda: restored.extend(map(restorer.restore_chat_chunk, chunks)),
+            timer=time.thread_time,
+            number=1,
+        )
+        < 0.5
+    )
+    assert [chunk["choices"][0]["delta"]["content"] for chunk in restored] == (
+        ["x <Z"] * 20_000
     )
 
 

@@ -16,7 +16,7 @@ from typing import Any, get_args
 
 from presidio_analyzer import RecognizerResult
 
-from shim.privacy.policies import EntityAction
+from shim.privacy.policies import EntityAction, placeholder_map
 from shim.privacy.presidio_analyzer import PresidioAnalyzer, after_tax_word
 from shim.rules.content import (
     ContentHit,
@@ -537,6 +537,7 @@ class PIIScrubberService:
     def deanonymize(self, text: str, verification_map: Mapping[str, str]) -> str:
         if not text or not verification_map:
             return text
+        placeholders = placeholder_map(verification_map)
 
         def restore(match: re.Match[str]) -> str:
             identifier, tail = match.groups()
@@ -545,15 +546,7 @@ class PIIScrubberService:
             value = verification_map.get(f"<{identifier}>")
             if value is None:
                 # A model may write a tailed placeholder back without its tail.
-                prefix = f"<{identifier}~"
-                value = next(
-                    (
-                        original
-                        for placeholder, original in verification_map.items()
-                        if placeholder.startswith(prefix)
-                    ),
-                    None,
-                )
+                value = placeholders.untailed.get(f"<{identifier}>")
             return match.group() if value is None else value
 
         return PLACEHOLDER.sub(restore, text)
