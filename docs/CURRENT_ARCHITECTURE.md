@@ -163,6 +163,33 @@ sockets for a chat request and a scan.
 Browser CORS is disabled in keyless mode. Provider credentials resolve from an
 invocation header first and the matching environment variable second.
 
+### Process guards
+
+`shim serve` (`src/shim/cli.py`, `start_guards`) installs two guards after it
+reads its settings and before `uvicorn.run`; `create_community_app` installs
+neither, because an audit hook cannot be removed from a test or an embedding
+process. The egress guard goes first, so a thread a startup hook started is
+covered while the scan runs.
+
+- `src/shim/core/egress_guard.py` (`SHIM_EGRESS_GUARD`, default `report`): one
+  `sys.addaudithook` per process. Name lookups are allowed for the configured
+  provider, Azure, OTLP and Sentry hosts, `localhost` and `SHIM_EGRESS_ALLOW_HOSTS`;
+  literal addresses except metadata and link-local. Denials are logged once per
+  destination (`egress_denied`, at most 256) and counted in
+  `shim_egress_denied_total`; `enforce` raises `PermissionError` from the hook. A
+  thread-local flag keeps the hook's own logging out of it, and a fault in the
+  decision is counted as `guard_error` and never raised. The isolation pool's
+  spawned workers, which re-run Python's startup hooks, get the parent's mode
+  through `initargs` and refuse all network under `enforce`.
+- `src/shim/core/startup_guard.py` (`SHIM_STARTUP_GUARD`, default `report`): reads
+  the site directories for `.pth` import lines, their imported modules and
+  `sitecustomize`/`usercustomize`, compares them with `ALLOWLIST` (path and sha256 of
+  the hooks the published image ships), logs `startup_hook_unexpected`, sets
+  `shim_startup_hooks_unexpected`, and under `enforce` exits with 78 before serving.
+
+Tests that install either guard run it in a child process. Limits and operator
+guidance: [supply chain](SUPPLY_CHAIN.md#process-guards).
+
 ## Enterprise composition
 
 `ee/src/shim_enterprise/application.py` constructs the enterprise application

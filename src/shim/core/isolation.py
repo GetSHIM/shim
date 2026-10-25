@@ -17,6 +17,8 @@ import threading
 import time
 import warnings
 
+from shim.core import egress_guard
+
 WORKERS = 2
 # Per worker; a 64M-pixel image decodes to at most 256 MB, twice over during conversion.
 MEMORY_BYTES = 1024**3
@@ -95,7 +97,9 @@ def _get() -> Pool:
         if _pool is None:
             # spawn: the gateway's threads and sockets are never forked into a worker.
             _pool = multiprocessing.get_context("spawn").Pool(
-                WORKERS, initializer=_start
+                WORKERS,
+                initializer=_start,
+                initargs=(egress_guard.installed_mode,),
             )
         return _pool
 
@@ -115,7 +119,9 @@ def _close() -> None:
         _discard(_pool)
 
 
-def _start() -> None:
+def _start(egress_mode: egress_guard.Mode) -> None:
+    # A spawned worker runs the startup hooks again, outside the gateway's audit hook.
+    egress_guard.install_worker(egress_mode)
     signal.signal(signal.SIGALRM, _expire)
     # Parsers log and warn with tokens taken from the file; nothing leaves a worker.
     logging.disable(logging.CRITICAL)

@@ -281,6 +281,17 @@ INJECTION_MARKERS_TOTAL = Counter(
     ("marker",),
 )
 
+STARTUP_HOOKS_UNEXPECTED = Gauge(
+    "shim_startup_hooks_unexpected",
+    "Python startup hooks found at boot that the image does not ship.",
+)
+# kind and mode are fixed in egress_guard; guard_error counts a fault the guard swallowed.
+EGRESS_DENIED_TOTAL = Counter(
+    "shim_egress_denied_total",
+    "Name lookups and connections the egress guard reported or refused.",
+    ("kind", "mode"),
+)
+
 
 def bounded_label(kind: str, value: object) -> str:
     """Map an arbitrary runtime value into a registered label vocabulary."""
