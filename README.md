@@ -134,7 +134,7 @@ or changes streaming behaviour, you are not waiting on shim to catch up.
 
 ```console
 docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
-  ghcr.io/getshim/shim@sha256:<DIGEST>  # 0.4.5
+  ghcr.io/getshim/shim@sha256:47954d18b34e7faaa62c272f08488202a3cc0e27238c5de81dcd0ffd82493dd3  # 0.4.5
 ```
 
 The container publishes a port, so it refuses to start without a key. Replace
@@ -156,8 +156,8 @@ curl http://localhost:8000/v1/scan \
   "request_id": "scan_73ac33b589af4b82a1430b777a82d493",
   "verdict": "warn",
   "entities": [
-    {"type": "EMAIL_ADDRESS", "score": 1.0, "start": 9, "end": 29},
-    {"type": "IBAN_CODE", "score": 1.0, "start": 36, "end": 68}
+    {"type": "EMAIL_ADDRESS", "score": 1.0, "start": 9, "end": 29, "action": "mask"},
+    {"type": "IBAN_CODE", "score": 1.0, "start": 36, "end": 68, "action": "mask"}
   ],
   "entity_types": ["EMAIL_ADDRESS", "IBAN_CODE"],
   "policy": "warn"
@@ -243,7 +243,7 @@ Every release carries a signed build provenance attestation and an SPDX SBOM.
 Check that the image came from this repository's release workflow:
 
 ```console
-gh attestation verify oci://ghcr.io/getshim/shim@sha256:<DIGEST> \
+gh attestation verify oci://ghcr.io/getshim/shim@sha256:47954d18b34e7faaa62c272f08488202a3cc0e27238c5de81dcd0ffd82493dd3 \
   --repo GetSHIM/shim \
   --signer-workflow GetSHIM/shim/.github/workflows/release.yml \
   --source-ref refs/tags/v0.4.5

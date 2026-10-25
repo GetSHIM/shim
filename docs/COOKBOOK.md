@@ -43,7 +43,7 @@ Send Chat Completions and Responses calls through shim by changing only the base
 
 ```console
 docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
-  -e OPENAI_API_KEY ghcr.io/getshim/shim@sha256:<DIGEST>
+  -e OPENAI_API_KEY ghcr.io/getshim/shim@sha256:47954d18b34e7faaa62c272f08488202a3cc0e27238c5de81dcd0ffd82493dd3
 ```
 
 ```python
@@ -237,7 +237,7 @@ client.chat.completions.create(
 
 ```console
 docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
-  -e OPENAI_API_KEY ghcr.io/getshim/shim@sha256:<DIGEST> 2>> shim-usage.log
+  -e OPENAI_API_KEY ghcr.io/getshim/shim@sha256:47954d18b34e7faaa62c272f08488202a3cc0e27238c5de81dcd0ffd82493dd3 2>> shim-usage.log
 jq -cR 'fromjson? | select(.version == 4 and .event == "request") | {cost_center, tags, model, estimated_cost_usd}' shim-usage.log
 ```
 
@@ -390,7 +390,7 @@ Mask most types, watch some, and refuse a request that carries a pasted key.
 ```console
 docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
   -e PII_ENTITY_ACTIONS='{"SECRET":"block","EMAIL_ADDRESS":"monitor"}' \
-  -e OPENAI_API_KEY ghcr.io/getshim/shim@sha256:<DIGEST>
+  -e OPENAI_API_KEY ghcr.io/getshim/shim@sha256:47954d18b34e7faaa62c272f08488202a3cc0e27238c5de81dcd0ffd82493dd3
 ```
 
 ```python
@@ -1220,7 +1220,7 @@ Export traces, logs, error reports and metrics without exporting prompt or respo
 
 ```console
 docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
-  -e OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 ghcr.io/getshim/shim@sha256:<DIGEST>
+  -e OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 ghcr.io/getshim/shim@sha256:47954d18b34e7faaa62c272f08488202a3cc0e27238c5de81dcd0ffd82493dd3
 curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 ```
 

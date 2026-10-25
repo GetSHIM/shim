@@ -51,7 +51,7 @@ Every tagged release publishes an SPDX SBOM and a signed build provenance
 attestation. Verify the image before you trust it:
 
 ```
-gh attestation verify oci://ghcr.io/getshim/shim@sha256:<digest> \
+gh attestation verify oci://ghcr.io/getshim/shim@sha256:47954d18b34e7faaa62c272f08488202a3cc0e27238c5de81dcd0ffd82493dd3 \
   --repo GetSHIM/shim \
   --signer-workflow GetSHIM/shim/.github/workflows/release.yml \
   --source-ref refs/tags/v0.4.5
