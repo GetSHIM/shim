@@ -5290,7 +5290,7 @@
   },
   "info": {
     "title": "shim trust-boundary gateway",
-    "version": "0.4.4"
+    "version": "0.4.5"
   },
   "openapi": "3.1.0",
   "paths": {
