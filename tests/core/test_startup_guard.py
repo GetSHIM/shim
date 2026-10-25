@@ -121,7 +121,7 @@ def test_an_allowlisted_hook_whose_target_is_not_allowlisted_is_reported(
 
 
 def test_the_allowlist_is_the_published_image_set() -> None:
-    # From ghcr.io/getshim/shim:0.4.4, amd64 and arm64; nothing else belongs here.
+    # The image's own hooks, amd64 and arm64; nothing else belongs here.
     assert set(ALLOWLIST) == {
         "_virtualenv.pth",
         "_virtualenv.py",

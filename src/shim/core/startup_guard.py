@@ -28,9 +28,9 @@ ALLOWLIST: Final = MappingProxyType(
         # uv's virtual environment.
         "_virtualenv.pth": "69ac3d8f27e679c81b94ab30b3b56e9cd138219b1ba94a1fa3606d5a76a1433d",
         "_virtualenv.py": "cfb3db86aaa53bb62b5ff764970bec2d71c9228590a0ebec57f6ec926cc0bf1a",
-        # setuptools 83.0.0, a runtime dependency of spacy and thinc.
+        # setuptools 84.2.1, a runtime dependency of spacy and thinc.
         "distutils-precedence.pth": "2638ce9e2500e572a5e0de7faed6661eb569d1b696fcba07b0dd223da5f5d224",
-        "_distutils_hack/__init__.py": "df81e6bcba34ee3e3952f776551fb669143b9490fdd6c4caeb32609f97e985b4",
+        "_distutils_hack/__init__.py": "ced72e54431ecf2d8d7dbd8a1e27724f1b171af3ca1503c304bf11c59a7fe861",
     }
 )
 EX_CONFIG: Final = 78
