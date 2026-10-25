@@ -774,11 +774,18 @@ def test_emails_at_any_suffix_are_masked_without_any_network_call_from_a_cold_pr
     assert not cache.exists()
 
 
+def _cli_settings(**values: object) -> SimpleNamespace:
+    # Guards off: an audit hook installed here would stay in the pytest process.
+    return SimpleNamespace(
+        LOG_LEVEL="INFO", SHIM_STARTUP_GUARD="off", SHIM_EGRESS_GUARD="off", **values
+    )
+
+
 @pytest.mark.parametrize("host", ["localhost", "127.23.45.67", "::1"])
 def test_cli_serves_loopback_without_a_gateway_key(monkeypatch, host: str) -> None:
     run = Mock()
     monkeypatch.setattr(
-        cli, "CommunitySettings", lambda: SimpleNamespace(SHIM_API_KEY=None)
+        cli, "CommunitySettings", lambda: _cli_settings(SHIM_API_KEY=None)
     )
     monkeypatch.setattr(cli.uvicorn, "run", run)
 
@@ -803,7 +810,7 @@ def test_cli_rejects_non_loopback_without_a_gateway_key(
 ) -> None:
     run = Mock()
     monkeypatch.setattr(
-        cli, "CommunitySettings", lambda: SimpleNamespace(SHIM_API_KEY=None)
+        cli, "CommunitySettings", lambda: _cli_settings(SHIM_API_KEY=None)
     )
     monkeypatch.setattr(cli.uvicorn, "run", run)
 
@@ -818,7 +825,7 @@ def test_cli_allows_external_bind_with_a_validated_gateway_key(monkeypatch) -> N
     monkeypatch.setattr(
         cli,
         "CommunitySettings",
-        lambda: SimpleNamespace(SHIM_API_KEY=object()),
+        lambda: _cli_settings(SHIM_API_KEY=object()),
     )
     monkeypatch.setattr(cli.uvicorn, "run", run)
 

@@ -51,8 +51,14 @@ Every tagged release publishes an SPDX SBOM and a signed build provenance
 attestation. Verify the image before you trust it:
 
 ```
-gh attestation verify oci://ghcr.io/getshim/shim:0.4.4 --owner GetSHIM
+gh attestation verify oci://ghcr.io/getshim/shim@sha256:<digest> \
+  --repo GetSHIM/shim \
+  --signer-workflow GetSHIM/shim/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.4.5
 ```
+
+Verify by digest, then run the same digest. A tag such as `latest` can move.
+See [supply chain](docs/SUPPLY_CHAIN.md) for the full procedure.
 
 A failed verification means the image did not come from this repository's
 release workflow. Treat that as a security report and use the advisory link

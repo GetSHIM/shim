@@ -134,11 +134,12 @@ or changes streaming behaviour, you are not waiting on shim to catch up.
 
 ```console
 docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
-  ghcr.io/getshim/shim:latest
+  ghcr.io/getshim/shim@sha256:<DIGEST>  # 0.4.5
 ```
 
 The container publishes a port, so it refuses to start without a key. Replace
-that value with your own before anything but a local trial.
+that value with your own before anything but a local trial. The image is pinned
+by digest; to check it before you run it, see [Verify the image](#verify-the-image).
 
 Ask it what it finds in a prompt. This route calls no provider, so it needs no
 provider key:
@@ -224,8 +225,34 @@ OTLP traces, structured logs and Sentry error reports are enabled by
 span carries its model, input and output tokens, finish reasons and cost, never
 prompt or response text.
 
+`shim serve` starts two process guards, both `report` by default. `SHIM_STARTUP_GUARD`
+(`off`, `report`, `enforce`) looks for Python startup hooks the published image
+does not ship; `enforce` refuses to start (exit code 78). `SHIM_EGRESS_GUARD`
+(`off`, `report`, `enforce`) watches name lookups and connections from the process:
+hosts outside the configured providers and exporters, and cloud instance metadata,
+are logged, or refused under `enforce`. `SHIM_EGRESS_ALLOW_HOSTS` adds hosts, such
+as a proxy (comma-separated, an exact host or `*.` and a suffix). See
+[supply chain](docs/SUPPLY_CHAIN.md#process-guards).
+
 To run from source instead, see [the developer guide](DEVELOPER_GUIDE.md).
 For customer-operated enterprise installations, see [deployment and recovery](ee/deploy/README.md).
+
+## Verify the image
+
+Every release carries a signed build provenance attestation and an SPDX SBOM.
+Check that the image came from this repository's release workflow:
+
+```console
+gh attestation verify oci://ghcr.io/getshim/shim@sha256:<DIGEST> \
+  --repo GetSHIM/shim \
+  --signer-workflow GetSHIM/shim/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.4.5
+```
+
+This checks who signed the image and which tag the release ran on. It does not
+prove that the source is safe. [Supply chain](docs/SUPPLY_CHAIN.md) shows how
+to read the source recorded in the build provenance, and what the release
+pipeline does not cover.
 
 ## Limitations
 
@@ -251,9 +278,15 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
   `google-genai==2.16.0`. A new provider SDK does not arrive automatically.
 - Community mode needs no PostgreSQL, Redis or Supabase, and runs no workers.
   Anything that depends on those is enterprise.
+- Python runs `.pth` import lines and `sitecustomize` before shim starts. The
+  startup-hook and egress guards detect such code and can stop shim from serving
+  traffic, but they cannot undo what ran first. See
+  [supply chain](docs/SUPPLY_CHAIN.md).
 
 ## Documentation
 
+- [Supply chain](docs/SUPPLY_CHAIN.md): how a release is built and how to verify it.
+- [shim and LiteLLM](docs/vs-litellm.md): where the two differ, with evidence.
 - [Cookbook](docs/COOKBOOK.md): SDK setup, tags and cost, scan, errors and
   retries, streaming, observability, and shim behind
   [LiteLLM](docs/COOKBOOK.md#put-shim-behind-litellm) or

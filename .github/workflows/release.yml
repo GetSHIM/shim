@@ -80,6 +80,7 @@ jobs:
           trap 'docker stop "$container" >/dev/null 2>&1 || true' EXIT
           docker run --rm --detach --name "$container" --network host \
             --env SHIM_API_KEY=release-smoke-only-key \
+            --env SHIM_STARTUP_GUARD=enforce --env SHIM_EGRESS_GUARD=enforce \
             ghcr.io/getshim/shim@${{ steps.build.outputs.digest }}
           for attempt in {1..30}; do
             curl --fail --silent http://127.0.0.1:8000/health && exit 0

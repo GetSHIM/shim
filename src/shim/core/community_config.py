@@ -26,6 +26,8 @@ from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
 from shim.privacy.policies import EntityAction, effective_entity_actions
 
 
+# An exact host name or `*.` and a suffix, lowercased, without a trailing dot.
+EGRESS_HOST = re.compile(r"(?:\*\.)?[a-z0-9_-]{1,63}(?:\.[a-z0-9_-]{1,63}){0,126}")
 # An Azure OpenAI deployment name, in settings and in enterprise registry rows.
 AZURE_DEPLOYMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
@@ -143,6 +145,13 @@ class CommunitySettings(BaseSettings):
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
     OTEL_SERVICE_NAME: str = "shim"
 
+    # Process guards `shim serve` installs before the app starts (docs/SUPPLY_CHAIN.md).
+    SHIM_STARTUP_GUARD: Literal["off", "report", "enforce"] = "report"
+    SHIM_EGRESS_GUARD: Literal["off", "report", "enforce"] = "report"
+    SHIM_EGRESS_ALLOW_HOSTS: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+
     @field_validator(
         "TRUSTED_PROXIES",
         "BACKEND_CORS_ORIGINS",
@@ -160,6 +169,25 @@ class CommunitySettings(BaseSettings):
                 return json.loads(stripped)
             return [item.strip() for item in stripped.split(",") if item.strip()]
         return value
+
+    @field_validator("SHIM_EGRESS_ALLOW_HOSTS", mode="before")
+    @classmethod
+    def parse_allowed_hosts(cls, value: object) -> object:
+        # Unlike parse_csv_list, an empty entry is kept so that it is refused.
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",")] if value.strip() else []
+        return value
+
+    @field_validator("SHIM_EGRESS_ALLOW_HOSTS")
+    @classmethod
+    def hosts_or_wildcard_suffixes(cls, value: list[str]) -> list[str]:
+        hosts = [host.lower().rstrip(".") for host in value]
+        for host in hosts:
+            if not EGRESS_HOST.fullmatch(host):
+                raise ValueError(
+                    f"{host!r} is not a host or *.suffix (no scheme, path or port)"
+                )
+        return hosts
 
     @field_validator("SHIM_RESPONSE_ANALYSIS")
     @classmethod
