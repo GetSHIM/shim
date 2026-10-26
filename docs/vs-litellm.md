@@ -7,8 +7,11 @@ is ahead.
 
 Versions:
 
-- **LiteLLM 1.107.0 incident:** public reports from Socket, JFrog and Upwind,
-  21 October 2026.
+- **LiteLLM 1.107.0 incident:** LiteLLM's
+  [incident post](https://docs.litellm.ai/blog/security-incident-oct-21-2026) and
+  [attack-chain post](https://docs.litellm.ai/blog/security-incident-oct-21-2026-attack-chain),
+  and the reports by [Socket](https://socket.dev/blog/litellm-compromise) and
+  [JFrog](https://research.jfrog.com/post/litellm-hijacked-again/), 21 to 23 October 2026.
 - **LiteLLM lab:** `ghcr.io/berriai/litellm:v1.101.0`, image signature checked
   with cosign, pinned by digest, single instance, every upstream call sent to a
   recording mock. 29 to 30 September 2026. No real provider was called.
@@ -40,8 +43,8 @@ Measured in the same lab, v1.101.0:
 
 | | LiteLLM 1.107.0 (public reports) | shim v0.4.5 | Evidence |
 |---|---|---|---|
-| Release path | A stolen owner token overrode branch protection on the private release repository and pointed the build at the fork `Berri-AI/litellm`; a second stolen token approved the production gate (LiteLLM root-cause post, 23 Oct) | A pushed tag in the public repository; no manual dispatch, no workflow input; publishes with the run's own short-lived token. An admin token could still change the workflow. | `.github/workflows/release.yml` |
-| Signature and provenance | The signature was valid. The build provenance recorded the fork as the source. | Signed provenance and SBOM; `docs/SUPPLY_CHAIN.md` shows how to check the signer, the tag and the recorded source | `release.yml`, `docs/SUPPLY_CHAIN.md` |
+| Release path | A stolen owner token overrode branch protection on the private release repository and pointed the build at the fork `Berri-AI/litellm`; a second stolen token approved the production gate ([LiteLLM attack-chain post](https://docs.litellm.ai/blog/security-incident-oct-21-2026-attack-chain)) | A pushed tag in the public repository; no manual dispatch, no workflow input; publishes with the run's own short-lived token. An admin token could still change the workflow. | `.github/workflows/release.yml` |
+| Signature and provenance | The pipeline signed and published the release built from the fork. The build provenance recorded `vcs:source` as `https://github.com/Berri-AI/litellm` ([Socket](https://socket.dev/blog/litellm-compromise)). | Signed provenance and SBOM; `docs/SUPPLY_CHAIN.md` shows how to check the signer, the tag and the recorded source | `release.yml`, `docs/SUPPLY_CHAIN.md` |
 | Long-lived secrets readable by a workflow run | Maintainer tokens stored as repository secrets were posted out by throwaway-branch workflows | The community release uses no repository secret. The enterprise release reads a cosign key from a repository secret with no protected environment. | `release.yml`, `enterprise-release.yml` |
 | Python startup hooks | `cook.pth` and `sitecustomize.py` shipped inside the wheels | CI and the release smoke run the image with `SHIM_STARTUP_GUARD=enforce`, so an image with a startup hook outside the allowlist does not pass; `shim serve` reports one at boot, or refuses to start under `enforce` | `src/shim/core/startup_guard.py`, `.github/workflows/test.yml` |
 | Exfiltration and metadata reads | POST to `www.litellm[.]dev/healthcheck`; requests to AWS, Azure and GCP instance metadata | Once `shim serve` has started, the egress guard reports lookups of hosts outside the configured providers and exporters, and connections to metadata and other link-local addresses, or refuses them under `enforce`. A connection to a literal public IP is not checked. | `src/shim/core/egress_guard.py`, `tests/core/test_supply_chain_demo.py` |
@@ -72,20 +75,19 @@ what such a read returns.
 LiteLLM v1.101.0 with its Presidio guardrail and `output_parse_pii: true`. The
 input is `data/tr_pii.txt`. The mock echoes the request.
 
-Status upstream: the overlap corruption is
-[BerriAI/litellm#42130](https://github.com/BerriAI/litellm/issues/42130) and
-the cross-message token collision is
-[BerriAI/litellm#31959](https://github.com/BerriAI/litellm/issues/31959). Both
-are fixed on LiteLLM `main` by
-[#47024](https://github.com/BerriAI/litellm/pull/47024), merged on
-17 October 2026. On 25 October no tagged release contained the fix. [Re-check
-before publication.]
+Status upstream, checked on 26 October 2026: the overlap corruption
+([BerriAI/litellm#42130](https://github.com/BerriAI/litellm/issues/42130)) is
+fixed on LiteLLM `main` by [#47024](https://github.com/BerriAI/litellm/pull/47024),
+merged on 17 October 2026, and no tagged release contains it yet (v1.106.4 is the
+latest). The cross-message token collision
+([BerriAI/litellm#31959](https://github.com/BerriAI/litellm/issues/31959)) is
+open. Check both again before quoting them.
 
 | Case | LiteLLM v1.101.0 (lab) | shim 0.1.6 (lab) | Evidence |
 |---|---|---|---|
 | Valid TCKN, default recognizers | Reached the model in clear | Masked (`TR_NATIONAL_ID`, with checksum) | lab `S4a.md`, `S11a.md` |
 | Overlapping spans | The model received `<PERSON_4>BER_5>`; the caller got `BER_5>` back in the reply | Restored with no corruption | lab `S4a.md`, `S11a.md` |
-| Two messages, two people | Placeholder numbers restart per message. "Mehmet Demir" came back to the caller as "Zeynep Kaya". | One placeholder per value per request (`<TYPE_32hex>`) | lab `S4-token-collision.md` |
+| Two messages, two people | Placeholder numbers restart per message. "Mehmet Demir" came back to the caller as "Zeynep Kaya". | One hashed placeholder per value per request (today's form: `<TYPE_32hex>`) | lab `S4-token-collision.md` |
 
 shim's own limits from the same lab, 0.1.6:
 
