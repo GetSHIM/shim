@@ -7,6 +7,7 @@ from decimal import Decimal
 import hashlib
 import io
 import json
+import logging
 import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -1810,6 +1811,62 @@ async def test_an_azure_health_check_counts_a_404_as_reachable(
 
     assert result.health == health
     assert seen == [("/openai/v1/models", "Bearer azure-key")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answers", "health", "reason"),
+    [
+        # A cold first call can spend the five seconds; the second answers.
+        (["timeout", 200], "healthy", None),
+        (["connect", "connect"], "unhealthy", "ConnectError"),
+        # A status is the server's answer: no second call.
+        ([401], "unhealthy", "status 401"),
+    ],
+)
+async def test_a_health_check_retries_once_after_a_transport_error_only(
+    db,
+    test_api_key,
+    test_user_with_org,
+    azure_suffix,
+    monkeypatch,
+    caplog,
+    answers,
+    health,
+    reason,
+):
+    row, _ = await _azure_row(db, test_api_key, upstream="generic")
+    store = SimpleNamespace(get_secret=AsyncMock(return_value="azure-key"))
+    monkeypatch.setattr(
+        "shim_enterprise.api.v1.management._common.get_secret_store", lambda: store
+    )
+    pending = list(answers)
+
+    def answer(request):
+        given = pending.pop(0)
+        if given == "timeout":
+            raise httpx.ReadTimeout("slow first call", request=request)
+        if given == "connect":
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(given)
+
+    caplog.set_level(logging.WARNING, "shim_enterprise.api.v1.management.deployments")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as client:
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(http_client=client))
+        )
+        result = await check_model_deployment_health(
+            row.id, request, test_user_with_org, db
+        )
+
+    assert result.health == health
+    assert pending == []
+    logged = [
+        record.reason
+        for record in caplog.records
+        if record.getMessage() == "Model deployment health check failed"
+    ]
+    assert logged == ([] if reason is None else [reason])
 
 
 @pytest.mark.asyncio
