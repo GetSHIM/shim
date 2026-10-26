@@ -52,7 +52,10 @@ Anthropic use the server root. shim uses its existing native transports, masks
 configured sensitive content before forwarding, and makes one provider attempt.
 There is no retry or failover unless a tenant rule asks for one; each extra attempt
 is its own request with its own cost. A five-second model-list health probe records
-only HTTP success/failure and never reads an unbounded response body; it uses the
+only HTTP success/failure and never reads an unbounded response body. A transport
+error or a timeout is tried once more (a first call can spend its five seconds on a
+cold connection); an HTTP status is not. A failed check logs a WARNING with the
+deployment id and the reason (the status, or the error type). The probe uses the
 credential the gateway would use, so an Entra credential sends a fresh token. For an
 `azure_openai` deployment a 200 or a 404 from `/openai/v1/models` is healthy (the
 resource answered and accepted the credential; Microsoft documents no v1 model

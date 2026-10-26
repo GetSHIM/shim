@@ -7,6 +7,7 @@ import asyncio
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import logging
 from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -95,6 +96,9 @@ from shim_enterprise.api.v1.management._common import (
     _validated,
 )
 
+
+logger = logging.getLogger(__name__)
+HEALTH_ATTEMPTS = 2
 
 router = APIRouter()
 
@@ -730,45 +734,64 @@ async def check_model_deployment_health(
     await session.commit()
     client = request.app.state.http_client
     healthy = False
+    reason = ""
     destinations: list[str] | None = None
-    try:
-        async with asyncio.timeout(5):
-            credential = await _fresh_resolver(provider, client).resolve_row(
-                TenantId(tenant_id),
-                secret,
-                CredentialReference(secret.id, region),
-            )
-            if upstream == "aws_bedrock":
-                assert region is not None
-                # Bedrock's control plane answers whether the key reaches the model.
-                url = bedrock_model_url(region, model)
-                headers = {"Authorization": f"Bearer {credential}"}
-            else:
-                headers = (
-                    {"Authorization": f"Bearer {credential}"}
-                    if provider == "openai"
-                    else {"x-api-key": credential, "anthropic-version": "2023-06-01"}
+    # A transport error or a timeout is tried once more: a first call can spend its five
+    # seconds on a cold connection and credential lookup. An HTTP status is an answer.
+    for _ in range(HEALTH_ATTEMPTS):
+        try:
+            async with asyncio.timeout(5):
+                credential = await _fresh_resolver(provider, client).resolve_row(
+                    TenantId(tenant_id),
+                    secret,
+                    CredentialReference(secret.id, region),
                 )
-                url = base_url + ("/models" if provider == "openai" else "/v1/models")
-            # Stream headers only: an unhealthy server cannot force an unbounded body read.
-            async with client.stream(
-                "GET",
-                url,
-                headers=headers,
-                timeout=5,
-                follow_redirects=False,
-            ) as response:
-                # Azure documents no v1 model listing: a 404 still proves the credential.
-                healthy = response.status_code in (
-                    {200, 404} if upstream == "azure_openai" else {200}
-                )
-            if upstream == "aws_bedrock":
-                assert region is not None
-                destinations = await fetch_destinations(
-                    client, credential, region, model
-                )
-    except (httpx.HTTPError, ValueError, TimeoutError, ProviderCallError):
-        healthy = False
+                if upstream == "aws_bedrock":
+                    assert region is not None
+                    # Bedrock's control plane answers whether the key reaches the model.
+                    url = bedrock_model_url(region, model)
+                    headers = {"Authorization": f"Bearer {credential}"}
+                else:
+                    headers = (
+                        {"Authorization": f"Bearer {credential}"}
+                        if provider == "openai"
+                        else {
+                            "x-api-key": credential,
+                            "anthropic-version": "2023-06-01",
+                        }
+                    )
+                    url = base_url + (
+                        "/models" if provider == "openai" else "/v1/models"
+                    )
+                # Stream headers only: an unhealthy server cannot force an unbounded body read.
+                async with client.stream(
+                    "GET",
+                    url,
+                    headers=headers,
+                    timeout=5,
+                    follow_redirects=False,
+                ) as response:
+                    # Azure documents no v1 model listing: a 404 still proves the credential.
+                    healthy = response.status_code in (
+                        {200, 404} if upstream == "azure_openai" else {200}
+                    )
+                    reason = f"status {response.status_code}"
+                if upstream == "aws_bedrock":
+                    assert region is not None
+                    destinations = await fetch_destinations(
+                        client, credential, region, model
+                    )
+            break
+        except (httpx.TransportError, TimeoutError) as exc:
+            healthy, reason = False, type(exc).__name__
+        except (httpx.HTTPError, ValueError, ProviderCallError) as exc:
+            healthy, reason = False, type(exc).__name__
+            break
+    if not healthy:
+        logger.warning(
+            "Model deployment health check failed",
+            extra={"deployment_id": str(deployment_id), "reason": reason},
+        )
     # Locked, so an update committing now cannot be overwritten by a stale result.
     row = await _owned_model_deployment(session, user, deployment_id, for_update=True)
     if row.updated_at != checked_version:
