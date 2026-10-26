@@ -1662,7 +1662,7 @@ wheels = [
 
 [[package]]
 name = "shim-cloud"
-version = "0.4.5"
+version = "0.4.6"
 source = { editable = "ee/cloud" }
 dependencies = [
     { name = "polar-sdk" },
@@ -1673,13 +1673,13 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "polar-sdk", specifier = "==0.32.0" },
-    { name = "shim-enterprise", specifier = "==0.4.5" },
+    { name = "shim-enterprise", specifier = "==0.4.6" },
     { name = "standardwebhooks", specifier = "==1.1.0" },
 ]
 
 [[package]]
 name = "shim-enterprise"
-version = "0.4.5"
+version = "0.4.6"
 source = { editable = "ee" }
 dependencies = [
     { name = "alembic" },
@@ -1751,7 +1751,7 @@ provides-extras = ["archive-s3", "secrets-aws", "secrets-azure"]
 
 [[package]]
 name = "shim-gateway"
-version = "0.4.5"
+version = "0.4.6"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
