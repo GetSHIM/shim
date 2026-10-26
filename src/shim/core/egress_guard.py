@@ -12,6 +12,7 @@ import logging
 import socket
 import sys
 import threading
+from collections.abc import Set
 from typing import Final, Literal
 from urllib.parse import urlsplit
 
@@ -32,7 +33,13 @@ LOOKUPS: Final = frozenset(
 CONNECTS: Final = frozenset({"socket.connect", "socket.connect_ex"})
 METADATA: Final = frozenset(
     ipaddress.ip_address(address)
-    for address in ("169.254.169.254", "fd00:ec2::254", "169.254.170.2")
+    for address in (
+        "169.254.169.254",
+        "fd00:ec2::254",
+        "169.254.170.2",
+        "169.254.170.23",
+        "fd00:ec2::23",
+    )
 )
 LINK_LOCAL: Final = (
     ipaddress.ip_network("169.254.0.0/16"),
@@ -47,6 +54,8 @@ _recording = threading.local()
 _logged: set[tuple[str, str]] = set()
 # The mode of this process's hook, which isolation passes to its spawned workers.
 installed_mode: Mode = "off"
+# Rebound, never mutated, so the hook never iterates a set another thread changes.
+_hosts: frozenset[str] = frozenset()
 
 
 def allowed_hosts(settings: CommunitySettings) -> frozenset[str]:
@@ -71,7 +80,7 @@ def allowed_hosts(settings: CommunitySettings) -> frozenset[str]:
 
 
 def decide(
-    event: str, args: tuple[object, ...], hosts: frozenset[str]
+    event: str, args: tuple[object, ...], hosts: Set[str]
 ) -> tuple[Kind, str] | None:
     """The kind and destination an audit event is denied for, or None."""
 
@@ -85,7 +94,7 @@ def decide(
     return None
 
 
-def _destination(host: object, hosts: frozenset[str]) -> tuple[Kind, str] | None:
+def _destination(host: object, hosts: Set[str]) -> tuple[Kind, str] | None:
     if host is None:
         return None
     if isinstance(host, bytes):
@@ -108,24 +117,33 @@ def _destination(host: object, hosts: frozenset[str]) -> tuple[Kind, str] | None
     return None
 
 
-def install(settings: CommunitySettings) -> None:
-    """Add the hook once per process, in the configured mode; `off` adds none."""
+def install(
+    settings: CommunitySettings,
+    extra_hosts: Set[str] = frozenset(),
+    *,
+    allow_kinds: Set[Kind] = frozenset(),
+) -> None:
+    """Add the hook once per process, in the configured mode; `off` adds none.
 
-    global installed_mode
+    `allow_kinds` names what this process may reach anyway: `host` for one that
+    delivers to tenants' own hosts, `metadata` for one whose credentials come from it.
+    """
+
+    global installed_mode, _hosts
     mode = settings.SHIM_EGRESS_GUARD
     if mode == "off" or installed_mode != "off":
         return
-    hosts = allowed_hosts(settings)
+    _hosts = allowed_hosts(settings) | extra_hosts
 
     def hook(event: str, args: tuple[object, ...]) -> None:
         if not event.startswith("socket.") or getattr(_recording, "on", False):
             return
         try:
-            denied = decide(event, args, hosts)
+            denied = decide(event, args, _hosts)
         except Exception:
             _record("guard_error", "", mode)
             return
-        if denied is None:
+        if denied is None or denied[0] in allow_kinds:
             return
         _record(*denied, mode)
         if mode == "enforce":
@@ -133,6 +151,13 @@ def install(settings: CommunitySettings) -> None:
 
     installed_mode = mode
     sys.addaudithook(hook)
+
+
+def allow(*hosts: str | None) -> None:
+    """Add hosts learned at run time, such as an identity provider's discovered endpoints."""
+
+    global _hosts
+    _hosts = _hosts | {host.lower().rstrip(".") for host in hosts if host}
 
 
 def _record(kind: str, destination: str, mode: Mode) -> None:

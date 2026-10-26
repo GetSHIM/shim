@@ -35,8 +35,10 @@ forbidden_noncloud_import_roots = [
 "shim.billing.lifecycle" = ["load_lifecycle"]
 "shim.billing.pricing" = ["DATE_SUFFIX", "DEFAULT_PRICE_BOOK", "ModelPrice", "compute_cost_usd"]
 "shim.billing.savings" = ["LEVERS", "Method", "usd"]
+"shim.cli" = ["start_guards"]
 "shim.core.circuit_breaker" = ["validate_circuit_limits"]
 "shim.core.community_config" = ["AZURE_DEPLOYMENT_NAME", "CommunitySettings"]
+"shim.core.egress_guard" = ["Kind", "allow"]
 "shim.core.http" = ["install_http_middleware"]
 "shim.core.single_flight" = ["single_flight"]
 "shim.findings" = ["Finding", "FindingEvidence", "FindingImpact", "FindingRemediation", "FindingSubject", "FindingText", "FindingWindow"]
@@ -140,6 +142,7 @@ forbidden_noncloud_import_roots = [
 "shim_enterprise.billing.models" = ["UsageLedger"]
 "shim_enterprise.core.config" = ["settings"]
 "shim_enterprise.core.database" = ["AsyncSessionLocal", "get_db"]
+"shim_enterprise.guards" = ["start_guards"]
 "shim_enterprise.outbox.handlers" = ["build_publisher"]
 "shim_enterprise.outbox.publisher" = [
   "OutboxIdentityConflict",
@@ -534,6 +537,7 @@ enterprise = [
   "ee/src/shim_enterprise/gateway/pipeline/reconciliation.py",
   "ee/src/shim_enterprise/gateway/pipeline/scan_finalizer.py",
   "ee/src/shim_enterprise/gateway/pipeline/scan_policy.py",
+  "ee/src/shim_enterprise/guards.py",
   "ee/src/shim_enterprise/incidents/__init__.py",
   "ee/src/shim_enterprise/incidents/api.py",
   "ee/src/shim_enterprise/incidents/models.py",
@@ -747,6 +751,7 @@ enterprise = [
   "ee/tests/tenants/test_teams.py",
   "ee/tests/tenants/test_workspace_archive.py",
   "ee/tests/test_alert_migrations.py",
+  "ee/tests/test_guards.py",
   "ee/tests/workers/test_readiness.py",
 ]
 
@@ -760,11 +765,13 @@ cloud = [
   "ee/cloud/src/shim_cloud/application.py",
   "ee/cloud/src/shim_cloud/billing.py",
   "ee/cloud/src/shim_cloud/config.py",
+  "ee/cloud/src/shim_cloud/guards.py",
   "ee/cloud/src/shim_cloud/migrate.py",
   "ee/cloud/src/shim_cloud/models.py",
   "ee/cloud/src/shim_cloud/polar.py",
   "ee/cloud/src/shim_cloud/worker.py",
   "ee/cloud/tests/test_billing.py",
+  "ee/cloud/tests/test_cloud_guards.py",
   "ee/cloud/tests/test_migrations.py",
   "ee/cloud/tests/test_polar.py",
 ]

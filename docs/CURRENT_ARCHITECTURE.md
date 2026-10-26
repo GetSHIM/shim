@@ -187,6 +187,15 @@ covered while the scan runs.
   the hooks the published image ships), logs `startup_hook_unexpected`, sets
   `shim_startup_hooks_unexpected`, and under `enforce` exits with 78 before serving.
 
+The enterprise and cloud processes use the same two guards through
+`ee/src/shim_enterprise/guards.py`. Its `allowed_hosts` adds the hosts the
+enterprise settings name, and metadata is allowed only for a backend or AWS identity
+that reads credentials from it. `guarded_app`, and `shim_cloud.guards.guarded_app`,
+install the guards before importing the application; workers call `start_guards` in
+their `__main__`. The outbox, compliance and cloud workers skip the name rule, and
+`shim_cloud.migrate` runs only the startup scan. After discovery, OIDC adds the
+issuer's token, JWKS and userinfo hosts with `egress_guard.allow`.
+
 Tests that install either guard run it in a child process. Limits and operator
 guidance: [supply chain](SUPPLY_CHAIN.md#process-guards).
 
@@ -480,8 +489,8 @@ runtime code, Alembic, and enterprise scripts remain exact-manifest-only.
 | Process | Canonical command |
 | --- | --- |
 | Community API | `shim serve` |
-| Enterprise API | `uvicorn shim_enterprise.application:create_enterprise_app --factory` |
-| Cloud API | `uvicorn shim_cloud.application:create_cloud_app --factory` |
+| Enterprise API | `uvicorn shim_enterprise.guards:guarded_app --factory` |
+| Cloud API | `uvicorn shim_cloud.guards:guarded_app --factory` |
 | Cloud migrations | `python -m shim_cloud.migrate` |
 | Cloud outbox | `python -m shim_cloud.worker` |
 | Migrations | `alembic -c ee/alembic.ini upgrade head` |

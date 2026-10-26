@@ -453,7 +453,7 @@ def test_runtime_image_does_not_run_migrations_on_container_start() -> None:
 
     assert command == (
         'CMD ["uvicorn", '
-        '"shim_enterprise.application:create_enterprise_app", "--factory", '
+        '"shim_enterprise.guards:guarded_app", "--factory", '
         '"--host", "0.0.0.0", "--port", "8000", "--workers", "1"]'
     )
 
@@ -650,6 +650,10 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
         "promote-release",
     } <= steps.keys()
     assert "--command=uvicorn" in steps["deploy-gateway"]["args"]
+    assert (
+        "--args=shim_cloud.guards:guarded_app,--factory,--host,0.0.0.0,--port,8000,"
+        "--workers,1"
+    ) in steps["deploy-gateway"]["args"]
     assert "--no-traffic" in steps["deploy-gateway"]["args"]
     assert "--deploy-health-check" in steps["deploy-gateway"]["args"]
     assert all(

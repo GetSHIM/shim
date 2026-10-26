@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 from ipaddress import ip_address
 
 from pydantic import ValidationError
@@ -39,13 +39,19 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
 
-def start_guards(settings: CommunitySettings) -> None:
+def start_guards(
+    settings: CommunitySettings,
+    extra_hosts: Set[str] = frozenset(),
+    *,
+    allow_kinds: Set[egress_guard.Kind] = frozenset(),
+) -> None:
     """Egress first, so a thread a startup hook started is covered while the scan runs.
 
     Exits with EX_CONFIG (78) when `enforce` finds a hook the image does not ship.
+    The enterprise processes pass their own hosts and kinds; see `egress_guard.install`.
     """
 
-    egress_guard.install(settings)
+    egress_guard.install(settings, extra_hosts, allow_kinds=allow_kinds)
     if startup_guard.check(settings.SHIM_STARTUP_GUARD) and (
         settings.SHIM_STARTUP_GUARD == "enforce"
     ):

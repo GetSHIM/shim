@@ -494,6 +494,7 @@ jobs:
             --env ENCRYPTION_KEY=1yuHjGCrKdLoXrHt6qVL4vd6GHUZ1KVDbsXWJsbq3Kw= \
             --env SUPABASE_URL=https://example.supabase.co \
             --env SUPABASE_KEY=ci-public-anon-key \
+            --env SHIM_STARTUP_GUARD=enforce --env SHIM_EGRESS_GUARD=enforce \
             shim-enterprise:ci
           for attempt in {1..30}; do
             curl --fail --silent http://127.0.0.1:8000/health && exit 0
