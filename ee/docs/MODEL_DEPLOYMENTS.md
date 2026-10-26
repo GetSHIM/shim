@@ -47,6 +47,11 @@ is not an operator-approved internal origin", and a row stored as `internal` bef
 the list existed is treated as `external` for each request, recorded with the verdict
 `deployment.classification` (`INTERNAL_ORIGIN_NOT_APPROVED`).
 
+The egress guard (`SHIM_EGRESS_GUARD`) lets the gateway and its workers resolve the
+hosts of these origin lists and suffixes, and of the AWS URL templates. Every
+deployment's base URL has to match them, so a deployment needs no entry in
+`SHIM_EGRESS_ALLOW_HOSTS`. See [supply chain](../../docs/SUPPLY_CHAIN.md#process-guards).
+
 For OpenAI-compatible deployments, use the API base including `/v1`; for
 Anthropic use the server root. shim uses its existing native transports, masks
 configured sensitive content before forwarding, and makes one provider attempt.

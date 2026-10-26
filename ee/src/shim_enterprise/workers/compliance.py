@@ -16,6 +16,7 @@ from shim_enterprise.compliance.models import ComplianceConnector
 from shim_enterprise.compliance.services.ingest import ComplianceIngestService
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
+from shim_enterprise.guards import start_guards
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim_enterprise.workers.readiness import write_heartbeat
@@ -124,4 +125,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    # Alerts go to tenants' own public hosts.
+    start_guards(check_names=False)
     asyncio.run(main())

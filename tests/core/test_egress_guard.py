@@ -47,6 +47,8 @@ EXFIL = "exfil.shim-test.invalid"
         ("169.254.169.254.", ("metadata", "169.254.169.254")),
         ("fd00:ec2::254", ("metadata", "fd00:ec2::254")),
         ("169.254.170.2", ("metadata", "169.254.170.2")),
+        ("169.254.170.23", ("metadata", "169.254.170.23")),
+        ("fd00:ec2::23", ("metadata", "fd00:ec2::23")),
         ("::ffff:169.254.169.254", ("metadata", "169.254.169.254")),
         ("169.254.1.1", ("link_local", "169.254.1.1")),
         ("fe80::1%en0", ("link_local", "fe80::1")),
@@ -249,6 +251,36 @@ print(json.dumps({{"result": {{
     assert [(log["kind"], log["destination"], log["mode"]) for log in logs] == [
         ("host", EXFIL, "enforce"),
         ("metadata", "169.254.169.254", "enforce"),
+    ]
+
+
+def test_a_process_adds_hosts_and_kinds_and_learns_hosts_while_running() -> None:
+    answer, logs = _child(
+        "enforce",
+        """
+egress_guard.install(settings, {"db.shim-test.invalid"}, allow_kinds={"metadata"})
+learned = [attempt(lambda: socket.getaddrinfo("idp.shim-test.invalid", 80))]
+egress_guard.allow("IdP.shim-test.invalid.", None)
+learned.append(attempt(lambda: socket.getaddrinfo("idp.shim-test.invalid", 80)))
+print(json.dumps({"result": {
+    "extra": attempt(lambda: socket.getaddrinfo("db.shim-test.invalid", 80)),
+    "learned": learned,
+    "metadata": attempt(lambda: socket.getaddrinfo("169.254.169.254", 80)),
+    "link_local": attempt(lambda: socket.getaddrinfo("169.254.1.1", 80)),
+}}))
+""",
+    )
+
+    # gaierror: the lookup passed the guard and reached the resolver.
+    assert answer == {
+        "extra": "gaierror",
+        "learned": ["PermissionError", "gaierror"],
+        "metadata": None,
+        "link_local": "PermissionError",
+    }
+    assert [(log["kind"], log["destination"]) for log in logs] == [
+        ("host", "idp.shim-test.invalid"),
+        ("link_local", "169.254.1.1"),
     ]
 
 

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
+from shim_enterprise.guards import start_guards
 from shim_enterprise.observability.enterprise_metrics import (
     AUDIT_WORKER_LAG_SECONDS,
     OUTBOX_DEAD_LETTER_TOTAL,
@@ -413,4 +414,6 @@ async def main(
 
 
 if __name__ == "__main__":
+    # Webhooks go to tenants' own public hosts.
+    start_guards(check_names=False)
     asyncio.run(main())

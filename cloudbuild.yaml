@@ -156,7 +156,7 @@ steps:
       - --subnet=${_VPC_SUBNET}
       - --vpc-egress=private-ranges-only
       - --command=uvicorn
-      - --args=shim_cloud.application:create_cloud_app,--factory,--host,0.0.0.0,--port,8000,--workers,1
+      - --args=shim_cloud.guards:guarded_app,--factory,--host,0.0.0.0,--port,8000,--workers,1
       - --revision-suffix=rel-$SHORT_SHA
       - --deploy-health-check
       - --no-traffic

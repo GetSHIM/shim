@@ -28,6 +28,7 @@ from shim_enterprise.compliance.services.monthly_evidence import (
 )
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
+from shim_enterprise.guards import start_guards
 from shim_enterprise.incidents.service import remind_incident_deadlines
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
@@ -190,4 +191,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    start_guards()
     asyncio.run(main())

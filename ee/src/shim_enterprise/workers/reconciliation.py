@@ -17,6 +17,7 @@ from shim_enterprise.billing.ledger import DurableAccountingRepository
 from shim_enterprise.billing.spend import evaluate_enabled_budgets
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
+from shim_enterprise.guards import start_guards
 from shim_enterprise.findings.service import evaluate_findings
 from shim_enterprise.gateway.pipeline.reconciliation import ScanReconciler
 from shim_enterprise.observability.inference_metrics import scrape_inference_metrics
@@ -210,4 +211,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    start_guards()
     asyncio.run(main())

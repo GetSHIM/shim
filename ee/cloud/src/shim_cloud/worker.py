@@ -11,6 +11,7 @@ from polar_sdk import Polar, PolarError
 from sqlalchemy.exc import SQLAlchemyError
 
 from shim_enterprise.core.database import AsyncSessionLocal
+from shim_enterprise.guards import start_guards
 from shim_enterprise.outbox.handlers import build_publisher
 from shim_enterprise.outbox.publisher import OutboxMessage
 from shim_enterprise.tenants.plans import billing_organization_ids
@@ -106,4 +107,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    # It runs the enterprise outbox, so tenants' webhooks too.
+    start_guards(check_names=False)
     asyncio.run(main())

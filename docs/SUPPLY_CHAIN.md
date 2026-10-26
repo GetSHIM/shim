@@ -162,8 +162,8 @@ resolved when it is:
   `*.` and a suffix, with no scheme, path or port.
 
 A literal address is allowed unless it is cloud instance metadata
-(`169.254.169.254`, `fd00:ec2::254`, `169.254.170.2`, also written as an
-IPv4-mapped IPv6 address) or another link-local address (`169.254.0.0/16`,
+(`169.254.169.254`, `fd00:ec2::254`, `169.254.170.2`, and EKS Pod Identity's
+`169.254.170.23` and `fd00:ec2::23`, also written as an IPv4-mapped IPv6 address) or another link-local address (`169.254.0.0/16`,
 `fe80::/10`). A connection to a name is held to the name rule. `report` logs each
 destination once as `egress_denied` (at most 256 destinations per process) and
 counts every denial in `shim_egress_denied_total` by `kind` (`host`, `metadata`,
@@ -184,6 +184,51 @@ installed (a `.pth` runs first, so it can read files before shim starts), a
 process forked or started before `shim serve` began, native code that opens
 sockets without the audited Python calls, a process started with `subprocess`,
 and a connection to a literal public IP address.
+
+**Enterprise and cloud.** The enterprise and cloud images start the gateway
+through `shim_enterprise.guards:guarded_app` and `shim_cloud.guards:guarded_app`,
+which install both guards before the application is imported. Each worker's
+`python -m` entry calls `start_guards` before its loop. The settings, the
+`report` default and exit code 78 are the community ones. A name may also be
+resolved when it is the host of:
+
+- `DATABASE_URL`, `REDIS_URL`, `SUPABASE_URL` and `OIDC_ISSUER_URL`, and, once
+  discovery has returned the configured issuer, the token, JWKS and userinfo
+  endpoints it names;
+- `VAULT_ADDR`, `AZURE_KEY_VAULT_URL` with `SECRET_BACKEND=azure_key_vault`, and
+  `WORM_ARCHIVE_ENDPOINT_URL`;
+- `SHIM_AZURE_AUTHORITY_HOST`, because any tenant can store Entra ID credentials;
+  `api.chatgpt.com`, for OpenAI's compliance API; `api.resend.com` when
+  `RESEND_API_KEY` is set;
+- an entry of `MODEL_DEPLOYMENT_ALLOWED_ORIGINS`, `MODEL_DEPLOYMENT_INTERNAL_ORIGINS`
+  or `ALERT_ALLOWED_ORIGINS`, or `*` followed by an entry of
+  `MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES`;
+- the three AWS URL templates, where a `{region}` label stands for any region
+  (`*.amazonaws.com` by default), and `*.amazonaws.com` itself with
+  `SECRET_BACKEND=aws_secrets_manager` or the WORM archive on.
+
+Metadata is reachable only where credentials come from it: with `SECRET_BACKEND`
+set to `gcp_secret_manager`, `aws_secrets_manager` or `azure_key_vault`, with
+`AWS_GATEWAY_IDENTITY` set to `container`, `imds` or `gcp_metadata`, or with the WORM
+archive on. Those settings also list `metadata.google.internal`,
+`oauth2.googleapis.com` and the hosts of `AWS_GCP_METADATA_URL`, `AWS_IMDS_URL` and
+`AWS_CONTAINER_CREDENTIALS_FULL_URI`. Other link-local addresses stay refused.
+
+The outbox, compliance and cloud workers deliver webhooks and alerts to tenants'
+own public hosts. They skip the name rule and still refuse metadata and link-local
+addresses. `python -m shim_cloud.migrate` runs the startup scan only, because
+Alembic runs in a child process that an audit hook does not reach. Alembic started
+directly, as the Helm and Compose migration jobs do, runs neither guard.
+
+Tenants' model deployments need no entry: their base URLs must already match the
+deployment origin lists above. A webhook or alert target does: the gateway resolves
+its host when a tenant saves it, and under `enforce` refuses an unlisted host with
+422, as for a host that does not resolve. The outbox then delivers without the name
+rule. Before you turn on `enforce` in an enterprise install, list any proxy and the
+webhook hosts tenants may use in `SHIM_EGRESS_ALLOW_HOSTS`; `report` logs each
+missing entry. GCP Secret Manager's
+client speaks gRPC from native code, so its traffic is outside the guard; the token
+it sends is fetched in Python and is checked.
 
 The guards add about 90 ns to each audited event, about 0.1 ms on a 32 KB
 request, below what the latency benchmark can measure.

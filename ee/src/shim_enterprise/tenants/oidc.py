@@ -26,6 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
 
+from shim.core.egress_guard import allow as allow_egress
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.audit import change_details, record_management_action
@@ -123,6 +124,14 @@ async def _client(request: Request) -> Any:
     metadata = await client.load_server_metadata()
     if metadata.get("issuer") != settings.OIDC_ISSUER_URL:
         raise HTTPException(503, "OIDC discovery issuer does not match configuration")
+    # The issuer matched, so the hosts it names for the server's own calls are trusted.
+    allow_egress(
+        *(
+            urlsplit(metadata[name]).hostname
+            for name in ("token_endpoint", "jwks_uri", "userinfo_endpoint")
+            if isinstance(metadata.get(name), str)
+        )
+    )
     algorithms = metadata.get("id_token_signing_alg_values_supported", ["RS256"])
     algorithms = sorted(set(algorithms) & ASYMMETRIC_ALGORITHMS)
     if not algorithms:
