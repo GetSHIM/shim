@@ -140,9 +140,11 @@ serves traffic. The scan reads files only; it imports, runs and removes nothing.
 Changing the allowlist is a reviewed change to that file, and so is a uv or
 setuptools update that changes those four files.
 
-A local Python can carry hooks of its own: conda's Python ships a
-`sitecustomize.py`. `report` then logs it at every start. For local development,
-set `SHIM_STARTUP_GUARD=off` or use a uv-managed Python.
+A local Python can carry hooks of its own: conda's and Homebrew's Pythons each ship a
+`sitecustomize.py`. `report` then logs it at every start, and `enforce` refuses to
+start. For local development, set `SHIM_STARTUP_GUARD=off`, or build the environment
+on uv's managed Python, which ships none (`uv python install 3.13`, then
+`UV_PYTHON=$(uv python find --managed-python 3.13) uv sync`).
 
 **Egress guard** (`SHIM_EGRESS_GUARD`: `off`, `report`, `enforce`; default
 `report`; `src/shim/core/egress_guard.py`). A Python audit hook (PEP 578) checks
