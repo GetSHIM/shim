@@ -114,10 +114,10 @@ def test_azure_key_vault_is_listed_from_its_environment(
 ) -> None:
     monkeypatch.setenv("AZURE_KEY_VAULT_URL", "https://shim.vault.azure.net/")
 
-    assert "shim.vault.azure.net" in allowed_hosts(
-        _settings(SECRET_BACKEND="azure_key_vault")
-    )
-    assert "shim.vault.azure.net" not in allowed_hosts(_settings())
+    vault = {"shim.vault.azure.net"}
+
+    assert vault <= allowed_hosts(_settings(SECRET_BACKEND="azure_key_vault"))
+    assert vault.isdisjoint(allowed_hosts(_settings()))
 
 
 _ATTEMPT = """
