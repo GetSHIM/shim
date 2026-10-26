@@ -78,8 +78,8 @@ input is `data/tr_pii.txt`. The mock echoes the request.
 Status upstream, checked on 26 October 2026: the overlap corruption
 ([BerriAI/litellm#42130](https://github.com/BerriAI/litellm/issues/42130)) is
 fixed on LiteLLM `main` by [#47024](https://github.com/BerriAI/litellm/pull/47024),
-merged on 17 October 2026, and no tagged release contains it yet (v1.106.4 is the
-latest). The cross-message token collision
+merged on 17 October 2026, and no release on `BerriAI/litellm` contains it yet: the
+newest is v1.106.4, and the withdrawn 1.107.0 has no tag or release there any more. The cross-message token collision
 ([BerriAI/litellm#31959](https://github.com/BerriAI/litellm/issues/31959)) is
 open. Check both again before quoting them.
 
