@@ -92,16 +92,17 @@ TEMPLATES = (
     "{ts_iso2} WARN  payment  retry order_id={order_no} amount={price_plain} "
     "latency_ms=412\n{ts_iso3} ERROR payment  card declined pan={card} "
     "customer_tckn={tckn}\n{ts_iso4} DEBUG build    version={version} commit={sha}",
-    # Environment file.
+    # Environment file. Token slots sit where no key name gives them away (GH_PAT,
+    # Bearer), so only the token rule can find them.
     "# deploy/.env.production\nAWS_ACCESS_KEY_ID={aws_key}\nAWS_REGION=eu-central-1\n"
-    "GITHUB_TOKEN={gh_token}\nSENTRY_RELEASE={sha}\nAPP_BUILD={timestamp_ms}\n",
+    "GH_PAT={gh_token}\nSENTRY_RELEASE={sha}\nAPP_BUILD={timestamp_ms}\n",
     # Python snippet.
     'import requests\n\nheaders = {{"Authorization": "Bearer {jwt}"}}\n'
     'resp = requests.get("https://api.example.com/v2/orders/{order_no}", '
     "headers=headers, timeout=30)\n# TODO: ask {person_en} why this returns 403 since "
     "build {version}\n",
     # Support ticket with a curl command.
-    "Hi team, our integration fails. Request:\ncurl -H 'Authorization: token "
+    "Hi team, our integration fails. Request:\ncurl -H 'Authorization: Bearer "
     "{gh_token}' https://api.github.com/repos/acme/billing/issues\nOur egress IP is "
     "{ip}. Contact me at {email} or {phone_intl}.\n— {person_en}",
     # Mixed Turkish and English incident chat.

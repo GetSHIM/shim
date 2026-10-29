@@ -12,6 +12,8 @@ from presidio_analyzer.predefined_recognizers import (
 
 from scripts.bench import pii_corpus
 from scripts.bench.pii_score import leaked
+from shim.privacy.pii_scrubber import PIIScrubberService
+from shim.privacy.policies import effective_entity_actions
 
 
 def test_identifiers_pass_independent_checksums() -> None:
@@ -58,3 +60,27 @@ def test_every_disguise_is_undone_by_the_leak_check() -> None:
         assert leaked(case["spans"][0]["value"], body), case["id"]
         masked = [{"messages": [{"role": "user", "content": "<TR_NATIONAL_ID_1>"}]}]
         assert not leaked(case["spans"][0]["value"], masked)
+
+
+def test_github_tokens_sit_where_only_the_token_rule_finds_them() -> None:
+    # A stand-in no token rule knows, with a digit as a spaced password needs: if the
+    # context alone masks it ("GITHUB_TOKEN=", "Authorization: token"), the corpus
+    # would score the context, not the token rule.
+    scrubber = PIIScrubberService()
+    actions = effective_entity_actions(None, None)
+    placed = 0
+    for template in pii_corpus.TEMPLATES:
+        row = pii_corpus.render(template, random.Random(5))
+        for span in row["spans"]:
+            if span["label"] != "GITHUB_TOKEN":
+                continue
+            start, end = span["start"], span["end"]
+            stand_in = ("x9" * end)[: end - start]
+            text = row["text"][:start] + stand_in + row["text"][end:]
+            assert not [
+                finding
+                for finding in scrubber.analyze(text, actions)
+                if finding["start"] < end and start < finding["end"]
+            ], template
+            placed += 1
+    assert placed == 2

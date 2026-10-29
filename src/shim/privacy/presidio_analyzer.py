@@ -33,6 +33,7 @@ from presidio_analyzer.predefined_recognizers import (
 import tldextract
 
 from shim.rules.content import turkish_fold
+from shim.rules.tr_suffixes import TR_SUFFIX
 
 
 _LANGUAGE = "tr"
@@ -285,15 +286,52 @@ class ShimSecretRecognizer(EntityRecognizer):
         r"password|passwd|pwd|api[_-]?key|secret|token|db[_-]?pass|"
         r"postgres_password"
     )
-    _ASSIGNMENT_PREFIX = rf"[\"']?(?:{_SECRET_KEY})[\"']?\s*[=:]\s*"
+    # The rest of one identifier after the key word: "password_confirmation",
+    # "DB_PASSWORD_PROD", "secretKey", "password1". A lower-case letter glued on makes
+    # another word ("tokens", "passwordless"), and so does an upper-case one after an
+    # upper-case key ("MAX_TOKENS").
+    _KEY_TAIL = (
+        r"(?:(?:[_-][A-Za-z0-9]|[0-9]|(?-i:(?<=[a-z])[A-Z]))[A-Za-z0-9_-]{0,24})?"
+    )
+    # A quote or markdown bold may close the key: '"password":', "**Password:**".
+    _KEY_CLOSE = r"(?:[\"']|\*{1,2})?"
+    _ASSIGNMENT_PREFIX = (
+        rf"[\"']?(?:{_SECRET_KEY}){_KEY_TAIL}{_KEY_CLOSE}\s*[=:](?:\*{{1,2}})?"
+    )
     # A key and a value separated by a space alone: "password hunter2", "export API_KEY x".
     # The key starts a word and the value carries a digit or a symbol, so prose such as
     # "token budget" or "password protected" is not a finding.
-    _SPACED_PREFIX = rf"(?<![^\W_])(?:{_SECRET_KEY})[\"']?\s+"
+    _SPACED_PREFIX = rf"(?<![^\W_])(?:{_SECRET_KEY}){_KEY_TAIL}[\"']?\s+"
     _SPACED_VALUE = r"(?=[^\s,}\]\"']*[0-9!#$%&*+./;<=>?@^_|~-])"
+    # After an explicit separator a value of any length counts on the key's own line,
+    # unless it opens an object or an array (a schema), is a JSON literal, or is an
+    # escaped quote that opens a string (read where the escapes are decoded); on a
+    # later line only six characters or more, as for the spaced form.
+    _UNQUOTED_VALUE = (
+        r"(?:[ \t]*(?=[^\s{\[])|\s*(?=[^\s,}\]\"']{6}))"
+        r"(?!(?:null|true|false)(?![\w-])|\\[\"'])(?P<value>[^\s,}\]\"']+)"
+    )
+    # A quote with a letter or a digit after it is inside the value, not its end:
+    # 'password="pa\"ss"', "password='it's'", and the same decoded from JSON.
+    _QUOTED_VALUE = (
+        r"(?P<quote>[\"'])(?P<value>(?!(?P=quote))[^\r\n]+?)(?P=quote)(?!\w)"
+    )
     # An explicit separator, unlike the English keys, so "şifre unuttum" is not a finding,
-    # and a word start, so "deşifre:" is not one either.
-    _TURKISH_ASSIGNMENT_PREFIX = r"(?<![^\W\d_])[\"']?(?:[şs]ifre(?:si|m|n|niz)?|parola(?:s[ıi]|m|n|n[ıi]z)?)[\"']?\s*(?:=|:)\s*"
+    # and a word start, so "deşifre:" is not one either. The ending must be a Turkish
+    # one (TR_SUFFIX): "şifremiz:", "parolanız:", but not "şifreleme:". A leading
+    # lookahead on the first letter, here and below, lets the engine skip to
+    # candidates: it halves these scans (scripts/bench_middleware.py prompts).
+    _TURKISH_KEY = (
+        r"(?=[\"'şsp])(?<![^\W\d_])[\"']?(?:[şs]ifre|parola)(?P<ending>\w{0,12})"
+    )
+    _TURKISH_ASSIGNMENT_PREFIX = rf"{_TURKISH_KEY}{_KEY_CLOSE}\s*[=:](?:\*{{1,2}})?"
+    # The 40 characters of an AWS secret access key after its name or after the key id
+    # it belongs to: "AWS Secret Key: …", "aws_secret_access_key …", "AKIA…,…".
+    _AWS_SECRET = (
+        r"(?=[sa])(?:secret[\s_.-]{0,2}(?:access[\s_.-]{0,2})?key(?:\s+is)?|"
+        r"(?<![A-Za-z0-9])A[KS]IA[0-9A-Z]{16})"
+        r"[^A-Za-z0-9/+\r\n]{1,6}(?P<value>[A-Za-z0-9/+]{40})(?![A-Za-z0-9/+=])"
+    )
     _PATTERNS: tuple[tuple[re.Pattern[str], str | None, float], ...] = (
         (
             re.compile(
@@ -306,19 +344,23 @@ class ShimSecretRecognizer(EntityRecognizer):
         ),
         (
             re.compile(
-                r"(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|"
+                r"(?:A[KS]IA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|"
                 r"sk_(?:live|test)_[A-Za-z0-9]{16,}|"
                 r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
                 r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|"
                 r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|"
                 r"(?<![A-Za-z0-9])(?:AIza[0-9A-Za-z_-]{35}|"
-                r"xox[abposr]-[0-9A-Za-z-]{10,}|"
+                r"github_pat_[A-Za-z0-9_]{22,}|"
+                r"ya29\.[0-9A-Za-z_-]{20,}|"
+                r"xapp-[0-9]-[0-9A-Za-z-]{10,}|"
+                r"xox(?:[abposr]|e(?:\.xox[bp])?)-[0-9A-Za-z-]{10,}|"
                 r"hf_[A-Za-z0-9]{30,}|"
                 r"glpat-[0-9A-Za-z_-]{20,}))"
             ),
             None,
             0.99,
         ),
+        (re.compile(_AWS_SECRET, re.IGNORECASE), "value", 0.99),
         (
             re.compile(
                 r"https://(?:hooks\.slack\.com/services|"
@@ -330,18 +372,14 @@ class ShimSecretRecognizer(EntityRecognizer):
         ),
         (
             re.compile(
-                rf"(?:{_ASSIGNMENT_PREFIX}|{_SPACED_PREFIX})(?P<quote>[\"'])"
-                r"(?P<value>[^\r\n]{6,}?)(?P=quote)",
+                rf"(?:{_ASSIGNMENT_PREFIX}\s*|{_SPACED_PREFIX}){_QUOTED_VALUE}",
                 re.IGNORECASE,
             ),
             "value",
             0.97,
         ),
         (
-            re.compile(
-                rf"{_ASSIGNMENT_PREFIX}(?P<value>[^\s,}}\]\"']{{6,}})",
-                re.IGNORECASE,
-            ),
+            re.compile(rf"{_ASSIGNMENT_PREFIX}{_UNQUOTED_VALUE}", re.IGNORECASE),
             "value",
             0.97,
         ),
@@ -355,27 +393,30 @@ class ShimSecretRecognizer(EntityRecognizer):
         ),
         (
             re.compile(
-                rf"{_TURKISH_ASSIGNMENT_PREFIX}(?P<quote>[\"'])"
-                r"(?P<value>[^\r\n]{6,}?)(?P=quote)",
-                re.IGNORECASE,
+                rf"{_TURKISH_ASSIGNMENT_PREFIX}\s*{_QUOTED_VALUE}", re.IGNORECASE
             ),
             "value",
             0.97,
         ),
         (
             re.compile(
-                rf"{_TURKISH_ASSIGNMENT_PREFIX}(?P<value>[^\s,}}\]\"']{{6,}})",
+                rf"{_TURKISH_ASSIGNMENT_PREFIX}{_UNQUOTED_VALUE}", re.IGNORECASE
+            ),
+            "value",
+            0.97,
+        ),
+        # A PIN of four to six digits may follow a space alone: "kart şifrem 4821".
+        (
+            re.compile(
+                r"(?=[şsp])(?<![^\W\d_])(?:[şs]ifre|parola|pin)(?P<ending>\w{0,12})"
+                r"(?:\s*[=:]\s*|\s+)(?P<value>[0-9]{4,6})(?![0-9]|[.,/-][0-9])",
                 re.IGNORECASE,
             ),
             "value",
             0.97,
         ),
         (
-            re.compile(
-                r"--password(?:=|\s+)(?P<quote>[\"'])"
-                r"(?P<value>[^\r\n]{6,}?)(?P=quote)",
-                re.IGNORECASE,
-            ),
+            re.compile(rf"--password(?:=|\s+){_QUOTED_VALUE}", re.IGNORECASE),
             "value",
             0.97,
         ),
@@ -408,7 +449,14 @@ class ShimSecretRecognizer(EntityRecognizer):
             return []
         results: list[RecognizerResult] = []
         for pattern, value_group, score in self._PATTERNS:
-            for match in pattern.finditer(text):
+            position = 0
+            while match := pattern.search(text, position):
+                ending = match.groupdict().get("ending")
+                if ending and not TR_SUFFIX.fullmatch(turkish_fold(ending)):
+                    # Not a Turkish key; a later key may start inside this match.
+                    position = match.start() + 1
+                    continue
+                position = match.end()
                 start, end = match.span(value_group) if value_group else match.span()
                 results.append(
                     RecognizerResult(
@@ -801,8 +849,11 @@ def _custom_recognizers() -> list[EntityRecognizer]:
             patterns=[
                 Pattern(
                     "Database URI",
-                    r"(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|"
-                    r"mssql)://[^\s'\"]+",
+                    # With credentials only; the userinfo scan stops at the next
+                    # scheme, so a run of schemes stays linear, and a password may
+                    # hold an unencoded "/".
+                    r"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb|rediss?|mssql)"
+                    r"(?:\+[a-z0-9_]+)?://(?:(?!://)[^\s'\"@])*@[^\s'\"]+",
                     0.99,
                 )
             ],

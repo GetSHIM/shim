@@ -46,10 +46,14 @@ request it:
   national ID and tax numbers, Turkish licence plates (`34 ABC 123`,
   `34-ABC-123`, `34 A 12345`, lowercase only after a plate word such as
   `plaka:`; not `16 GB 512`, `07 OCT 26`, `12 V 2000 mA` or `15 PRO 256 GB`),
-  provider secrets such as AWS keys and GitHub, Google, Slack, Hugging Face and
-  GitLab tokens, and password assignments (`password: x`, or
-  `password hunter2` when the value carries a digit or a symbol, so
-  `token budget` stays prose), Turkish (`şifre:`, `parolanız:`) included. A
+  provider secrets such as AWS key ids and secret access keys and GitHub
+  (fine-grained `github_pat_` too), Google (API keys and `ya29.` OAuth tokens),
+  Slack, Hugging Face and GitLab tokens, database URLs that carry credentials
+  (`postgresql+asyncpg://user:pass@db/app`, `rediss://`), and password
+  assignments under any key name built on the word (`password: x`,
+  `DB_PASSWORD_PROD=…`, `secretKey: …`, or `password hunter2` when the value
+  carries a digit or a symbol, so `token budget` stays prose), Turkish
+  (`şifre:`, `parolamız:`, a PIN in `kart şifrem 4821`) included. A
   digit run counts as a phone number unless something marks it as another kind
   of number: an order, invoice, tracking, timestamp or amount word in front of
   it (`Fatura no:` too; `Tel no:` stays a phone cue), a date, a decimal, or an
