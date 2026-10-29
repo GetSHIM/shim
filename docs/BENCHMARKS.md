@@ -87,7 +87,7 @@ the default seed it is `55b25333a34c5638e58441970c0a05a9aadbf8fc3760db1e96c7aea1
 | Email | 240 | |
 | IP address | 60 | IPv4 documentation and private ranges, IPv6 |
 | AWS access key | 60 | |
-| GitHub token | 60 | classic (`ghp_`, `gho_`, `ghs_`) and fine-grained (`github_pat_`) |
+| GitHub token | 60 | classic (`ghp_`, `gho_`, `ghs_`) and fine-grained (`github_pat_`), after `GH_PAT=` and in a `Bearer` header, where no key name gives them away (since v0.4.7) |
 | JWT | 60 | |
 | Person name | 420 | 270 Turkish, 150 English |
 
@@ -168,6 +168,19 @@ v0.4.0 with Turkish names on scored 88.8% recall and 90.7% precision (F1 0.897).
 | Secret | 180 | 0 | 0 | 0 | 0 | 157 | 157 |
 | Person | 420 | 181 | 420 | 420 | 420 | 110 | 110 |
 | **all** | 1,620 | 181 | 420 | 420 | 429 | 282 | 282 |
+
+**Corpus change in v0.4.7.** The tables above placed the GitHub tokens after
+`GITHUB_TOKEN=` and `Authorization: token`, where shim's key-name rules mask any
+value, so they measured the context rather than the token rule. v0.4.7 moves them
+after `GH_PAT=` and into a `Bearer` header (corpus sha256
+`832e0f6658dcac31d318fece6a00faa8d747d029424b70e93787a1b111dcff9c`;
+`tests/test_bench_corpus.py` checks that neither context masks a value by
+itself). Measured 2026-10-21 on that corpus, in-process: shim v0.4.4 finds 43.3% of
+the GitHub tokens and leaks 34 of 180 secrets (fine-grained tokens in both
+contexts); v0.4.7 finds all of them and leaks none. Every other shim number is the
+same on both corpora, and the change adds no false positive (42 for v0.4.4 and
+v0.4.7 on either corpus; the 40 above is v0.4.2). Presidio and LiteLLM were not
+re-run on the new corpus.
 
 What this says:
 

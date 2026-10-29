@@ -1667,6 +1667,571 @@
       ],
       "known_gap": "reads as the dashed tail of a name, as claude-sonnet-4-5-20250929 does",
       "known_actual": []
+    },
+    {
+      "id": "aws-temporary-key-id",
+      "text": "temporary creds ASIAIOSFODNN7EXAMPLE",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "ASIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    },
+    {
+      "id": "aws-secret-key-env",
+      "text": "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "aws-secret-key-export",
+      "text": "export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "aws-credentials-file",
+      "text": "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "AKIAIOSFODNN7EXAMPLE"
+        },
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "aws-sts-json",
+      "text": "{\"AccessKeyId\": \"ASIAIOSFODNN7EXAMPLE\", \"SecretAccessKey\": \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"}",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "ASIAIOSFODNN7EXAMPLE"
+        },
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "aws-yaml-camel-case",
+      "text": "aws:\n  secretAccessKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "aws-console-csv",
+      "text": "Access key ID,Secret access key\nAKIAIOSFODNN7EXAMPLE,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "AKIAIOSFODNN7EXAMPLE"
+        },
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "aws-secret-key-console-label",
+      "text": "AWS Secret Key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "aws-secret-key-prose-is",
+      "text": "the AWS secret access key is wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "aws-secret-key-cli-set",
+      "text": "aws configure set aws_secret_access_key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "aws-secret-key-kebab-flag",
+      "text": "--aws-secret-access-key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        }
+      ]
+    },
+    {
+      "id": "github-fine-grained-bearer",
+      "text": "curl -H 'Authorization: Bearer github_pat_11ABCDEFG0123456789abc_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvW' https://api.github.com/user",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "github_pat_11ABCDEFG0123456789abc_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvW"
+        }
+      ]
+    },
+    {
+      "id": "github-fine-grained-env-unnamed",
+      "text": "GH_PAT=github_pat_11ABCDEFG0123456789abc_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvW",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "github_pat_11ABCDEFG0123456789abc_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvW"
+        }
+      ]
+    },
+    {
+      "id": "github-fine-grained-git-url",
+      "text": "git clone https://github_pat_11ABCDEFG0123456789abc_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvW@github.com/acme/app.git",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "github_pat_11ABCDEFG0123456789abc_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvW"
+        }
+      ]
+    },
+    {
+      "id": "github-fine-grained-prose",
+      "text": "I pasted github_pat_11ABCDEFG0123456789abc_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvW by mistake",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "github_pat_11ABCDEFG0123456789abc_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvW"
+        }
+      ]
+    },
+    {
+      "id": "google-oauth-access-token-bearer",
+      "text": "Authorization: Bearer ya29.a0AfH6SMBx1234567890abcdefghijklmnopqrstuvwxyzABCDEF",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "ya29.a0AfH6SMBx1234567890abcdefghijklmnopqrstuvwxyzABCDEF"
+        }
+      ]
+    },
+    {
+      "id": "slack-app-token-bare",
+      "text": "Socket mode xapp-1-A0123456789-1234567890123-abcdef0123456789abcdef0123456789 ile bağlan",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "xapp-1-A0123456789-1234567890123-abcdef0123456789abcdef0123456789"
+        }
+      ]
+    },
+    {
+      "id": "slack-rotated-user-token-bare",
+      "text": "rotate xox\u0065.xoxp-1-000000000000000000000000000000000000000 now",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "xox\u0065.xoxp-1-000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    {
+      "id": "slack-refresh-token-bare",
+      "text": "refresh xox\u0065-1-000000000000000000000000000000000000000 now",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "xox\u0065-1-000000000000000000000000000000000000000"
+        }
+      ]
+    },
+    {
+      "id": "password-confirmation-json",
+      "text": "{\"email\": \"x\", \"password\": \"Gizli!2024x\", \"password_confirmation\": \"Gizli!2024y\"}",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli!2024x"
+        },
+        {
+          "entity": "SECRET",
+          "value": "Gizli!2024y"
+        }
+      ]
+    },
+    {
+      "id": "password-numbered-form-fields",
+      "text": "{\"password1\": \"Gizli!2024a\", \"password2\": \"Gizli!2024b\"}",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli!2024a"
+        },
+        {
+          "entity": "SECRET",
+          "value": "Gizli!2024b"
+        }
+      ]
+    },
+    {
+      "id": "password-env-suffixed",
+      "text": "DB_PASSWORD_PROD=Gizli!2024x",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli!2024x"
+        }
+      ]
+    },
+    {
+      "id": "password-env-suffixed-spaced",
+      "text": "setenv DB_PASSWORD_PROD hunter2!",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "hunter2!"
+        }
+      ]
+    },
+    {
+      "id": "secret-key-django",
+      "text": "SECRET_KEY=django-insecure-8f3k2j1h0g9f8d7s6a5",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "django-insecure-8f3k2j1h0g9f8d7s6a5"
+        }
+      ]
+    },
+    {
+      "id": "secret-key-export-spaced",
+      "text": "export SECRET_KEY django-insecure-abc1",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "django-insecure-abc1"
+        }
+      ]
+    },
+    {
+      "id": "secret-key-camel-case",
+      "text": "{\"secretKey\": \"Gizli!2024x\"}",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli!2024x"
+        }
+      ]
+    },
+    {
+      "id": "sifremiz-colon",
+      "text": "şifremiz: Gizli!2024x",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli!2024x"
+        }
+      ]
+    },
+    {
+      "id": "parolamiz-colon",
+      "text": "parolamız: Gizli!2024x",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli!2024x"
+        }
+      ]
+    },
+    {
+      "id": "parola-after-sifreleme-colon",
+      "text": "şifreleme: parola: Gizli!2024x",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli!2024x"
+        }
+      ]
+    },
+    {
+      "id": "not-secret-token-counts-json",
+      "text": "{\"prompt_tokens\": 12, \"total_tokens\": 40}",
+      "expect": []
+    },
+    {
+      "id": "not-secret-max-tokens-env",
+      "text": "MAX_TOKENS=4096",
+      "expect": []
+    },
+    {
+      "id": "not-secret-passwordless-flag",
+      "text": "passwordless: enabled",
+      "expect": []
+    },
+    {
+      "id": "not-secret-sifreleme-colon",
+      "text": "şifreleme: AES-256",
+      "expect": []
+    },
+    {
+      "id": "not-secret-password-reset-link",
+      "text": "password reset link sent to your inbox",
+      "expect": []
+    },
+    {
+      "id": "not-secret-secret-santa",
+      "text": "secret santa list is ready",
+      "expect": []
+    },
+    {
+      "id": "not-secret-token-economy",
+      "text": "token economy design notes",
+      "expect": []
+    },
+    {
+      "id": "not-secret-json-literals",
+      "text": "{\"password\": null, \"token\": true, \"secret\": false}",
+      "expect": []
+    },
+    {
+      "id": "db-uri-sqlalchemy-asyncpg",
+      "text": "DATABASE_URL=postgresql+asyncpg://app:S3cretPass99@db:5432/app",
+      "expect": [
+        {
+          "entity": "DB_URI",
+          "value": "postgresql+asyncpg://app:S3cretPass99@db:5432/app"
+        }
+      ]
+    },
+    {
+      "id": "db-uri-sqlalchemy-psycopg2-ip",
+      "text": "postgresql+psycopg2://app:S3cretPass99@10.0.0.5:5432/app",
+      "expect": [
+        {
+          "entity": "DB_URI",
+          "value": "postgresql+psycopg2://app:S3cretPass99@10.0.0.5:5432/app"
+        }
+      ]
+    },
+    {
+      "id": "db-uri-sqlalchemy-pymysql",
+      "text": "mysql+pymysql://root:S3cretPass99@localhost/app",
+      "expect": [
+        {
+          "entity": "DB_URI",
+          "value": "mysql+pymysql://root:S3cretPass99@localhost/app"
+        }
+      ]
+    },
+    {
+      "id": "db-uri-redis-tls",
+      "text": "REDIS_URL=rediss://default:S3cretPass99@cache:6380/0",
+      "expect": [
+        {
+          "entity": "DB_URI",
+          "value": "rediss://default:S3cretPass99@cache:6380/0"
+        }
+      ]
+    },
+    {
+      "id": "db-uri-slash-password-redis",
+      "text": "redis://:Xk9/vQ2+aB@localhost:6379/0",
+      "expect": [
+        {
+          "entity": "DB_URI",
+          "value": "redis://:Xk9/vQ2+aB@localhost:6379/0"
+        }
+      ]
+    },
+    {
+      "id": "db-uri-slash-password-mysql-ip",
+      "text": "mysql://root:Zq8/p0w(rd@10.0.0.5/app",
+      "expect": [
+        {
+          "entity": "DB_URI",
+          "value": "mysql://root:Zq8/p0w(rd@10.0.0.5/app"
+        }
+      ]
+    },
+    {
+      "id": "not-db-uri-redis-without-credentials",
+      "text": "start redis://localhost:6379 first",
+      "expect": []
+    },
+    {
+      "id": "password-one-letter",
+      "text": "password: x",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "x"
+        }
+      ]
+    },
+    {
+      "id": "password-admin",
+      "text": "password: admin",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "admin"
+        }
+      ]
+    },
+    {
+      "id": "password-env-short",
+      "text": "DB_PASSWORD=r00t!",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "r00t!"
+        }
+      ]
+    },
+    {
+      "id": "password-short-quoted",
+      "text": "password: \"Ab1!x\"",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Ab1!x"
+        }
+      ]
+    },
+    {
+      "id": "password-flag-short-quoted",
+      "text": "--password 'Ab 1!'",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Ab 1!"
+        }
+      ]
+    },
+    {
+      "id": "password-markdown-bold-label",
+      "text": "**Password:** hunter2",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "hunter2"
+        }
+      ]
+    },
+    {
+      "id": "password-markdown-bold-key",
+      "text": "**Password**: hunter2",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "hunter2"
+        }
+      ]
+    },
+    {
+      "id": "sifre-four-digit-pin",
+      "text": "şifre: 1234",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "1234"
+        }
+      ]
+    },
+    {
+      "id": "kart-sifrem-pin-colon",
+      "text": "kart şifrem: 4821",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "4821"
+        }
+      ]
+    },
+    {
+      "id": "kart-sifrem-pin-spaced",
+      "text": "kart şifrem 4821",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "4821"
+        }
+      ]
+    },
+    {
+      "id": "pin-spaced",
+      "text": "PIN 4821",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "4821"
+        }
+      ]
+    },
+    {
+      "id": "not-secret-pin-date",
+      "text": "PIN 2026-10-21 tarihinde değişti",
+      "expect": []
+    },
+    {
+      "id": "not-secret-password-schema-json",
+      "text": "{\"password\": {\"type\": \"string\", \"minLength\": 8}}",
+      "expect": []
+    },
+    {
+      "id": "not-secret-password-schema-yaml",
+      "text": "password:\n  type: string",
+      "expect": []
+    },
+    {
+      "id": "not-secret-empty-quoted-password",
+      "text": "{\"password\": \"\", \"user\": \"x\"}",
+      "expect": []
+    },
+    {
+      "id": "password-escaped-quote-short",
+      "text": "password=\"a\\\"b\"",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "a\\\"b"
+        }
+      ]
+    },
+    {
+      "id": "password-single-quote-apostrophe",
+      "text": "password='it's'",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "it's"
+        }
+      ]
     }
   ]
 }

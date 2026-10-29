@@ -35,7 +35,7 @@ from shim.privacy.policies import (
     PrivacyOutcome,
     effective_entity_actions,
 )
-from shim.privacy.presidio_analyzer import person_names
+from shim.privacy.presidio_analyzer import _custom_recognizers, person_names
 from shim.rules import validate_rule_set
 from shim.rules.content import ContentRules, content_rules
 
@@ -835,6 +835,23 @@ def test_troy_and_mastercard_two_series_are_one_card(
         ("Geçici şifreniz: Abc12345", "Abc12345"),
         ("sifresi: Abc12345", "Abc12345"),
         ("parolanız: Abc12345", "Abc12345"),
+        ("temporary creds ASIA" + "0" * 16, "ASIA" + "0" * 16),
+        ("AWS_SECRET_ACCESS_KEY=" + "wJalr/" * 6 + "Xk9+", "wJalr/" * 6 + "Xk9+"),
+        (
+            "Authorization: Bearer github_pat_11" + "A" * 20 + "_" + "b" * 59,
+            "github_pat_11" + "A" * 20 + "_" + "b" * 59,
+        ),
+        ("Bearer ya29.a0" + "Xy" * 20, "ya29.a0" + "Xy" * 20),
+        (
+            "socket xapp-1-A" + "0" * 10 + "-" + "1" * 13,
+            "xapp-1-A" + "0" * 10 + "-" + "1" * 13,
+        ),
+        ('{"password_confirmation": "Gizli!2024x"}', "Gizli!2024x"),
+        ("setenv DB_PASSWORD_PROD hunter2!", "hunter2!"),
+        ("şifremiz: Gizli!2024x", "Gizli!2024x"),
+        ("password: x", "x"),
+        ("**Password:** hunter2", "hunter2"),
+        ("kart şifrem 4821", "4821"),
     ],
 )
 def test_vendor_tokens_and_turkish_passwords_are_one_secret(
@@ -848,6 +865,53 @@ def test_vendor_tokens_and_turkish_passwords_are_one_secret(
     assert next(iter(mapping)).startswith("<SECRET_")
     assert list(mapping.values()) == [secret]
     assert secret not in scrubbed
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "postgresql+asyncpg://app:S3cretPass99@db:5432/app",
+        "mysql+pymysql://root:S3cretPass99@localhost/app",
+        "rediss://default:S3cretPass99@cache:6380/0",
+        "postgresql+asyncpg://app:pw/x9+Q@db:5432/app",
+    ],
+)
+def test_driver_and_tls_database_uris_are_one_db_uri(
+    scrubber: PIIScrubberService, uri: str
+) -> None:
+    scrubbed, mapping = scrubber.scrub(f"DATABASE_URL={uri}", DEFAULT_ACTIONS)
+
+    assert list(mapping.values()) == [uri]
+    assert scrubbed == f"DATABASE_URL={next(iter(mapping))}"
+    assert next(iter(mapping)).startswith("<DB_URI_")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A scheme run with no "@": each start scans only to the next "://".
+        "redis://" * 32768,
+        # A word boundary before every scheme, so each one is a match start.
+        "mysql://x/" * 26000,
+    ],
+    ids=["redis", "mysql"],
+)
+def test_a_database_scheme_run_without_credentials_stays_linear(text: str) -> None:
+    recognizer = next(
+        recognizer
+        for recognizer in _custom_recognizers()
+        if recognizer.name == "ShimDatabaseUriRecognizer"
+    )
+
+    assert (
+        timeit.timeit(
+            lambda: recognizer.analyze(text, ["DB_URI"], None),
+            timer=time.thread_time,
+            number=1,
+        )
+        < 1
+    )
+    assert recognizer.analyze(text, ["DB_URI"], None) == []
 
 
 @pytest.mark.parametrize(
