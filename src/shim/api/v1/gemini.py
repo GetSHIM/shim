@@ -16,6 +16,7 @@ from shim.api.deps import (
 )
 from shim.api.v1.provider_request import ProviderRequest
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
+from shim.gateway.pipeline.admission import refuse_too_many_entries
 from shim.services.gateway.service import GatewayService
 
 router = APIRouter()
@@ -50,6 +51,13 @@ class GenerateContentRequest(BaseModel):
     )
     service_tier: types.ServiceTier | None = Field(default=None, alias="serviceTier")
     store: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_before_typing(cls, data: object) -> object:
+        # Typing a body into genai's models runs on the event loop, entry by entry.
+        refuse_too_many_entries(data)
+        return data
 
     @field_validator("contents")
     @classmethod

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from io import StringIO
 import json
+import threading
 from time import perf_counter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -2951,3 +2952,148 @@ async def test_a_downscaled_image_reaches_openai_through_the_sdk(stream) -> None
         1824,
         1368,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "payload"),
+    [
+        (
+            "chat",
+            {
+                "model": "gpt-5.6-luna",
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "f", "parameters": {"type": "object"}},
+                    }
+                ],
+                "metadata": {"run": "1"},
+            },
+        ),
+        (
+            "responses",
+            {
+                "model": "gpt-5.6-luna",
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+                ],
+                "text": {"format": {"type": "text"}},
+            },
+        ),
+        (
+            "embeddings",
+            {
+                "model": "text-embedding-3-small",
+                "input": ["a", "b"],
+                "encoding_format": "float",
+            },
+        ),
+    ],
+)
+async def test_the_sdk_transform_runs_off_the_event_loop_and_sends_the_same_body(
+    monkeypatch: pytest.MonkeyPatch, protocol: str, payload: dict
+) -> None:
+    # The SDK walks every entry of a body; on the loop a long agent session held
+    # every tenant's requests for seconds (S10).
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    threads: list[int] = []
+    transform = openai_execution.maybe_transform
+
+    def spy(data: object, expected_type: object) -> object:
+        threads.append(threading.get_ident())
+        return transform(data, expected_type)
+
+    monkeypatch.setattr(openai_execution, "maybe_transform", spy)
+    seen: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(400, json={"error": {"message": "stop here"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(ProviderCallError):
+            await _execution(http, SimpleNamespace(save=AsyncMock())).execute(
+                invocation=SimpleNamespace(
+                    db=object(),
+                    provider_credential=EphemeralProviderCredential("openai", "sk-1"),
+                ),
+                prepared=_prepared(
+                    dict(payload),
+                    protocol=protocol,
+                    tenant="11111111-1111-1111-1111-111111111111",
+                ),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert seen == [payload]
+    assert threads and threading.get_ident() not in threads
+
+
+@pytest.mark.asyncio
+async def test_a_long_agent_session_does_not_hold_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 6,000 tool turns: the SDK's transform of them held the loop about 1.4 s on an M1.
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    messages: list[dict] = []
+    for index in range(2_000):
+        messages += [
+            {"role": "user", "content": [{"type": "text", "text": f"q{index}"}] * 4},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"c{index}",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": f"c{index}",
+                "content": [{"type": "text", "text": "r"}] * 3,
+            },
+        ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "stop here"}})
+
+    lags: list[float] = []
+    done = asyncio.Event()
+
+    async def probe() -> None:
+        while not done.is_set():
+            started = perf_counter()
+            await asyncio.sleep(0.005)
+            lags.append(perf_counter() - started)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        prober = asyncio.create_task(probe())
+        await asyncio.sleep(0.01)
+        try:
+            with pytest.raises(ProviderCallError):
+                await _execution(http, SimpleNamespace(save=AsyncMock())).execute(
+                    invocation=SimpleNamespace(
+                        db=object(),
+                        provider_credential=EphemeralProviderCredential(
+                            "openai", "sk-1"
+                        ),
+                    ),
+                    prepared=_prepared(
+                        {"model": "gpt-5.6-luna", "messages": messages},
+                        protocol="chat",
+                        tenant="11111111-1111-1111-1111-111111111111",
+                    ),
+                    provider_start_callback=AsyncMock(),
+                )
+        finally:
+            done.set()
+            await prober
+
+    assert lags and max(lags) < 0.5

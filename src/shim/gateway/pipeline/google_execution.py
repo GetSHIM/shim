@@ -9,7 +9,8 @@ from typing import Any, cast
 
 import httpx
 from google import genai
-from google.genai import errors, types
+from google.genai import _common, _transformers, errors, types
+from google.genai.models import _Content_to_mldev
 from pydantic import ValidationError
 
 from shim.core.circuit_breaker import CircuitBreaker
@@ -39,6 +40,8 @@ _SDK_ONLY_RESPONSE_FIELDS = {
     "parsed",
 }
 _RESTORABLE_FIELDS = frozenset({"args", "code", "output", "response", "text"})
+# What genai types on the loop; extra_body replaces it with the real contents.
+_CONTENTS_PLACEHOLDER = "."
 
 
 class GoogleExecution:
@@ -97,6 +100,17 @@ class GoogleExecution:
                 prepared, api_key, circuit, provider_start_callback
             )
 
+        try:
+            # genai types and converts every content entry on the event loop inside
+            # generate_content. Its own steps run here on a worker thread, and the
+            # result replaces the placeholder sent below through extra_body (S10).
+            contents = await asyncio.to_thread(
+                _sdk_contents, prepared.model, prepared.payload["contents"]
+            )
+        except Exception as exc:
+            await self._record_error(exc, circuit)
+            raise _public_error(exc) from None
+
         client: genai.Client | None = None
         try:
             client = genai.Client(
@@ -113,12 +127,7 @@ class GoogleExecution:
                         "verify": self.ssl_context,
                         "ssl": self.ssl_context,
                     },
-                    extra_body={
-                        key: value
-                        for key, value in prepared.payload.items()
-                        if key != "contents"
-                    }
-                    or None,
+                    extra_body={**prepared.payload, "contents": contents},
                 ),
             )
             await provider_start_callback()
@@ -136,7 +145,7 @@ class GoogleExecution:
                 with prepared.timing.exclude():
                     stream = await client.aio.models.generate_content_stream(
                         model=prepared.model,
-                        contents=prepared.payload["contents"],
+                        contents=_CONTENTS_PLACEHOLDER,
                     )
                     first_chunk = await anext(stream)
                 state = {"closed": False, "recorded": False}
@@ -190,7 +199,7 @@ class GoogleExecution:
             with prepared.timing.exclude():
                 result = await client.aio.models.generate_content(
                     model=prepared.model,
-                    contents=prepared.payload["contents"],
+                    contents=_CONTENTS_PLACEHOLDER,
                 )
             received_at = perf_counter()
             payload = restore_google_payload(
@@ -497,6 +506,18 @@ def _error(
         retry_after=retry_after,
         message=message,
     )
+
+
+def _sdk_contents(model: str, contents: object) -> object:
+    """The body ``contents`` exactly as generate_content builds it (google-genai 2.16.0)."""
+    parameters = types._GenerateContentParameters(model=model, contents=contents)
+    converted = [
+        _Content_to_mldev(item, {}, parameters)
+        for item in _transformers.t_contents(parameters.contents)
+    ]
+    return _common.encode_unserializable_types(
+        _common.convert_to_dict({"contents": converted})
+    )["contents"]
 
 
 def _public_error(exc: Exception) -> ProviderCallError:

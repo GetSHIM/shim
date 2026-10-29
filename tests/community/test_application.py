@@ -1020,6 +1020,88 @@ async def test_a_lone_surrogate_is_a_native_400_before_privacy_or_the_provider(
     assert attempts == []
 
 
+def test_request_entries_count_every_list_entry_and_refuse_only_past_the_cap() -> None:
+    from fastapi import HTTPException
+
+    from shim.gateway.pipeline.admission import (
+        MAX_REQUEST_ENTRIES,
+        refuse_too_many_entries,
+        request_entries,
+    )
+
+    def body(parts: int) -> dict:
+        # One message, its parts, and a tool whose schema nests one more list.
+        return {
+            "messages": [{"role": "user", "content": [{"type": "text"}] * parts}],
+            "tools": [{"parameters": {"required": ["a"]}}],
+        }
+
+    at_cap = body(MAX_REQUEST_ENTRIES - 3)
+    assert request_entries(at_cap) == MAX_REQUEST_ENTRIES
+    refuse_too_many_entries(at_cap)
+    with pytest.raises(HTTPException) as refused:
+        refuse_too_many_entries(body(MAX_REQUEST_ENTRIES - 2))
+    assert refused.value.status_code == 413
+    assert refused.value.detail["code"] == "REQUEST_TOO_MANY_ITEMS"
+
+
+# One message or content with 150,000 parts: 150,001 list entries.
+_TEXT_PARTS = ",".join(['{"type": "text", "text": "x"}'] * 150_000)
+_GEMINI_PARTS = ",".join(['{"text": "x"}'] * 150_000)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/v1/chat/completions",
+            f'{{"model": "{MODEL}", "messages": [{{"role": "user", '
+            f'"content": [{_TEXT_PARTS}]}}]}}',
+        ),
+        (
+            "/v1/messages",
+            '{"model": "claude-sonnet-4-6", "max_tokens": 16, "messages": '
+            f'[{{"role": "user", "content": [{_TEXT_PARTS}]}}]}}',
+        ),
+        # Refused before the route types the body into genai's models.
+        (
+            "/v1beta/models/gemini-3.5-flash:generateContent",
+            f'{{"contents": [{{"role": "user", "parts": [{_GEMINI_PARTS}]}}]}}',
+        ),
+    ],
+)
+async def test_a_body_past_the_entry_cap_is_a_413_before_privacy_or_the_provider(
+    path: str, body: str
+) -> None:
+    attempts: list[httpx.Request] = []
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: attempts.append(request) or httpx.Response(500)
+        )
+    )
+    application = create_community_app(_settings(), http_client=upstream)
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                path,
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                    "content-type": "application/json",
+                },
+                content=body.encode(),
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 413, response.text[:300]
+    assert response.headers["x-shim-error-code"] == "REQUEST_TOO_MANY_ITEMS"
+    assert attempts == []
+
+
 @pytest.mark.asyncio
 async def test_a_lone_surrogate_scan_is_a_validation_error() -> None:
     application = create_community_app(_settings())

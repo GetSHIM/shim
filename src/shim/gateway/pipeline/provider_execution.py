@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from email.utils import parsedate_to_datetime
-from inspect import signature
+from inspect import Parameter, signature, unwrap
 from time import perf_counter
-from typing import Any
+from typing import Any, get_type_hints
 
 import httpx
 
@@ -133,6 +134,7 @@ ERROR_HINTS = {
     "INVALID_PROVIDER_CREDENTIAL": "Check the provider key sent in x-provider-key or configured on the gateway.",
     "INVALID_REQUEST": "Correct the request as the message says; sending it again unchanged fails again.",
     "REQUEST_TOO_LARGE": "Send a smaller request body.",
+    "REQUEST_TOO_MANY_ITEMS": "Send fewer turns, content parts or tools; the message names the limit.",
     "MODEL_NOT_FOUND": "List the available models with GET /v1/models.",
     "MODEL_NOT_PRICED": "Use a model listed by GET /v1/models. A model id is at most 200 letters, digits, '.', '_', ':' and '-'.",
     "MODEL_CONTEXT_EXCEEDED": "Shorten the input or lower the output limit; this model's context window cannot hold the request.",
@@ -180,6 +182,8 @@ _SDK_TRANSPORT_PARAMETERS = {
     "extra_query",
     "timeout",
 }
+# Typed arguments the SDK sends as headers, not in the body.
+_SDK_NON_BODY_PARAMETERS = _SDK_TRANSPORT_PARAMETERS | {"betas"}
 
 
 def sdk_create_kwargs(
@@ -197,6 +201,43 @@ def sdk_create_kwargs(
     if extra_body:
         kwargs["extra_body"] = extra_body
     return kwargs
+
+
+async def transform_off_loop(
+    create: Callable[..., Any],
+    kwargs: dict[str, Any],
+    transform: Callable[[object, Any], object],
+) -> dict[str, Any]:
+    """Run the SDK's request transform for list and object fields on a worker thread.
+
+    Inside ``create`` the SDK walks every list entry and field on the event loop, one
+    request at a time for all tenants (S10). Here it walks them by the same type hints
+    in a thread, and the result goes through ``extra_body``, which the SDK merges over
+    its own body, so the bytes sent do not change. A required field keeps an empty
+    placeholder that the merge replaces; scalars stay typed, because the SDK reads
+    some of them (``max_tokens`` sets Anthropic's timeout).
+    """
+
+    hints = get_type_hints(unwrap(create))
+    heavy = {
+        key: value
+        for key, value in kwargs.items()
+        if key in hints
+        and key not in _SDK_NON_BODY_PARAMETERS
+        and isinstance(value, (list, dict))
+    }
+    if not heavy:
+        return kwargs
+    body = await asyncio.to_thread(
+        lambda: {key: transform(value, hints[key]) for key, value in heavy.items()}
+    )
+    parameters = signature(create).parameters
+    offloaded = {key: value for key, value in kwargs.items() if key not in heavy}
+    for key, value in heavy.items():
+        if parameters[key].default is Parameter.empty:
+            offloaded[key] = type(value)()
+    offloaded["extra_body"] = {**body, **kwargs.get("extra_body", {})}
+    return offloaded
 
 
 def select_headers(

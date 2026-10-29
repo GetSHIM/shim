@@ -86,6 +86,37 @@ _PROMPT_FIELDS = (
 _CATALOG_MODALITIES = frozenset({"image", "audio", "pdf"})
 # Earlier turns' reasoning, which a provider may drop from the window.
 _UNCOUNTED_BLOCKS = frozenset({"thinking", "redacted_thinking", "reasoning"})
+# Every stage that walks a body pays per list entry. Ten times the longest agent
+# session measured (13,108 turns, about one block each, 2026-10-29) is about 130,000.
+MAX_REQUEST_ENTRIES = 150_000
+
+
+def request_entries(payload: object) -> int:
+    """List entries anywhere in a body: turns, content parts, tools. Stops past the cap."""
+    entries, nodes = 0, [payload]
+    while nodes and entries <= MAX_REQUEST_ENTRIES:
+        node = nodes.pop()
+        if isinstance(node, list):
+            entries += len(node)
+            nodes.extend(node)
+        elif isinstance(node, Mapping):
+            nodes.extend(node.values())
+    return entries
+
+
+def refuse_too_many_entries(payload: object) -> None:
+    if request_entries(payload) > MAX_REQUEST_ENTRIES:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "REQUEST_TOO_MANY_ITEMS",
+                "message": (
+                    f"The request has more than {MAX_REQUEST_ENTRIES:,} list entries "
+                    "(turns, content parts, tools)."
+                ),
+                "param": "items",
+            },
+        )
 
 
 class AdmissionStage:
@@ -131,6 +162,17 @@ class AdmissionStage:
         self.reserved = False
 
     async def run(self, value: PreparedInference) -> PreparedInference:
+        try:
+            refuse_too_many_entries(value.payload)
+        except HTTPException:
+            value.record_verdict(
+                "admission.request_entries",
+                stage="admission",
+                outcome="deny",
+                reason_code="REQUEST_TOO_MANY_ITEMS",
+                policy={"entries": MAX_REQUEST_ENTRIES},
+            )
+            raise
         unspecified_openai_response_model = (
             value.provider == "openai"
             and value.protocol == "responses"
