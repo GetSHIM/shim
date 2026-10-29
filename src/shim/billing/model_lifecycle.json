@@ -377,13 +377,6 @@
         "source": "https://developers.openai.com/api/docs/deprecations",
         "checked_on": "2026-10-11"
       },
-      "gpt-5.3-chat-latest": {
-        "retires_on": "2026-08-10",
-        "deprecated_on": "2026-05-08",
-        "replacement": "gpt-5.6-sol",
-        "source": "https://developers.openai.com/api/docs/deprecations",
-        "checked_on": "2026-10-11"
-      },
       "gpt-5.3-codex": {
         "retires_on": "2027-04-01",
         "deprecated_on": "2026-10-01",

@@ -62,12 +62,16 @@ jobs:
           git commit -m "chore: update Models.dev catalog"
           git push --force-with-lease origin "HEAD:$BRANCH"
 
-          if [ -z "$(gh pr list --base "$PR_BASE" --head "$BRANCH" --state open --json url --jq '.[0].url')" ]; then
-            {
-              echo "Automated catalog refresh from https://models.dev/api.json. Pricing feeds cost accounting, so this reaches main through review."
-              echo
-              cat "$RUNNER_TEMP/retirements.md"
-            } > "$RUNNER_TEMP/body.md"
+          {
+            echo "Automated catalog refresh from https://models.dev/api.json. Pricing feeds cost accounting, so this reaches main through review."
+            echo
+            cat "$RUNNER_TEMP/retirements.md"
+          } > "$RUNNER_TEMP/body.md"
+          # The report changes with each refresh, so an open pull request gets the new one.
+          PR_URL="$(gh pr list --base "$PR_BASE" --head "$BRANCH" --state open --json url --jq '.[0].url')"
+          if [ -n "$PR_URL" ]; then
+            gh pr edit "$PR_URL" --body-file "$RUNNER_TEMP/body.md"
+          else
             gh pr create \
               --base "$PR_BASE" \
               --head "$BRANCH" \

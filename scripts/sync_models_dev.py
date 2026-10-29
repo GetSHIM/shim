@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-from shim.billing.lifecycle import ModelLifecycle, load_lifecycle
+from shim.billing.lifecycle import ModelLifecycle, _longest_prefix, load_lifecycle
 from shim.billing.pricing import _MODALITIES, _STATUSES, _positive_int
 
 
@@ -313,18 +313,29 @@ def lifecycle_report(
     catalog: dict[str, Any], lifecycle: ModelLifecycle, today: date
 ) -> str:
     """What a reviewer should check in model_lifecycle.json; the file is never changed here."""
-    lines = [
-        f"- `{provider}/{model_id}` is deprecated on Models.dev and has no retirement date."
-        for provider, models in catalog["providers"].items()
-        for model_id, model in models.items()
-        if model.get("status") == "deprecated"
-        and lifecycle.retirement(model_id, provider) is None
-    ] + [
-        f"- `{provider}/{model_id}` was last checked on {entry.checked_on}."
-        for provider, models in lifecycle.models.items()
-        for model_id, entry in models.items()
-        if (today - entry.checked_on).days > 90
-    ]
+    lines = (
+        [
+            f"- `{provider}/{model_id}` is deprecated on Models.dev and has no retirement date."
+            for provider, models in catalog["providers"].items()
+            for model_id, model in models.items()
+            if model.get("status") == "deprecated"
+            and lifecycle.retirement(model_id, provider) is None
+        ]
+        + [
+            f"- `{provider}/{model_id}` was last checked on {entry.checked_on}."
+            for provider, models in lifecycle.models.items()
+            for model_id, entry in models.items()
+            if (today - entry.checked_on).days > 90
+        ]
+        + [
+            # The gateway refuses to load a lifecycle file that dates an unpriced model.
+            f"- `{provider}/{model_id}` left the catalog; remove its entry before merging."
+            for provider, models in lifecycle.models.items()
+            if provider != "registry"
+            for model_id in models
+            if _longest_prefix(model_id, catalog["providers"].get(provider, {})) is None
+        ]
+    )
     return "## Retirement dates\n\n" + ("\n".join(lines) or "Nothing to review.") + "\n"
 
 
