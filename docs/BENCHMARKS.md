@@ -452,6 +452,12 @@ eight requests at once, gains 12–18% at 1–16 KB and nothing at 32–50 KB.
 
 Privacy grows roughly linearly with size, about 3.2 ms per KB at the median.
 
+**v0.4.7 against v0.4.6** (2026-10-29, same script, two interleaved rounds each, load
+about 5, so not comparable with the table above): the wider secret recognizers of v0.4.7
+cost nothing measurable. `chat wall` p50 per round, v0.4.6 then v0.4.7: 1 KB 9.7, 8.9 /
+10.6, 9.7 ms; 16 KB 54.3, 52.6 / 52.3, 51.7 ms; 32 KB 101.1, 99.3 / 101.5, 99.3 ms;
+50 KB 147.9, 144.4 / 146.6, 145.8 ms.
+
 **Found while running B1.** The first sweep timed the mock upstream itself at 46 ms per
 request. Python's `http.server` sends the headers and the body as two writes, and with
 Nagle's algorithm on the body waited for the client's delayed ACK. shim's upstream calls
@@ -468,17 +474,18 @@ and conversion of `contents`) runs on a worker thread, and its result is sent th
 `extra_body`; the JSON body is the same. `scripts/bench/loop_hold.py` times the longest
 gap a 1 ms ticker sees while requests are built and sent to a local mock.
 
-Measured 2026-10-29 on an M1 **on battery at load about 7, not idle**; the ratios
-hold, and the table is to be re-run idle before the v0.4.7 tag.
+Measured 2026-10-29 on an M1 on AC power, at load about 5 (macOS media analysis was
+running, so not idle). Each cell is the median of three runs; the "4 at once" column is
+the noisiest (Google 18,000 turns: 793–969 ms).
 
 | Provider | Turns | Before, 1 request | After, 1 request | After, 4 at once |
 | --- | ---: | ---: | ---: | ---: |
-| OpenAI chat | 6,000 | 1,328 ms | 19 ms | 190 ms |
-| OpenAI chat | 18,000 | 3,895 ms | 209 ms | 213 ms |
-| Anthropic messages | 6,000 | 2,145 ms | 17 ms | 196 ms |
-| Anthropic messages | 18,000 | 6,463 ms | 63 ms | 220 ms |
-| Google generateContent | 6,000 | 837 ms | 106 ms | 250 ms |
-| Google generateContent | 18,000 | 2,487 ms | 233 ms | 897 ms |
+| OpenAI chat | 6,000 | 1,510 ms | 17 ms | 204 ms |
+| OpenAI chat | 18,000 | 3,991 ms | 154 ms | 254 ms |
+| Anthropic messages | 6,000 | 2,126 ms | 16 ms | 226 ms |
+| Anthropic messages | 18,000 | 6,596 ms | 55 ms | 300 ms |
+| Google generateContent | 6,000 | 836 ms | 99 ms | 383 ms |
+| Google generateContent | 18,000 | 2,579 ms | 223 ms | 929 ms |
 
 What is left on the loop: serializing the body (a few MB at 18,000 turns), genai's
 merge of `extra_body`, and, on the Gemini routes only, the route's own typing of the
