@@ -190,3 +190,32 @@ def test_the_report_lists_deprecated_models_without_a_date_and_stale_dates() -> 
     assert lifecycle_report(
         {"providers": {}}, ModelLifecycle({}), date(2026, 9, 30)
     ) == ("## Retirement dates\n\nNothing to review.\n")
+
+
+def test_the_report_lists_dated_models_the_new_catalog_no_longer_prices() -> None:
+    from datetime import date
+
+    from scripts.sync_models_dev import lifecycle_report
+    from shim.billing.lifecycle import ModelLifecycle, Retirement
+
+    dated = Retirement(
+        retires_on="2026-08-10",
+        source="https://developers.openai.com/api/docs/deprecations",
+        checked_on="2026-10-11",
+    )
+    lifecycle = ModelLifecycle(
+        {
+            "openai": {
+                "gpt-5.3-chat-latest": dated,
+                "gpt-5.1-chat-latest": dated,
+            },
+            "registry": {"my-alias": dated},
+        }
+    )
+    catalog = {"providers": {"openai": {"gpt-5.1": {}, "gpt-5.3-codex": {}}}}
+
+    report = lifecycle_report(catalog, lifecycle, date(2026, 10, 28))
+
+    assert "`openai/gpt-5.3-chat-latest` left the catalog" in report
+    assert "gpt-5.1-chat-latest" not in report, "a priced family still covers it"
+    assert "my-alias" not in report, "registry aliases name no catalog model"

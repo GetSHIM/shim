@@ -154,12 +154,15 @@ abstraction.
 `src/shim/billing/model_lifecycle.json` holds the retirement dates the gateway warns
 about. Whoever reviews the daily Models.dev catalog pull request keeps it current:
 the pull request body lists catalog models Models.dev marks deprecated that have no
-date, and entries whose `checked_on` is more than 90 days old. Dates come only from
+date, entries whose `checked_on` is more than 90 days old, and entries whose model
+left the catalog. Remove those on `main`, not on the bot's branch: each refresh
+rebuilds that branch from `main` and rewrites the body. Dates come only from
 the providers' own deprecation pages (OpenAI, Anthropic, Google), each entry with
 that page as its `https` `source` and the day it was read as `checked_on`; nobody
 merges a date without a source. List the names the page lists: a dated snapshot and
 its alias are separate entries, and an alias gets a date only when the provider names
-it. A name must be priced by the catalog, or the file fails to load in CI.
+it. A name must be priced by the catalog, or the file fails to load and every
+admission test fails in CI.
 Retirements before 2026 were left out when the file was created; a request to those
 models already fails at the provider.
 
