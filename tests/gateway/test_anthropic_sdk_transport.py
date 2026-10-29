@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
@@ -1621,3 +1622,67 @@ async def test_without_pillow_images_are_not_shrunk_and_the_gateway_warns(
     assert any(
         "install shim-gateway[images]" in record.message for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "betas"),
+    [("messages", ()), ("count_tokens", ()), ("messages", ("b1",))],
+)
+async def test_the_sdk_transform_runs_off_the_event_loop_and_sends_the_same_body(
+    monkeypatch: pytest.MonkeyPatch, protocol: str, betas: tuple[str, ...]
+) -> None:
+    # The SDK walks every entry of a body; on the loop a long agent session held
+    # every tenant's requests for seconds (S10).
+    monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://upstream.test")
+    threads: list[int] = []
+    transform = anthropic_execution.maybe_transform
+
+    def spy(data: object, expected_type: object) -> object:
+        threads.append(threading.get_ident())
+        return transform(data, expected_type)
+
+    monkeypatch.setattr(anthropic_execution, "maybe_transform", spy)
+    payload = {
+        "model": "claude-sonnet-4-6",
+        "system": [
+            {"type": "text", "text": "s", "cache_control": {"type": "ephemeral"}}
+        ],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t",
+                        "content": [{"type": "text", "text": "r"}],
+                    }
+                ],
+            }
+        ],
+        "tools": [{"name": "f", "input_schema": {"type": "object", "properties": {}}}],
+    }
+    if protocol == "messages":
+        payload |= {"max_tokens": 16, "metadata": {"user_id": "u"}}
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            400, json={"type": "error", "error": {"type": "x", "message": "stop"}}
+        )
+
+    prepared = _prepared(dict(payload))
+    prepared.protocol = protocol
+    prepared.provider_betas = betas
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(ProviderCallError):
+            await _execution(http).execute(
+                invocation=_invocation(),
+                prepared=prepared,
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert [json.loads(request.content) for request in seen] == [payload]
+    assert seen[0].headers.get("anthropic-beta") == (",".join(betas) or None)
+    assert threads and threading.get_ident() not in threads

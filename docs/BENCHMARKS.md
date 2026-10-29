@@ -459,6 +459,34 @@ paid it and LiteLLM's did not. The mock now sets `TCP_NODELAY` and answers in ab
 2 ms. That sweep is discarded, and its raw file is kept as `overhead-nagle-invalid.jsonl`.
 A shim sweep started at load 4.5 is kept apart in `overhead-shim-main-busy.jsonl`.
 
+### B1b. Event-loop hold of a long agent session (v0.4.7)
+
+Each provider SDK walks every turn and content part of a body before sending it. Up to
+v0.4.6 that walk ran on the event loop, so one long agent session held every tenant's
+requests on that process. From v0.4.7 the SDK's own transform (Google: genai's typing
+and conversion of `contents`) runs on a worker thread, and its result is sent through
+`extra_body`; the JSON body is the same. `scripts/bench/loop_hold.py` times the longest
+gap a 1 ms ticker sees while requests are built and sent to a local mock.
+
+Measured 2026-10-29 on an M1 **on battery at load about 7, not idle**; the ratios
+hold, and the table is to be re-run idle before the v0.4.7 tag.
+
+| Provider | Turns | Before, 1 request | After, 1 request | After, 4 at once |
+| --- | ---: | ---: | ---: | ---: |
+| OpenAI chat | 6,000 | 1,328 ms | 19 ms | 190 ms |
+| OpenAI chat | 18,000 | 3,895 ms | 209 ms | 213 ms |
+| Anthropic messages | 6,000 | 2,145 ms | 17 ms | 196 ms |
+| Anthropic messages | 18,000 | 6,463 ms | 63 ms | 220 ms |
+| Google generateContent | 6,000 | 837 ms | 106 ms | 250 ms |
+| Google generateContent | 18,000 | 2,487 ms | 233 ms | 897 ms |
+
+What is left on the loop: serializing the body (a few MB at 18,000 turns), genai's
+merge of `extra_body`, and, on the Gemini routes only, the route's own typing of the
+body into genai's models (about 0.5 s at 18,000 turns). The thread holds the GIL while
+it walks, which slows the loop rather than stopping it. A body is refused past 150,000
+list entries (413 `REQUEST_TOO_MANY_ITEMS`), about ten times the longest agent session
+measured, which bounds all of it.
+
 ### B2. Savings on real providers
 
 [`scripts/bench/savings.py`](../scripts/bench/savings.py) sends the same requests

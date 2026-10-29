@@ -609,6 +609,7 @@ except openai.APIStatusError as error:
 | Provider call timed out | 504 `PROVIDER_TIMEOUT` | none from shim |
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
 | Body over `MAX_REQUEST_BODY_SIZE` (default 32,000,000 bytes) | 413 `REQUEST_TOO_LARGE` | none |
+| More than 150,000 list entries anywhere in the body (turns, content parts, tools, nested schema lists), on every protocol; about ten times the longest agent session measured | 413 `REQUEST_TOO_MANY_ITEMS`, `error.param` `items`, before privacy or the provider | none |
 | With any entity type on or a tenant rule in scope, the request's distinct strings (keys included, inline file data not) are over 4,000,000 characters or 50,000 strings | 413 `PRIVACY_SCAN_TOO_LARGE` before any is scanned; the message names both counts, `error.param` the limit (`characters` or `texts`) | none: send less text, or split it |
 | The privacy scan, message text and documents together, has not finished 20 seconds after the privacy stage received the request (time waiting for a scanning thread counts) | 413 `PRIVACY_SCAN_TIMEOUT`, at most one 16,384-character window of scanning past the 20 seconds; no provider call | none: send less text, or split it |
 | A detected type whose action is `block` | 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` | none: remove the value the message names |

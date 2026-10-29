@@ -168,6 +168,7 @@ forbidden_noncloud_import_roots = [
 public = [
   "scripts/bench/litellm/mock_upstream.py",
   "scripts/bench/litellm/presidio_registry.py",
+  "scripts/bench/loop_hold.py",
   "scripts/bench/overhead.py",
   "scripts/bench/pii_corpus.py",
   "scripts/bench/pii_score.py",

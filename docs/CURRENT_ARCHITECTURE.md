@@ -340,6 +340,7 @@ a raise site may override it with `detail["hint"]`, and a new code adds one entr
 there. An error raised after authentication also carries `X-Shim-Request-Id`.
 The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `INVALID_PROVIDER_CREDENTIAL`, `INVALID_REQUEST`, `REQUEST_TOO_LARGE`,
+`REQUEST_TOO_MANY_ITEMS`,
 `MODEL_NOT_FOUND`, `MODEL_NOT_PRICED`, `MODEL_CONTEXT_EXCEEDED`,
 `MODEL_CAPABILITY_UNSUPPORTED`, `PROVIDER_NOT_ALLOWED`, `TASK_LIMIT_EXCEEDED`,
 `CONCURRENCY_LIMITED`,

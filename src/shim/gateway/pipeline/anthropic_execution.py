@@ -15,6 +15,7 @@ from anthropic import (
     APITimeoutError,
     AsyncAnthropic,
 )
+from anthropic._utils import maybe_transform
 
 from shim.core.circuit_breaker import CircuitBreaker
 from shim.core.community_config import CommunitySettings
@@ -29,6 +30,7 @@ from shim.gateway.pipeline.provider_execution import (
     retry_after_header,
     sdk_create_kwargs,
     sdk_rejected_request,
+    transform_off_loop,
     select_headers,
     status_error_code,
 )
@@ -168,7 +170,9 @@ class AnthropicExecution:
                     headers["anthropic-beta"] = ",".join(kwargs["betas"])
             with prepared.timing.exclude():
                 try:
-                    result: Any = await create(**kwargs)
+                    result: Any = await create(
+                        **await transform_off_loop(create, kwargs, maybe_transform)
+                    )
                 except TypeError:
                     raise sdk_rejected_request("anthropic") from None
             received_at = perf_counter()

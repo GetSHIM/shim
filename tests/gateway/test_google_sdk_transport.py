@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import ssl
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -1043,3 +1044,53 @@ async def test_media_resolution_survives_the_genai_sdk(stream) -> None:
     assert sent["contents"][0]["parts"][0]["mediaResolution"] == {
         "level": "MEDIA_RESOLUTION_LOW"
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_the_sdk_conversion_runs_off_the_event_loop_and_sends_the_same_body(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    # genai types and converts every content entry; on the loop a long agent session
+    # held every tenant's requests for seconds (S10).
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+    threads: list[int] = []
+    convert = google_execution._Content_to_mldev
+
+    def spy(*args: object) -> object:
+        threads.append(threading.get_ident())
+        return convert(*args)
+
+    monkeypatch.setattr(google_execution, "_Content_to_mldev", spy)
+    payload = {
+        "contents": [
+            {"role": "user", "parts": [{"text": "hi"}, {"text": "there"}]},
+            {"role": "model", "parts": [{"functionCall": {"name": "f", "args": {}}}]},
+            {
+                "role": "user",
+                "parts": [{"functionResponse": {"name": "f", "response": {"r": 1}}}],
+            },
+        ],
+        "generationConfig": {"temperature": 0.5},
+    }
+    seen: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            400,
+            json={
+                "error": {"code": 400, "message": "stop", "status": "INVALID_ARGUMENT"}
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(ProviderCallError):
+            await _execution(http).execute(
+                invocation=_invocation(),
+                prepared=_prepared(dict(payload), stream=stream),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert seen == [payload]
+    assert threads and threading.get_ident() not in threads

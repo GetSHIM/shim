@@ -16,6 +16,7 @@ from openai import (
     AsyncOpenAI,
 )
 from openai.types import CreateEmbeddingResponse
+from openai._utils import maybe_transform
 
 from shim.core.circuit_breaker import CircuitBreaker
 from shim.core.community_config import CommunitySettings
@@ -30,6 +31,7 @@ from shim.gateway.pipeline.provider_execution import (
     retry_after_header,
     sdk_create_kwargs,
     sdk_rejected_request,
+    transform_off_loop,
     select_headers,
     status_error_code,
 )
@@ -178,7 +180,9 @@ class OpenAIExecution:
                 kwargs["extra_headers"] = headers
             with prepared.timing.exclude():
                 try:
-                    result = await create(**kwargs)
+                    result = await create(
+                        **await transform_off_loop(create, kwargs, maybe_transform)
+                    )
                 except TypeError:
                     raise sdk_rejected_request("openai") from None
             received_at = perf_counter()
