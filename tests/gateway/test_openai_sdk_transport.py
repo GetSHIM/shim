@@ -230,6 +230,61 @@ async def test_a_responses_answer_carries_only_the_fields_the_provider_sent(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_response_timestamps_stay_the_integers_the_provider_sent(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    sent = {
+        **_response("resp_time"),
+        "created_at": 1794071243,
+        "completed_at": 1794071250,
+    }
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        if not stream:
+            return httpx.Response(200, json=sent)
+        event = {"type": "response.completed", "response": sent, "sequence_number": 0}
+        return httpx.Response(
+            200,
+            content=f"event: response.completed\ndata: {json.dumps(event)}\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _execution(http, SimpleNamespace(save=AsyncMock())).execute(
+            invocation=SimpleNamespace(
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-a"),
+            ),
+            prepared=_prepared(
+                {"model": "gpt-5.6-luna", "input": "hi", "stream": stream},
+                tenant="11111111-1111-1111-1111-111111111111",
+            ),
+            provider_start_callback=AsyncMock(),
+        )
+        if stream:
+            assert isinstance(result, ProviderStream)
+            wire = b"".join([chunk async for chunk in result.events])
+            data = next(
+                line.removeprefix(b"data: ")
+                for line in wire.splitlines()
+                if line.startswith(b"data: ")
+            )
+            received = json.loads(data)["response"]
+        else:
+            assert isinstance(result, ProviderNonStream)
+            received = result.payload
+
+    assert type(received["created_at"]) is int
+    assert type(received["completed_at"]) is int
+    assert (received["created_at"], received["completed_at"]) == (
+        1794071243,
+        1794071250,
+    )
+
+
+@pytest.mark.asyncio
 async def test_sdk_forwards_future_body_fields_and_only_feature_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

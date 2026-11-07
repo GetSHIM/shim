@@ -53,6 +53,7 @@ _OPENAI_HEADERS = {
     "openai-project": "OpenAI-Project",
     "x-client-request-id": "X-Client-Request-Id",
 }
+_SDK_FLOAT_TIMESTAMPS = ("created_at", "completed_at")
 
 
 class OpenAIExecution:
@@ -438,12 +439,21 @@ class OpenAIExecution:
 
 
 def _dump_sdk(value: Any, *, warnings: bool = True) -> dict[str, Any]:
-    # Only what the provider sent: a field the SDK defaults to null (a reasoning item's
-    # `status`) is refused by OpenAI when the client replays the output as input.
     dumped = value.model_dump(mode="json", warnings=warnings, exclude_unset=True)
     if not isinstance(dumped, dict):
         raise TypeError("OpenAI SDK value did not serialize to an object")
+    _restore_integer_timestamps(dumped)
+    _restore_integer_timestamps(dumped.get("response"))
     return dumped
+
+
+def _restore_integer_timestamps(response: Any) -> None:
+    if not isinstance(response, dict):
+        return
+    for field in _SDK_FLOAT_TIMESTAMPS:
+        timestamp = response.get(field)
+        if isinstance(timestamp, float) and timestamp.is_integer():
+            response[field] = int(timestamp)
 
 
 def _stream_request_id(stream: Any) -> str | None:
@@ -618,7 +628,7 @@ def _sanitize_failed_response(response: dict[str, Any]) -> dict[str, Any]:
         "created_at": (
             response["created_at"]
             if isinstance(response.get("created_at"), int | float)
-            else 0.0
+            else 0
         ),
         "status": "failed",
         "model": (
