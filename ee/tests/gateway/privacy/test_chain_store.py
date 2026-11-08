@@ -10,9 +10,18 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi import HTTPException
 
-from shim.gateway.contracts.ids import TenantId
+from shim.gateway.contracts.context import (
+    AuditPolicy,
+    GatewayContext,
+    PrivacyPolicy,
+    TierPolicy,
+)
+from shim.gateway.contracts.ids import ApiKeyId, ProviderId, RequestId, TenantId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
+from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
+from shim.gateway.pipeline.privacy import PrivacyStage
+from shim.gateway.request_policy import RequestPolicyContext
 from shim_enterprise.privacy.chain_store import RedisPrivacyContinuationStore
 from shim.privacy.continuation import PrivacyContinuationUnavailableError
 from shim.services.gateway.service import GatewayService
@@ -50,9 +59,10 @@ async def test_mapping_is_encrypted_tenant_bound_and_ttl_limited() -> None:
     await store.save(tenant, "resp_same", mapping)
 
     assert await store.load(tenant, "resp_empty") == {}
-    assert await store.load(tenant, "resp_absent") is None
     assert await store.load(tenant, "resp_same") == mapping
-    assert await store.load(other_tenant, "resp_same") is None
+    for absent in ((tenant, "resp_absent"), (other_tenant, "resp_same")):
+        with pytest.raises(PrivacyContinuationUnavailableError):
+            await store.load(*absent)
     assert set(redis.expirations.values()) == {123}
     serialized = "".join(redis.values.values())
     assert "alice@example.com" not in serialized
@@ -65,7 +75,8 @@ async def test_mapping_is_encrypted_tenant_bound_and_ttl_limited() -> None:
         await store.load(other_tenant, "resp_empty")
 
     redis.values.clear()
-    assert await store.load(tenant, "resp_same") is None
+    with pytest.raises(PrivacyContinuationUnavailableError):
+        await store.load(tenant, "resp_same")
 
 
 class FailingRedis(FakeRedis):
@@ -169,3 +180,66 @@ async def test_gateway_service_preserves_unknown_failures() -> None:
         )
 
     assert error.value is failure
+
+
+def _continuation(tenant: TenantId, previous: str) -> PreparedInference:
+    context = GatewayContext(
+        request_id=RequestId("req_chain"),
+        tenant_id=tenant,
+        actor_type="api_key",
+        api_key_id=ApiKeyId(UUID("22222222-2222-2222-2222-222222222222")),
+        user_id=None,
+        endpoint="/v1/responses",
+        started_at=datetime(2026, 10, 8, tzinfo=UTC),
+        tier_policy=TierPolicy(),
+        privacy_policy=PrivacyPolicy(pii_mode="scrub"),
+        audit_policy=AuditPolicy(mode="best_effort"),
+    )
+    return PreparedInference(
+        context=context,
+        payload={"previous_response_id": previous, "input": "must not be inspected"},
+        provider=ProviderId("openai"),
+        protocol="responses",
+        model="gpt-5.6-luna",
+        stream=False,
+        policy=RequestPolicyContext(rate_limit_key_hash="key-hash", tier="managed"),
+        pii_config=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lost_marker_stops_the_turn_before_anything_is_scrubbed() -> None:
+    scrubbed: list[str] = []
+
+    class RecordingScrubber:
+        def scrub(self, text: str, *args, **kwargs) -> tuple[str, dict[str, str]]:
+            scrubbed.append(text)
+            return text, {}
+
+    redis = FakeRedis()
+    key = Fernet.generate_key().decode()
+    store = RedisPrivacyContinuationStore(
+        SimpleNamespace(redis=redis), encryption_key=key, ttl_seconds=60
+    )
+    tenant = TenantId(UUID("11111111-1111-1111-1111-111111111111"))
+    other_tenant = TenantId(UUID("33333333-3333-3333-3333-333333333333"))
+    await store.save(tenant, "resp_empty", {})
+    stage = PrivacyStage(RecordingScrubber(), store)  # type: ignore[arg-type]
+
+    await stage.run(_continuation(tenant, "resp_empty"))
+    assert scrubbed
+    scrubbed.clear()
+    down = PrivacyStage(
+        RecordingScrubber(),  # type: ignore[arg-type]
+        RedisPrivacyContinuationStore(
+            SimpleNamespace(redis=None), encryption_key=key, ttl_seconds=60
+        ),
+    )
+    for running, prepared in (
+        (stage, _continuation(tenant, "resp_lost")),
+        (stage, _continuation(other_tenant, "resp_empty")),
+        (down, _continuation(tenant, "resp_empty")),
+    ):
+        with pytest.raises(PrivacyContinuationUnavailableError):
+            await running.run(prepared)
+    assert scrubbed == []
