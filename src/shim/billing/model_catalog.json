@@ -35,6 +35,23 @@
         "structured_output": true,
         "tools": true
       },
+      "claude-fable-5-2": {
+        "cache_read_per_million": "0.2",
+        "cache_write_per_million": "10",
+        "context_window": 1000000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "8",
+        "max_output_tokens": 128000,
+        "name": "Claude Fable 5.2",
+        "output_per_million": "40",
+        "release_date": "2026-11-09",
+        "structured_output": true,
+        "tools": true
+      },
       "claude-haiku-4-5": {
         "cache_read_per_million": "0.1",
         "cache_write_per_million": "1.25",
@@ -224,6 +241,7 @@
         "name": "Claude Sonnet 4.5 (latest)",
         "output_per_million": "15",
         "release_date": "2025-09-29",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -241,6 +259,7 @@
         "name": "Claude Sonnet 4.5",
         "output_per_million": "15",
         "release_date": "2025-09-29",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -446,6 +465,60 @@
         "name": "Gemini 4 Argon",
         "output_per_million": "10",
         "release_date": "2026-10-13",
+        "structured_output": true,
+        "tools": true
+      },
+      "gemini-4-carbon": {
+        "cache_read_per_million": "0.1",
+        "context_window": 1048576,
+        "input_modalities": [
+          "audio",
+          "image",
+          "pdf",
+          "text",
+          "video"
+        ],
+        "input_per_million": "2",
+        "max_output_tokens": 32768,
+        "name": "Gemini 4 Carbon",
+        "output_per_million": "10",
+        "release_date": "2026-11-10",
+        "structured_output": true,
+        "tools": true
+      },
+      "gemini-4-hydrogen": {
+        "cache_read_per_million": "0.075",
+        "context_window": 1048576,
+        "input_modalities": [
+          "audio",
+          "image",
+          "pdf",
+          "text",
+          "video"
+        ],
+        "input_per_million": "1.5",
+        "max_output_tokens": 65536,
+        "name": "Gemini 4 Hydrogen",
+        "output_per_million": "7.5",
+        "release_date": "2026-11-12",
+        "structured_output": true,
+        "tools": true
+      },
+      "gemini-4-neon": {
+        "cache_read_per_million": "0.15",
+        "context_window": 1048576,
+        "input_modalities": [
+          "audio",
+          "image",
+          "pdf",
+          "text",
+          "video"
+        ],
+        "input_per_million": "3",
+        "max_output_tokens": 65536,
+        "name": "Gemini 4 Neon",
+        "output_per_million": "15",
+        "release_date": "2026-11-18",
         "structured_output": true,
         "tools": true
       },
@@ -1152,6 +1225,52 @@
         "structured_output": true,
         "tools": true
       },
+      "gpt-6.2-astra": {
+        "cache_read_per_million": "0.4",
+        "cache_write_per_million": "10",
+        "context_window": 1050000,
+        "input_limit": 922000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "8",
+        "large_context_cache_read_per_million": "0.8",
+        "large_context_cache_write_per_million": "20",
+        "large_context_input_per_million": "16",
+        "large_context_output_per_million": "60",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6.2 Astra",
+        "output_per_million": "40",
+        "release_date": "2026-11-17",
+        "structured_output": true,
+        "tools": true
+      },
+      "gpt-6.2-sol": {
+        "cache_read_per_million": "0.1",
+        "cache_write_per_million": "2.5",
+        "context_window": 1050000,
+        "input_limit": 922000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "2",
+        "large_context_cache_read_per_million": "0.2",
+        "large_context_cache_write_per_million": "5",
+        "large_context_input_per_million": "4",
+        "large_context_output_per_million": "15",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6.2 Sol",
+        "output_per_million": "10",
+        "release_date": "2026-11-17",
+        "structured_output": true,
+        "tools": true
+      },
       "gpt-daybreak-blue-latest": {
         "cache_read_per_million": "0.4",
         "cache_write_per_million": "5",
@@ -1324,5 +1443,5 @@
     }
   },
   "source": "https://models.dev/api.json",
-  "version": "models.dev:4d2555d82ddbebaa9da59ccd"
+  "version": "models.dev:b2ef6874434a5a76641111d4"
 }
