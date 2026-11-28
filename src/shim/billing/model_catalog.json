@@ -35,6 +35,23 @@
         "structured_output": true,
         "tools": true
       },
+      "claude-fable-5-2": {
+        "cache_read_per_million": "0.2",
+        "cache_write_per_million": "10",
+        "context_window": 1000000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "8",
+        "max_output_tokens": 128000,
+        "name": "Claude Fable 5.2",
+        "output_per_million": "40",
+        "release_date": "2026-11-09",
+        "structured_output": true,
+        "tools": true
+      },
       "claude-haiku-4-5": {
         "cache_read_per_million": "0.1",
         "cache_write_per_million": "1.25",
@@ -105,6 +122,7 @@
         "name": "Claude Opus 4.5 (latest)",
         "output_per_million": "25",
         "release_date": "2025-11-24",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -122,6 +140,7 @@
         "name": "Claude Opus 4.5",
         "output_per_million": "25",
         "release_date": "2025-11-24",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -224,6 +243,7 @@
         "name": "Claude Sonnet 4.5 (latest)",
         "output_per_million": "15",
         "release_date": "2025-09-29",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -241,6 +261,7 @@
         "name": "Claude Sonnet 4.5",
         "output_per_million": "15",
         "release_date": "2025-09-29",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -316,6 +337,7 @@
         "name": "Gemini 2.5 Pro",
         "output_per_million": "10",
         "release_date": "2025-06-17",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -356,6 +378,7 @@
         "name": "Gemini 3.5 Flash",
         "output_per_million": "9",
         "release_date": "2026-05-19",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -410,6 +433,7 @@
         "name": "Gemini 3.7 Flash",
         "output_per_million": "3.75",
         "release_date": "2026-08-13",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -449,6 +473,60 @@
         "structured_output": true,
         "tools": true
       },
+      "gemini-4-carbon": {
+        "cache_read_per_million": "0.1",
+        "context_window": 1048576,
+        "input_modalities": [
+          "audio",
+          "image",
+          "pdf",
+          "text",
+          "video"
+        ],
+        "input_per_million": "2",
+        "max_output_tokens": 32768,
+        "name": "Gemini 4 Carbon",
+        "output_per_million": "10",
+        "release_date": "2026-11-10",
+        "structured_output": true,
+        "tools": true
+      },
+      "gemini-4-hydrogen": {
+        "cache_read_per_million": "0.075",
+        "context_window": 1048576,
+        "input_modalities": [
+          "audio",
+          "image",
+          "pdf",
+          "text",
+          "video"
+        ],
+        "input_per_million": "1.5",
+        "max_output_tokens": 65536,
+        "name": "Gemini 4 Hydrogen",
+        "output_per_million": "7.5",
+        "release_date": "2026-11-12",
+        "structured_output": true,
+        "tools": true
+      },
+      "gemini-4-neon": {
+        "cache_read_per_million": "0.15",
+        "context_window": 1048576,
+        "input_modalities": [
+          "audio",
+          "image",
+          "pdf",
+          "text",
+          "video"
+        ],
+        "input_per_million": "3",
+        "max_output_tokens": 65536,
+        "name": "Gemini 4 Neon",
+        "output_per_million": "15",
+        "release_date": "2026-11-18",
+        "structured_output": true,
+        "tools": true
+      },
       "gemini-embedding-001": {
         "context_window": 2048,
         "input_modalities": [
@@ -458,7 +536,8 @@
         "kind": "embedding",
         "name": "Gemini Embedding 001",
         "output_per_million": "0",
-        "release_date": "2025-05-20",
+        "release_date": "2025-07-14",
+        "status": "deprecated",
         "tools": false
       },
       "gemini-flash-latest": {
@@ -475,7 +554,7 @@
         "max_output_tokens": 65536,
         "name": "Gemini Flash Latest",
         "output_per_million": "3.75",
-        "release_date": "2026-08-13",
+        "release_date": "2026-09-02",
         "structured_output": true,
         "tools": true
       },
@@ -521,50 +600,6 @@
       }
     },
     "openai": {
-      "gpt-3.5-turbo": {
-        "cache_read_per_million": "0",
-        "context_window": 16385,
-        "input_modalities": [
-          "text"
-        ],
-        "input_per_million": "0.5",
-        "max_output_tokens": 4096,
-        "name": "GPT-3.5-turbo",
-        "output_per_million": "1.5",
-        "release_date": "2023-03-01",
-        "status": "deprecated",
-        "structured_output": false,
-        "tools": false
-      },
-      "gpt-4": {
-        "context_window": 8192,
-        "input_modalities": [
-          "text"
-        ],
-        "input_per_million": "30",
-        "max_output_tokens": 8192,
-        "name": "GPT-4",
-        "output_per_million": "60",
-        "release_date": "2023-11-06",
-        "status": "deprecated",
-        "structured_output": false,
-        "tools": true
-      },
-      "gpt-4-turbo": {
-        "context_window": 128000,
-        "input_modalities": [
-          "image",
-          "text"
-        ],
-        "input_per_million": "10",
-        "max_output_tokens": 4096,
-        "name": "GPT-4 Turbo",
-        "output_per_million": "30",
-        "release_date": "2023-11-06",
-        "status": "deprecated",
-        "structured_output": false,
-        "tools": true
-      },
       "gpt-4.1": {
         "cache_read_per_million": "0.5",
         "context_window": 1047576,
@@ -578,6 +613,7 @@
         "name": "GPT-4.1",
         "output_per_million": "8",
         "release_date": "2025-04-14",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -593,21 +629,6 @@
         "max_output_tokens": 32768,
         "name": "GPT-4.1 mini",
         "output_per_million": "1.6",
-        "release_date": "2025-04-14",
-        "structured_output": true,
-        "tools": true
-      },
-      "gpt-4.1-nano": {
-        "cache_read_per_million": "0.025",
-        "context_window": 1047576,
-        "input_modalities": [
-          "image",
-          "text"
-        ],
-        "input_per_million": "0.1",
-        "max_output_tokens": 32768,
-        "name": "GPT-4.1 nano",
-        "output_per_million": "0.4",
         "release_date": "2025-04-14",
         "status": "deprecated",
         "structured_output": true,
@@ -626,20 +647,6 @@
         "name": "GPT-4o",
         "output_per_million": "10",
         "release_date": "2024-05-13",
-        "structured_output": true,
-        "tools": true
-      },
-      "gpt-4o-2024-05-13": {
-        "context_window": 128000,
-        "input_modalities": [
-          "image",
-          "text"
-        ],
-        "input_per_million": "5",
-        "max_output_tokens": 4096,
-        "name": "GPT-4o (2024-05-13)",
-        "output_per_million": "15",
-        "release_date": "2024-05-13",
         "status": "deprecated",
         "structured_output": true,
         "tools": true
@@ -656,6 +663,7 @@
         "name": "GPT-4o (2024-08-06)",
         "output_per_million": "10",
         "release_date": "2024-08-06",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -671,6 +679,7 @@
         "name": "GPT-4o (2024-11-20)",
         "output_per_million": "10",
         "release_date": "2024-11-20",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -687,6 +696,7 @@
         "name": "GPT-4o mini",
         "output_per_million": "0.6",
         "release_date": "2024-07-18",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -703,6 +713,7 @@
         "name": "GPT-5",
         "output_per_million": "10",
         "release_date": "2025-08-07",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -719,6 +730,7 @@
         "name": "GPT-5 Mini",
         "output_per_million": "2",
         "release_date": "2025-08-07",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -735,6 +747,7 @@
         "name": "GPT-5 Nano",
         "output_per_million": "0.4",
         "release_date": "2025-08-07",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -750,6 +763,7 @@
         "name": "GPT-5 Pro",
         "output_per_million": "120",
         "release_date": "2025-10-06",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -766,6 +780,7 @@
         "name": "GPT-5.1",
         "output_per_million": "10",
         "release_date": "2025-11-13",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -814,23 +829,7 @@
         "name": "GPT-5.3 Codex",
         "output_per_million": "14",
         "release_date": "2026-02-05",
-        "structured_output": true,
-        "tools": true
-      },
-      "gpt-5.3-codex-spark": {
-        "cache_read_per_million": "0.175",
-        "context_window": 128000,
-        "input_limit": 100000,
-        "input_modalities": [
-          "image",
-          "pdf",
-          "text"
-        ],
-        "input_per_million": "1.75",
-        "max_output_tokens": 32000,
-        "name": "GPT-5.3 Codex Spark",
-        "output_per_million": "14",
-        "release_date": "2026-02-05",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -884,6 +883,7 @@
         "name": "GPT-5.4 nano",
         "output_per_million": "1.25",
         "release_date": "2026-03-17",
+        "status": "deprecated",
         "structured_output": true,
         "tools": true
       },
@@ -1060,6 +1060,27 @@
         "structured_output": true,
         "tools": true
       },
+      "gpt-6-astra-healthcare": {
+        "cache_read_per_million": "1",
+        "context_window": 1050000,
+        "input_limit": 922000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "10",
+        "large_context_cache_read_per_million": "2",
+        "large_context_input_per_million": "20",
+        "large_context_output_per_million": "75",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6 Astra Healthcare",
+        "output_per_million": "50",
+        "release_date": "2026-11-24",
+        "structured_output": true,
+        "tools": true
+      },
       "gpt-6-luna": {
         "cache_read_per_million": "0.01",
         "cache_write_per_million": "0.125",
@@ -1129,6 +1150,27 @@
         "structured_output": true,
         "tools": true
       },
+      "gpt-6.1-sol-healthcare": {
+        "cache_read_per_million": "0.1",
+        "context_window": 1050000,
+        "input_limit": 922000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "2",
+        "large_context_cache_read_per_million": "0.2",
+        "large_context_input_per_million": "4",
+        "large_context_output_per_million": "15",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6.1 Sol Healthcare",
+        "output_per_million": "10",
+        "release_date": "2026-11-24",
+        "structured_output": true,
+        "tools": true
+      },
       "gpt-6.1-terra": {
         "cache_read_per_million": "0.05",
         "cache_write_per_million": "1.25",
@@ -1149,6 +1191,98 @@
         "name": "GPT-6.1 Terra",
         "output_per_million": "5",
         "release_date": "2026-10-26",
+        "structured_output": true,
+        "tools": true
+      },
+      "gpt-6.2-astra": {
+        "cache_read_per_million": "0.4",
+        "cache_write_per_million": "10",
+        "context_window": 1050000,
+        "input_limit": 922000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "8",
+        "large_context_cache_read_per_million": "0.8",
+        "large_context_cache_write_per_million": "20",
+        "large_context_input_per_million": "16",
+        "large_context_output_per_million": "60",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6.2 Astra",
+        "output_per_million": "40",
+        "release_date": "2026-11-17",
+        "structured_output": true,
+        "tools": true
+      },
+      "gpt-6.2-astra-healthcare": {
+        "cache_read_per_million": "0.4",
+        "cache_write_per_million": "10",
+        "context_window": 1050000,
+        "input_limit": 922000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "8",
+        "large_context_cache_read_per_million": "0.8",
+        "large_context_cache_write_per_million": "20",
+        "large_context_input_per_million": "16",
+        "large_context_output_per_million": "60",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6.2 Astra Healthcare",
+        "output_per_million": "40",
+        "release_date": "2026-11-24",
+        "structured_output": true,
+        "tools": true
+      },
+      "gpt-6.2-sol": {
+        "cache_read_per_million": "0.1",
+        "cache_write_per_million": "2.5",
+        "context_window": 1050000,
+        "input_limit": 922000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "2",
+        "large_context_cache_read_per_million": "0.2",
+        "large_context_cache_write_per_million": "5",
+        "large_context_input_per_million": "4",
+        "large_context_output_per_million": "15",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6.2 Sol",
+        "output_per_million": "10",
+        "release_date": "2026-11-17",
+        "structured_output": true,
+        "tools": true
+      },
+      "gpt-6.2-sol-healthcare": {
+        "cache_read_per_million": "0.1",
+        "cache_write_per_million": "2.5",
+        "context_window": 1050000,
+        "input_limit": 922000,
+        "input_modalities": [
+          "image",
+          "pdf",
+          "text"
+        ],
+        "input_per_million": "2",
+        "large_context_cache_read_per_million": "0.2",
+        "large_context_cache_write_per_million": "5",
+        "large_context_input_per_million": "4",
+        "large_context_output_per_million": "15",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6.2 Sol Healthcare",
+        "output_per_million": "10",
+        "release_date": "2026-11-24",
         "structured_output": true,
         "tools": true
       },
@@ -1192,38 +1326,6 @@
         "structured_output": true,
         "tools": true
       },
-      "o1": {
-        "cache_read_per_million": "7.5",
-        "context_window": 200000,
-        "input_modalities": [
-          "image",
-          "pdf",
-          "text"
-        ],
-        "input_per_million": "15",
-        "max_output_tokens": 100000,
-        "name": "o1",
-        "output_per_million": "60",
-        "release_date": "2024-12-05",
-        "status": "deprecated",
-        "structured_output": true,
-        "tools": true
-      },
-      "o1-pro": {
-        "context_window": 200000,
-        "input_modalities": [
-          "image",
-          "text"
-        ],
-        "input_per_million": "150",
-        "max_output_tokens": 100000,
-        "name": "o1-pro",
-        "output_per_million": "600",
-        "release_date": "2025-03-19",
-        "status": "deprecated",
-        "structured_output": true,
-        "tools": true
-      },
       "o3": {
         "cache_read_per_million": "0.5",
         "context_window": 200000,
@@ -1237,20 +1339,6 @@
         "name": "o3",
         "output_per_million": "8",
         "release_date": "2025-04-16",
-        "structured_output": true,
-        "tools": true
-      },
-      "o3-mini": {
-        "cache_read_per_million": "0.55",
-        "context_window": 200000,
-        "input_modalities": [
-          "text"
-        ],
-        "input_per_million": "1.1",
-        "max_output_tokens": 100000,
-        "name": "o3-mini",
-        "output_per_million": "4.4",
-        "release_date": "2024-12-20",
         "status": "deprecated",
         "structured_output": true,
         "tools": true
@@ -1266,21 +1354,6 @@
         "name": "o3-pro",
         "output_per_million": "80",
         "release_date": "2025-06-10",
-        "structured_output": true,
-        "tools": true
-      },
-      "o4-mini": {
-        "cache_read_per_million": "0.275",
-        "context_window": 200000,
-        "input_modalities": [
-          "image",
-          "text"
-        ],
-        "input_per_million": "1.1",
-        "max_output_tokens": 100000,
-        "name": "o4-mini",
-        "output_per_million": "4.4",
-        "release_date": "2025-04-16",
         "status": "deprecated",
         "structured_output": true,
         "tools": true
@@ -1324,5 +1397,5 @@
     }
   },
   "source": "https://models.dev/api.json",
-  "version": "models.dev:4d2555d82ddbebaa9da59ccd"
+  "version": "models.dev:0ba776347b425f051dad0810"
 }
